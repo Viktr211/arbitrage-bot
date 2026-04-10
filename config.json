@@ -1,0 +1,23 @@
+{
+  "exchange_ids": ["binance", "bybit"],
+  "main_exchange": "binance",
+  "test_mode": true,
+  "max_order_size_percent": 0.1,
+  "commission": 0.001,
+  "target_asset_amount": {
+    "BTC": 0.5,
+    "ETH": 2.0
+  },
+  "asset_config": [
+    {
+      "asset": "BTC",
+      "min_profit": 0.0005,
+      "quote_currency": "USDT"
+    },
+    {
+      "asset": "ETH",
+      "min_profit": 0.0005,
+      "quote_currency": "USDT"
+    }
+  ]
+}
