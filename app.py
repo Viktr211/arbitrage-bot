@@ -254,4 +254,4 @@ if st.session_state.bot_running:
     
     st.rerun()
 
-st.caption("🚀 Arbitrage Bot PRO — реальный поиск арбитража между биржами"
+st.caption("🚀 Arbitrage Bot PRO — реальный поиск арбитража между биржами")
