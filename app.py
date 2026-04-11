@@ -15,6 +15,12 @@ st.markdown("""
     .stButton>button { border-radius: 30px; height: 44px; font-weight: bold; }
     .stMetric label { font-size: 14px !important; }
     .stMetric div[data-testid="stMetricValue"] { font-size: 22px !important; font-weight: bold; }
+    .register-form {
+        background: rgba(0,0,0,0.5);
+        padding: 20px;
+        border-radius: 15px;
+        margin: 10px 0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -35,11 +41,28 @@ def save_config(config):
     with open('config.json', 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=4)
 
+def load_users():
+    try:
+        with open('users.json', 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_users(users):
+    with open('users.json', 'w', encoding='utf-8') as f:
+        json.dump(users, f, indent=4)
+
 config = load_config()
 ASSETS = config.get("assets", ["BTC", "ETH", "BNB", "SOL"])
 TARGETS = config.get("targets", {"BTC": 0.05, "ETH": 0.5, "BNB": 1.0, "SOL": 5.0})
 
-# ==================== СЕССИЯ ====================
+# ==================== СЕССИЯ ПОЛЬЗОВАТЕЛЯ ====================
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
+if 'username' not in st.session_state:
+    st.session_state.username = None
+if 'wallet' not in st.session_state:
+    st.session_state.wallet = None
 if 'bot_running' not in st.session_state:
     st.session_state.bot_running = False
 if 'total_profit' not in st.session_state:
@@ -103,9 +126,85 @@ def get_all_prices(symbol):
         prices['bybit'] = by_price
     return prices
 
-# ==================== ИНТЕРФЕЙС ====================
+# ==================== РЕГИСТРАЦИЯ И ВХОД ====================
 
-# Верхняя панель
+if not st.session_state.logged_in:
+    st.subheader("🔐 Добро пожаловать!")
+    
+    tab_login, tab_register = st.tabs(["🔑 Вход", "📝 Регистрация"])
+    
+    with tab_login:
+        with st.form("login_form"):
+            email = st.text_input("Эл. почта")
+            password = st.text_input("Пароль", type="password")
+            submitted = st.form_submit_button("Войти", use_container_width=True)
+            
+            if submitted:
+                users = load_users()
+                if email in users and users[email]['password'] == password:
+                    st.session_state.logged_in = True
+                    st.session_state.username = users[email]['name']
+                    st.session_state.wallet = users[email]['wallet']
+                    st.success(f"Добро пожаловать, {users[email]['name']}!")
+                    st.rerun()
+                else:
+                    st.error("Неверный email или пароль")
+    
+    with tab_register:
+        with st.form("register_form"):
+            st.markdown('<div class="register-form">', unsafe_allow_html=True)
+            full_name = st.text_input("ФИО")
+            country = st.text_input("Страна")
+            city = st.text_input("Город")
+            email = st.text_input("Эл. почта")
+            wallet = st.text_input("Кошелёк (USTR или другой адрес)")
+            password = st.text_input("Пароль", type="password")
+            confirm_password = st.text_input("Подтвердите пароль", type="password")
+            submitted = st.form_submit_button("Зарегистрироваться", use_container_width=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+            if submitted:
+                if not full_name or not country or not city or not email or not wallet:
+                    st.error("Заполните все поля!")
+                elif password != confirm_password:
+                    st.error("Пароли не совпадают!")
+                else:
+                    users = load_users()
+                    if email in users:
+                        st.error("Пользователь с таким email уже существует!")
+                    else:
+                        users[email] = {
+                            'name': full_name,
+                            'country': country,
+                            'city': city,
+                            'wallet': wallet,
+                            'password': password,
+                            'registered_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        }
+                        save_users(users)
+                        st.success("Регистрация успешна! Теперь войдите.")
+                        st.rerun()
+    
+    st.stop()
+
+# ==================== ОСНОВНОЙ ИНТЕРФЕЙС (после входа) ====================
+
+# Верхняя панель с информацией о пользователе
+col0a, col0b, col0c, col0d = st.columns([2, 2, 2, 1])
+with col0a:
+    st.write(f"👤 **{st.session_state.username}**")
+with col0b:
+    st.write(f"💳 **Кошелёк:** {st.session_state.wallet[:10]}...")
+with col0c:
+    st.write(f"📅 **Старт сессии:** {datetime.now().strftime('%d.%m.%Y %H:%M')}")
+with col0d:
+    if st.button("🚪 Выйти"):
+        st.session_state.logged_in = False
+        st.rerun()
+
+st.divider()
+
+# Верхняя панель статистики
 col1, col2, col3 = st.columns(3)
 with col1:
     st.metric("💰 Общая прибыль", f"{st.session_state.total_profit:.4f} USDT")
@@ -115,7 +214,7 @@ with col3:
     status = "🟢 Работает" if st.session_state.bot_running else "🔴 Остановлен"
     st.metric("Статус", status)
 
-# Кнопки
+# Кнопки управления
 c1, c2, c3 = st.columns(3)
 if c1.button("▶ СТАРТ", type="primary", use_container_width=True):
     st.session_state.bot_running = True
@@ -148,14 +247,13 @@ with tab1:
             for i, price in enumerate(prices.values()):
                 cols2[i+1].write(f"${price:,.2f}")
             
-            # Сохраняем историю цен для графика (со всех бирж)
+            # Сохраняем историю цен
             for ex, price in prices.items():
                 st.session_state.price_history[asset].append({
                     'time': datetime.now().strftime('%H:%M:%S'),
                     'exchange': ex,
                     'price': price
                 })
-                # Оставляем последние 50 записей
                 if len(st.session_state.price_history[asset]) > 50:
                     st.session_state.price_history[asset] = st.session_state.price_history[asset][-50:]
             
@@ -179,7 +277,7 @@ with tab1:
             st.progress(min(current/target, 1.0))
         st.divider()
 
-# ==================== TAB 2: ГРАФИКИ ====================
+# ==================== TAB 2: ГРАФИКИ (ИСПРАВЛЕННЫЕ) ====================
 with tab2:
     st.subheader("📈 Графики цен в реальном времени")
     
@@ -187,29 +285,50 @@ with tab2:
     with col_a:
         selected_asset = st.selectbox("Выберите актив", ASSETS, key="graph_asset")
     with col_b:
-        selected_exchange = st.selectbox("Выберите биржу", ["binance", "kucoin", "bybit", "all"], key="graph_exchange")
+        selected_exchange = st.selectbox("Выберите биржу", ["kucoin", "binance", "bybit", "all"], key="graph_exchange")
     
-    if selected_asset and st.session_state.price_history.get(selected_asset):
-        df_data = st.session_state.price_history[selected_asset]
+    if selected_asset:
+        # Получаем свежие цены для выбранного актива
+        prices = get_all_prices(selected_asset)
         
         if selected_exchange == "all":
-            # Показываем все биржи на одном графике
-            df = pd.DataFrame(df_data)
-            if not df.empty:
-                # Создаём сводную таблицу
-                pivot_df = df.pivot(index='time', columns='exchange', values='price')
-                st.line_chart(pivot_df, use_container_width=True)
-        else:
-            # Показываем только выбранную биржу
-            df = pd.DataFrame([d for d in df_data if d['exchange'] == selected_exchange])
-            if not df.empty:
-                st.line_chart(df.set_index('time')['price'], use_container_width=True)
-                last_price = df['price'].iloc[-1]
-                st.metric(f"Последняя цена ({selected_exchange.upper()})", f"${last_price:,.2f}")
+            # Показываем все биржи
+            chart_data = {}
+            for ex in prices.keys():
+                chart_data[ex.upper()] = [prices[ex]]
+            if chart_data:
+                st.write("**Текущие цены:**")
+                for ex, price in chart_data.items():
+                    st.write(f"  {ex}: ${price[0]:,.2f}")
+                
+                # Гистограмма для сравнения
+                df_compare = pd.DataFrame([prices])
+                st.bar_chart(df_compare, use_container_width=True)
             else:
-                st.info(f"Нет данных для {selected_exchange.upper()}")
-    else:
-        st.info("Запустите бота и подождите несколько секунд для сбора данных")
+                st.info("Нет данных для отображения")
+        else:
+            # Показываем выбранную биржу
+            price = prices.get(selected_exchange)
+            if price:
+                st.metric(f"{selected_exchange.upper()}", f"${price:,.2f}")
+                
+                # Добавляем точку в историю
+                st.session_state.price_history[selected_asset].append({
+                    'time': datetime.now().strftime('%H:%M:%S'),
+                    'exchange': selected_exchange,
+                    'price': price
+                })
+                if len(st.session_state.price_history[selected_asset]) > 30:
+                    st.session_state.price_history[selected_asset] = st.session_state.price_history[selected_asset][-30:]
+                
+                # График
+                df_history = pd.DataFrame([d for d in st.session_state.price_history[selected_asset] if d['exchange'] == selected_exchange])
+                if not df_history.empty:
+                    st.line_chart(df_history.set_index('time')['price'], use_container_width=True)
+                else:
+                    st.info("Собираем данные для графика...")
+            else:
+                st.warning(f"Нет данных для {selected_exchange.upper()}")
     
     st.divider()
     st.subheader("📊 Текущие цены на биржах")
@@ -327,4 +446,4 @@ if st.session_state.bot_running:
     
     st.rerun()
 
-st.caption("🚀 Arbitrage Bot PRO — реальные цены, графики, настройка целей")
+st.caption("🚀 Arbitrage Bot PRO — реальные цены, графики, регистрация участников")
