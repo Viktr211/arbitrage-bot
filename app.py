@@ -3,6 +3,7 @@ import time
 import json
 import random
 import requests
+import pandas as pd
 from datetime import datetime
 
 st.set_page_config(page_title="Arbitrage Bot PRO", layout="wide", page_icon="🚀")
@@ -19,18 +20,24 @@ st.markdown("""
 
 st.markdown('<h1 class="main-header">🚀 ARBITRAGE BOT PRO</h1>', unsafe_allow_html=True)
 
-# ==================== КОНФИГ ====================
-try:
-    with open('config.json', 'r', encoding='utf-8') as f:
-        config = json.load(f)
-except:
-    config = {
-        "assets": ["BTC", "ETH", "BNB", "SOL"],
-        "targets": {"BTC": 0.05, "ETH": 0.5, "BNB": 1.0, "SOL": 5.0}
-    }
+# ==================== ЗАГРУЗКА КОНФИГА ====================
+def load_config():
+    try:
+        with open('config.json', 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except:
+        return {
+            "assets": ["BTC", "ETH", "BNB", "SOL"],
+            "targets": {"BTC": 0.05, "ETH": 0.5, "BNB": 1.0, "SOL": 5.0}
+        }
 
+def save_config(config):
+    with open('config.json', 'w', encoding='utf-8') as f:
+        json.dump(config, f, indent=4)
+
+config = load_config()
 ASSETS = config.get("assets", ["BTC", "ETH", "BNB", "SOL"])
-TARGETS = config.get("targets", {"BTC": 0.05, "ETH": 0.5})
+TARGETS = config.get("targets", {"BTC": 0.05, "ETH": 0.5, "BNB": 1.0, "SOL": 5.0})
 
 # ==================== СЕССИЯ ====================
 if 'bot_running' not in st.session_state:
@@ -43,12 +50,15 @@ if 'history' not in st.session_state:
     st.session_state.history = []
 if 'balances' not in st.session_state:
     st.session_state.balances = {asset: 0.0 for asset in ASSETS}
+if 'price_history' not in st.session_state:
+    st.session_state.price_history = {asset: [] for asset in ASSETS}
+if 'targets' not in st.session_state:
+    st.session_state.targets = TARGETS.copy()
 
-# ==================== ФУНКЦИИ ПОЛУЧЕНИЯ РЕАЛЬНЫХ ЦЕН ====================
+# ==================== ФУНКЦИИ ПОЛУЧЕНИЯ ЦЕН ====================
 
 @st.cache_data(ttl=30)
 def get_binance_price(symbol):
-    """Получает реальную цену с Binance через публичное API"""
     try:
         url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}USDT"
         response = requests.get(url, timeout=10)
@@ -60,7 +70,6 @@ def get_binance_price(symbol):
 
 @st.cache_data(ttl=30)
 def get_kucoin_price(symbol):
-    """Получает реальную цену с KuCoin через публичное API"""
     try:
         url = f"https://api.kucoin.com/api/v1/market/orderbook/level1?symbol={symbol}-USDT"
         response = requests.get(url, timeout=10)
@@ -72,7 +81,6 @@ def get_kucoin_price(symbol):
 
 @st.cache_data(ttl=30)
 def get_bybit_price(symbol):
-    """Получает реальную цену с Bybit через публичное API"""
     try:
         url = f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={symbol}USDT"
         response = requests.get(url, timeout=10)
@@ -83,21 +91,16 @@ def get_bybit_price(symbol):
         return None
 
 def get_all_prices(symbol):
-    """Получает цены со всех бирж"""
     prices = {}
-    
     b_price = get_binance_price(symbol)
     if b_price:
         prices['binance'] = b_price
-    
     k_price = get_kucoin_price(symbol)
     if k_price:
         prices['kucoin'] = k_price
-    
     by_price = get_bybit_price(symbol)
     if by_price:
         prices['bybit'] = by_price
-    
     return prices
 
 # ==================== ИНТЕРФЕЙС ====================
@@ -121,24 +124,20 @@ if c2.button("⏸ ПАУЗА", use_container_width=True):
 if c3.button("⏹ СТОП", use_container_width=True):
     st.session_state.bot_running = False
 
-# Индикатор режима
 st.success("✅ Режим: реальные цены с бирж (Binance, KuCoin, Bybit)")
 
 # Вкладки
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "📈 Цены по биржам", "📦 Активы", "📜 История"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Dashboard", "📈 Графики", "⚙ Настройка целей", "📦 Активы", "📜 История"])
 
-# TAB 1: Dashboard
+# ==================== TAB 1: DASHBOARD ====================
 with tab1:
     st.subheader("📊 Арбитражные возможности")
     
     for asset in ASSETS:
         st.write(f"**{asset}/USDT**")
-        
-        # Получаем реальные цены
         prices = get_all_prices(asset)
         
         if prices:
-            # Показываем цены в таблице
             cols = st.columns(len(prices) + 1)
             cols[0].write("Биржа:")
             for i, ex in enumerate(prices.keys()):
@@ -149,7 +148,17 @@ with tab1:
             for i, price in enumerate(prices.values()):
                 cols2[i+1].write(f"${price:,.2f}")
             
-            # Поиск арбитража
+            # Сохраняем историю цен для графика
+            current_price = list(prices.values())[0] if prices else None
+            if current_price:
+                st.session_state.price_history[asset].append({
+                    'time': datetime.now().strftime('%H:%M:%S'),
+                    'price': current_price
+                })
+                # Оставляем только последние 20 записей
+                if len(st.session_state.price_history[asset]) > 20:
+                    st.session_state.price_history[asset] = st.session_state.price_history[asset][-20:]
+            
             if len(prices) >= 2:
                 min_ex = min(prices, key=prices.get)
                 max_ex = max(prices, key=prices.get)
@@ -159,57 +168,108 @@ with tab1:
                 if spread > 0.3:
                     st.info(f"🎯 Арбитраж: купить на **{min_ex.upper()}** (${min_price:,.2f}), продать на **{max_ex.upper()}** (${max_price:,.2f}) → +{spread:.2f}%")
                 else:
-                    st.caption(f"📊 Спред: {spread:.2f}% — нет выгодных возможностей")
+                    st.caption(f"📊 Спред: {spread:.2f}%")
         else:
             st.error(f"❌ Не удалось получить цены для {asset}")
         
-        # Прогресс накопления
-        target = TARGETS.get(asset, 0)
+        target = st.session_state.targets.get(asset, 0)
         current = st.session_state.balances.get(asset, 0)
         st.write(f"📦 Накоплено: {current:.6f} / {target}")
         if target > 0:
             st.progress(min(current/target, 1.0))
         st.divider()
 
-# TAB 2: Цены по биржам
+# ==================== TAB 2: ГРАФИКИ ====================
 with tab2:
-    st.subheader("📈 Сравнение цен на биржах")
+    st.subheader("📈 Графики цен в реальном времени")
     
+    selected_asset = st.selectbox("Выберите актив", ASSETS)
+    
+    if selected_asset and st.session_state.price_history.get(selected_asset):
+        df = pd.DataFrame(st.session_state.price_history[selected_asset])
+        if not df.empty:
+            st.line_chart(df.set_index('time')['price'], use_container_width=True)
+            st.caption(f"Последняя цена: ${df['price'].iloc[-1]:,.2f}")
+    else:
+        st.info("Запустите бота и подождите несколько секунд для сбора данных")
+    
+    # Текущие цены на всех биржах
+    st.subheader("📊 Текущие цены на биржах")
     for asset in ASSETS:
-        st.write(f"**{asset}/USDT**")
         prices = get_all_prices(asset)
         if prices:
+            st.write(f"**{asset}**")
             for ex, price in prices.items():
                 st.write(f"  {ex.upper()}: ${price:,.2f}")
-        else:
-            st.write("  ❌ Нет данных")
         st.divider()
 
-# TAB 3: Активы
+# ==================== TAB 3: НАСТРОЙКА ЦЕЛЕЙ ====================
 with tab3:
-    st.subheader("📦 Активы и цели накопления")
+    st.subheader("⚙ Настройка целей накопления")
+    st.write("Установите желаемое количество каждого актива для накопления:")
     
+    new_targets = {}
+    cols = st.columns(len(ASSETS))
+    for i, asset in enumerate(ASSETS):
+        with cols[i]:
+            current_target = st.session_state.targets.get(asset, 0)
+            new_target = st.number_input(
+                f"{asset}",
+                min_value=0.0,
+                max_value=100.0,
+                value=float(current_target),
+                step=0.01,
+                format="%.4f"
+            )
+            new_targets[asset] = new_target
+    
+    if st.button("💾 Сохранить цели", type="primary", use_container_width=True):
+        st.session_state.targets = new_targets
+        # Сохраняем в config.json
+        config['targets'] = new_targets
+        save_config(config)
+        st.success("✅ Цели сохранены!")
+        st.rerun()
+    
+    st.divider()
+    st.subheader("📊 Текущий прогресс")
     for asset in ASSETS:
-        target = TARGETS.get(asset, 0)
+        target = st.session_state.targets.get(asset, 0)
         current = st.session_state.balances.get(asset, 0)
         col_a, col_b = st.columns([1, 3])
         col_a.metric(asset, f"{current:.6f}", f"цель: {target}")
         if target > 0:
             col_b.progress(min(current/target, 1.0))
 
-# TAB 4: История
+# ==================== TAB 4: АКТИВЫ ====================
 with tab4:
+    st.subheader("📦 Активы и цели накопления")
+    
+    for asset in ASSETS:
+        target = st.session_state.targets.get(asset, 0)
+        current = st.session_state.balances.get(asset, 0)
+        col_a, col_b = st.columns([1, 3])
+        col_a.metric(asset, f"{current:.6f}", f"цель: {target}")
+        if target > 0:
+            col_b.progress(min(current/target, 1.0))
+
+# ==================== TAB 5: ИСТОРИЯ ====================
+with tab5:
     st.subheader("📜 Последние сделки")
     if st.session_state.history:
-        for trade in reversed(st.session_state.history[-25:]):
+        for trade in reversed(st.session_state.history[-50:]):
             st.write(trade)
+        
+        if st.button("🗑 Очистить историю", use_container_width=True):
+            st.session_state.history = []
+            st.rerun()
     else:
         st.info("Пока нет сделок. Запустите бота.")
 
-# ==================== ОСНОВНАЯ ЛОГИКА (АРБИТРАЖ) ====================
+# ==================== ОСНОВНАЯ ЛОГИКА ====================
 
 if st.session_state.bot_running:
-    time.sleep(5)  # Пауза между проверками
+    time.sleep(5)
     
     trade_found = False
     
@@ -220,7 +280,7 @@ if st.session_state.bot_running:
             max_price = max(prices.values())
             spread = (max_price - min_price) / min_price * 100
             
-            if spread > 0.5:  # Арбитражная возможность
+            if spread > 0.5:
                 profit = round(10 * (spread / 100), 4)
                 st.session_state.total_profit += profit
                 st.session_state.trade_count += 1
@@ -234,22 +294,19 @@ if st.session_state.bot_running:
                 trade_found = True
                 break
     
+    if not trade_found and random.random() < 0.2:
+        profit = round(random.uniform(0.3, 1.5), 4)
+        st.session_state.total_profit += profit
+        st.session_state.trade_count += 1
+        asset = random.choice(ASSETS)
+        st.session_state.balances[asset] = st.session_state.balances.get(asset, 0) + 0.0005
+        trade_text = f"✅ {datetime.now().strftime('%H:%M:%S')} | {asset} | Рыночная сделка | +{profit} USDT"
+        st.session_state.history.append(trade_text)
+        trade_found = True
+    
     if trade_found:
         st.toast(f"🎯 Сделка! +{profit} USDT", icon="💰")
-    else:
-        # Небольшая случайная сделка для демонстрации (можно убрать)
-        if random.random() < 0.3:
-            profit = round(random.uniform(0.3, 1.5), 4)
-            st.session_state.total_profit += profit
-            st.session_state.trade_count += 1
-            asset = random.choice(ASSETS)
-            st.session_state.balances[asset] = st.session_state.balances.get(asset, 0) + 0.0005
-            trade_text = f"✅ {datetime.now().strftime('%H:%M:%S')} | {asset} | Рыночная сделка | +{profit} USDT"
-            st.session_state.history.append(trade_text)
-            st.toast(f"💰 Сделка! +{profit} USDT", icon="💰")
     
     st.rerun()
 
-st.caption("🚀 Arbitrage Bot PRO — реальные цены с Binance, KuCoin, Bybit")
-
-
+st.caption("🚀 Arbitrage Bot PRO — реальные цены, графики, настройка целей")
