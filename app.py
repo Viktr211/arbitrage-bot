@@ -148,16 +148,16 @@ with tab1:
             for i, price in enumerate(prices.values()):
                 cols2[i+1].write(f"${price:,.2f}")
             
-            # Сохраняем историю цен для графика
-            current_price = list(prices.values())[0] if prices else None
-            if current_price:
+            # Сохраняем историю цен для графика (со всех бирж)
+            for ex, price in prices.items():
                 st.session_state.price_history[asset].append({
                     'time': datetime.now().strftime('%H:%M:%S'),
-                    'price': current_price
+                    'exchange': ex,
+                    'price': price
                 })
-                # Оставляем только последние 20 записей
-                if len(st.session_state.price_history[asset]) > 20:
-                    st.session_state.price_history[asset] = st.session_state.price_history[asset][-20:]
+                # Оставляем последние 50 записей
+                if len(st.session_state.price_history[asset]) > 50:
+                    st.session_state.price_history[asset] = st.session_state.price_history[asset][-50:]
             
             if len(prices) >= 2:
                 min_ex = min(prices, key=prices.get)
@@ -183,17 +183,35 @@ with tab1:
 with tab2:
     st.subheader("📈 Графики цен в реальном времени")
     
-    selected_asset = st.selectbox("Выберите актив", ASSETS)
+    col_a, col_b = st.columns(2)
+    with col_a:
+        selected_asset = st.selectbox("Выберите актив", ASSETS, key="graph_asset")
+    with col_b:
+        selected_exchange = st.selectbox("Выберите биржу", ["binance", "kucoin", "bybit", "all"], key="graph_exchange")
     
     if selected_asset and st.session_state.price_history.get(selected_asset):
-        df = pd.DataFrame(st.session_state.price_history[selected_asset])
-        if not df.empty:
-            st.line_chart(df.set_index('time')['price'], use_container_width=True)
-            st.caption(f"Последняя цена: ${df['price'].iloc[-1]:,.2f}")
+        df_data = st.session_state.price_history[selected_asset]
+        
+        if selected_exchange == "all":
+            # Показываем все биржи на одном графике
+            df = pd.DataFrame(df_data)
+            if not df.empty:
+                # Создаём сводную таблицу
+                pivot_df = df.pivot(index='time', columns='exchange', values='price')
+                st.line_chart(pivot_df, use_container_width=True)
+        else:
+            # Показываем только выбранную биржу
+            df = pd.DataFrame([d for d in df_data if d['exchange'] == selected_exchange])
+            if not df.empty:
+                st.line_chart(df.set_index('time')['price'], use_container_width=True)
+                last_price = df['price'].iloc[-1]
+                st.metric(f"Последняя цена ({selected_exchange.upper()})", f"${last_price:,.2f}")
+            else:
+                st.info(f"Нет данных для {selected_exchange.upper()}")
     else:
         st.info("Запустите бота и подождите несколько секунд для сбора данных")
     
-    # Текущие цены на всех биржах
+    st.divider()
     st.subheader("📊 Текущие цены на биржах")
     for asset in ASSETS:
         prices = get_all_prices(asset)
@@ -219,13 +237,13 @@ with tab3:
                 max_value=100.0,
                 value=float(current_target),
                 step=0.01,
-                format="%.4f"
+                format="%.4f",
+                key=f"target_{asset}"
             )
             new_targets[asset] = new_target
     
     if st.button("💾 Сохранить цели", type="primary", use_container_width=True):
         st.session_state.targets = new_targets
-        # Сохраняем в config.json
         config['targets'] = new_targets
         save_config(config)
         st.success("✅ Цели сохранены!")
