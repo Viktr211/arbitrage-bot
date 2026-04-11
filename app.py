@@ -1,20 +1,7 @@
-
-import streamlit as st
-import time
-import random
-import json
-import pandas as pd
-import numpy as np
-from datetime import datetime, date
-import plotly.graph_objects as go
-
-st.set_page_config(page_title="Arbitrage Bot PRO", layout="wide", page_icon="🚀")
-
-st.markdown("""
-<style>
-    .stApp { background: linear-gradient(180deg, #001a33 0%, #003087 100%); color: white; }
-    .main-header { font-size: 26px; font-weight: bold; color: #00D4FF; text-align: center; margin-bottom: 8px; }
-    .stMetric label { font-size: 14px !important; }
+ModuleNotFoundError: This app has encountered an error. The original error message is redacted to prevent data leaks. Full error details have been recorded in the logs (if you're on Streamlit Cloud, click on 'Manage app' in the lower right of your app).
+Traceback:
+File "/mount/src/arbitrage-bot/app.py", line 9, in <module>
+    import plotly.graph_objects as go
     .stMetric div[data-testid="stMetricValue"] { font-size: 22px !important; font-weight: bold; }
     .stButton>button { border-radius: 30px; height: 44px; font-weight: bold; font-size: 15px; }
     .stTabs [data-baseweb="tab-list"] button { font-size: 15.5px; font-weight: 600; }
