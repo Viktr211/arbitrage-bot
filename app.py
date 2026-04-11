@@ -1,12 +1,3 @@
-import subprocess
-import sys
-
-# Принудительная установка ccxt (если не установлен)
-try:
-    import ccxt
-except ImportError:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "ccxt", "--upgrade"])
-    import ccxt
 
 import streamlit as st
 import time
