@@ -1,4 +1,12 @@
+import subprocess
+import sys
 
+# Принудительная установка ccxt (если не установлен)
+try:
+    import ccxt
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "ccxt", "--upgrade"])
+    import ccxt
 
 import streamlit as st
 import time
@@ -7,7 +15,6 @@ import json
 import pandas as pd
 import numpy as np
 from datetime import datetime, date
-import ccxt
 import plotly.graph_objects as go
 
 st.set_page_config(page_title="Arbitrage Bot PRO", layout="wide", page_icon="🚀")
