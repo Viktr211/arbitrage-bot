@@ -4,7 +4,6 @@ import json
 import random
 import requests
 import pandas as pd
-import plotly.graph_objects as go
 from datetime import datetime
 
 st.set_page_config(page_title="Arbitrage Bot PRO", layout="wide", page_icon="🚀")
@@ -22,8 +21,6 @@ st.markdown("""
     .register-form { background: rgba(20,20,50,0.8); backdrop-filter: blur(10px); padding: 30px; border-radius: 20px; border: 1px solid rgba(0,212,255,0.3); }
     .token-card { background: rgba(30,30,70,0.6); border-radius: 15px; padding: 15px; margin: 5px; text-align: center; transition: all 0.3s; }
     .token-card:hover { transform: translateY(-5px); background: rgba(50,50,100,0.8); }
-    .profit-positive { color: #00FF88; font-weight: bold; }
-    .profit-negative { color: #FF4444; font-weight: bold; }
     .sidebar-box { background: rgba(20,20,50,0.8); border-radius: 15px; padding: 20px; margin: 10px 0; }
 </style>
 """, unsafe_allow_html=True)
@@ -37,7 +34,7 @@ def load_config():
         return {
             "assets": ["BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOT", "AVAX", "MATIC", "LINK"],
             "targets": {"BTC": 0.05, "ETH": 0.5, "BNB": 1.0, "SOL": 5.0, "XRP": 100, "ADA": 200, "DOT": 10, "AVAX": 5, "MATIC": 100, "LINK": 10},
-            "exchanges": ["binance", "kucoin", "bybit", "okx", "gateio", "huobi", "bitget", "bingx", "mexc", "bitfinex"]
+            "exchanges": ["binance", "kucoin", "bybit"]
         }
 
 def save_config(config):
@@ -85,6 +82,8 @@ if 'price_history' not in st.session_state:
     st.session_state.price_history = {asset: [] for asset in ASSETS}
 if 'targets' not in st.session_state:
     st.session_state.targets = TARGETS.copy()
+if 'selected_chart_asset' not in st.session_state:
+    st.session_state.selected_chart_asset = "BTC"
 
 # ==================== ФУНКЦИИ ПОЛУЧЕНИЯ ЦЕН ====================
 
@@ -121,17 +120,6 @@ def get_bybit_price(symbol):
     except:
         return None
 
-@st.cache_data(ttl=30)
-def get_okx_price(symbol):
-    try:
-        url = f"https://www.okx.com/api/v5/market/ticker?instId={symbol}-USDT"
-        response = requests.get(url, timeout=10)
-        if response.status_code == 200:
-            return float(response.json()['data'][0]['last'])
-        return None
-    except:
-        return None
-
 def get_all_prices(symbol):
     prices = {}
     b_price = get_binance_price(symbol)
@@ -145,38 +133,6 @@ def get_all_prices(symbol):
         prices['bybit'] = by_price
     return prices
 
-# ==================== ФУНКЦИЯ ДЛЯ ЯПОНСКИХ СВЕЧЕЙ ====================
-
-def create_candlestick_chart(df, title):
-    """Создаёт японские свечи из данных"""
-    if df.empty:
-        return None
-    
-    fig = go.Figure(data=[go.Candlestick(
-        x=df['time'],
-        open=df['open'],
-        high=df['high'],
-        low=df['low'],
-        close=df['close'],
-        name='Японские свечи'
-    )])
-    
-    fig.update_layout(
-        title=title,
-        xaxis_title="Время",
-        yaxis_title="Цена (USDT)",
-        template="plotly_dark",
-        height=500,
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(20,20,50,0.5)",
-        font=dict(color="white")
-    )
-    
-    fig.update_xaxes(gridcolor="rgba(100,100,150,0.3)")
-    fig.update_yaxes(gridcolor="rgba(100,100,150,0.3)")
-    
-    return fig
-
 # ==================== РЕГИСТРАЦИЯ И ВХОД ====================
 
 if not st.session_state.logged_in:
@@ -185,19 +141,9 @@ if not st.session_state.logged_in:
         st.markdown('<h1 class="main-header">🚀 ARBITRAGE BOT PRO</h1>', unsafe_allow_html=True)
         st.markdown('<p class="sub-header">Автоматический накопительный арбитраж с фиксацией прибыли в USDT</p>', unsafe_allow_html=True)
         
-        # Рисунок японские свечи
-        fig = go.Figure()
-        fig.add_trace(go.Candlestick(
-            x=['2024-01-01', '2024-01-02', '2024-01-03', '2024-01-04', '2024-01-05'],
-            open=[100, 110, 105, 115, 120],
-            high=[115, 115, 112, 120, 125],
-            low=[95, 105, 100, 110, 115],
-            close=[110, 105, 115, 120, 122]
-        ))
-        fig.update_layout(height=250, template="plotly_dark", showlegend=False, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-        fig.update_xaxis(visible=False)
-        fig.update_yaxis(visible=False)
-        st.plotly_chart(fig, use_container_width=True)
+        # Демо-график (простая линия)
+        chart_data = pd.DataFrame({'price': [100, 110, 105, 115, 120, 118, 125, 130, 128, 135]})
+        st.line_chart(chart_data, use_container_width=True)
         
         st.divider()
         
@@ -215,6 +161,7 @@ if not st.session_state.logged_in:
                         st.session_state.logged_in = True
                         st.session_state.username = users[email].get('name', email)
                         st.session_state.wallet = users[email].get('wallet', '')
+                        st.session_state.user_balance = users[email].get('balance', 1000.0)
                         st.success(f"Добро пожаловать, {users[email].get('name', email)}!")
                         st.rerun()
                     else:
@@ -297,7 +244,7 @@ if c2.button("⏸ ПАУЗА", use_container_width=True):
 if c3.button("⏹ СТОП", use_container_width=True):
     st.session_state.bot_running = False
 
-st.success("✅ Режим: реальные цены с бирж")
+st.success("✅ Режим: реальные цены с бирж (Binance, KuCoin, Bybit)")
 
 # ==================== ВКЛАДКИ ====================
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 Dashboard", "📈 Графики", "📦 Активы", "💰 Личный кабинет", "⚙ Настройка целей", "📜 История"])
@@ -339,24 +286,32 @@ with tab1:
             else:
                 st.warning("Нет данных")
 
-# ==================== TAB 2: ГРАФИКИ (ЯПОНСКИЕ СВЕЧИ) ====================
+# ==================== TAB 2: ГРАФИКИ ====================
 with tab2:
-    st.subheader("📈 Японские свечи — графики цен")
+    st.subheader("📈 Графики цен в реальном времени")
     
-    selected_asset = st.selectbox("Выберите актив", ASSETS)
+    selected_asset = st.selectbox("Выберите актив", ASSETS, key="graph_select")
     
-    # Генерируем демо-данные для свечей (в реальном времени будут из API)
-    df_candles = pd.DataFrame({
-        'time': pd.date_range(end=datetime.now(), periods=30, freq='H'),
-        'open': [random.uniform(100, 50000) for _ in range(30)],
-        'high': [random.uniform(100, 50000) for _ in range(30)],
-        'low': [random.uniform(100, 50000) for _ in range(30)],
-        'close': [random.uniform(100, 50000) for _ in range(30)]
-    })
-    
-    fig = create_candlestick_chart(df_candles, f"{selected_asset}/USDT — График")
-    if fig:
-        st.plotly_chart(fig, use_container_width=True)
+    # Добавляем текущую цену в историю
+    prices = get_all_prices(selected_asset)
+    if prices:
+        current_price = list(prices.values())[0]
+        st.metric("Текущая цена", f"${current_price:,.2f}")
+        
+        # Сохраняем историю
+        st.session_state.price_history[selected_asset].append({
+            'time': datetime.now().strftime('%H:%M:%S'),
+            'price': current_price
+        })
+        if len(st.session_state.price_history[selected_asset]) > 30:
+            st.session_state.price_history[selected_asset] = st.session_state.price_history[selected_asset][-30:]
+        
+        # График
+        df_history = pd.DataFrame(st.session_state.price_history[selected_asset])
+        if not df_history.empty:
+            st.line_chart(df_history.set_index('time')['price'], use_container_width=True)
+    else:
+        st.warning("Нет данных для отображения")
     
     st.divider()
     st.subheader("📊 Все активы")
@@ -475,7 +430,7 @@ if st.session_state.bot_running:
                 trade_text = f"✅ {datetime.now().strftime('%H:%M:%S')} | {asset} | Купить на {min_ex.upper()} | Продать на {max_ex.upper()} | +{profit} USDT"
                 st.session_state.history.append(trade_text)
                 
-                # Сохраняем в users.json баланс пользователя
+                # Сохраняем баланс пользователя
                 users = load_users()
                 for email, data in users.items():
                     if data.get('name') == st.session_state.username:
@@ -486,6 +441,4 @@ if st.session_state.bot_running:
     
     st.rerun()
 
-st.caption("🚀 Arbitrage Bot PRO — реальные цены, японские свечи, 10 токенов, 10 бирж, личный кабинет")
-
-
+st.caption("🚀 Arbitrage Bot PRO — реальные цены, 10 токенов, личный кабинет, вывод средств")
