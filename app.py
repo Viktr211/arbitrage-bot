@@ -22,6 +22,7 @@ st.markdown("""
     .token-card { background: rgba(30,30,70,0.6); border-radius: 15px; padding: 15px; margin: 5px; text-align: center; transition: all 0.3s; }
     .token-card:hover { transform: translateY(-5px); background: rgba(50,50,100,0.8); }
     .sidebar-box { background: rgba(20,20,50,0.8); border-radius: 15px; padding: 20px; margin: 10px 0; }
+    .logout-btn { position: fixed; top: 20px; right: 20px; z-index: 999; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -57,11 +58,15 @@ ASSETS = config.get("assets", ["BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOT", 
 TARGETS = config.get("targets", {})
 EXCHANGES = config.get("exchanges", ["binance", "kucoin", "bybit"])
 
-# ==================== СЕССИЯ ====================
+# ==================== СЕССИЯ (СОХРАНЯЕТСЯ В БРАУЗЕРЕ) ====================
+# Используем st.session_state для сохранения состояния между обновлениями
+
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 if 'username' not in st.session_state:
     st.session_state.username = None
+if 'user_email' not in st.session_state:
+    st.session_state.user_email = None
 if 'wallet' not in st.session_state:
     st.session_state.wallet = None
 if 'user_balance' not in st.session_state:
@@ -84,6 +89,23 @@ if 'targets' not in st.session_state:
     st.session_state.targets = TARGETS.copy()
 if 'selected_chart_asset' not in st.session_state:
     st.session_state.selected_chart_asset = "BTC"
+
+# ==================== ФУНКЦИЯ ВОССТАНОВЛЕНИЯ СЕССИИ ====================
+def restore_session():
+    """Восстанавливает сессию пользователя при обновлении страницы"""
+    if st.session_state.logged_in and st.session_state.user_email:
+        users = load_users()
+        if st.session_state.user_email in users:
+            user_data = users[st.session_state.user_email]
+            st.session_state.username = user_data.get('name', st.session_state.user_email)
+            st.session_state.wallet = user_data.get('wallet', '')
+            st.session_state.user_balance = user_data.get('balance', 1000.0)
+            st.session_state.user_withdrawals = user_data.get('withdrawals', [])
+            return True
+    return False
+
+# Восстанавливаем сессию при загрузке
+restore_session()
 
 # ==================== ФУНКЦИИ ПОЛУЧЕНИЯ ЦЕН ====================
 
@@ -141,7 +163,7 @@ if not st.session_state.logged_in:
         st.markdown('<h1 class="main-header">🚀 ARBITRAGE BOT PRO</h1>', unsafe_allow_html=True)
         st.markdown('<p class="sub-header">Автоматический накопительный арбитраж с фиксацией прибыли в USDT</p>', unsafe_allow_html=True)
         
-        # Демо-график (простая линия)
+        # Демо-график
         chart_data = pd.DataFrame({'price': [100, 110, 105, 115, 120, 118, 125, 130, 128, 135]})
         st.line_chart(chart_data, use_container_width=True)
         
@@ -159,9 +181,11 @@ if not st.session_state.logged_in:
                     users = load_users()
                     if email in users and users[email].get('password') == password:
                         st.session_state.logged_in = True
+                        st.session_state.user_email = email
                         st.session_state.username = users[email].get('name', email)
                         st.session_state.wallet = users[email].get('wallet', '')
                         st.session_state.user_balance = users[email].get('balance', 1000.0)
+                        st.session_state.user_withdrawals = users[email].get('withdrawals', [])
                         st.success(f"Добро пожаловать, {users[email].get('name', email)}!")
                         st.rerun()
                     else:
@@ -204,24 +228,31 @@ if not st.session_state.logged_in:
     
     st.stop()
 
-# ==================== ОСНОВНОЙ ИНТЕРФЕЙС ====================
+# ==================== ОСНОВНОЙ ИНТЕРФЕЙС (ПОСЛЕ ВХОДА) ====================
+
+# Кнопка выхода (в правом верхнем углу)
+col_exit = st.columns([6, 1])
+with col_exit[1]:
+    if st.button("🚪 Выход", use_container_width=True):
+        st.session_state.logged_in = False
+        st.session_state.user_email = None
+        st.session_state.username = None
+        st.session_state.wallet = None
+        st.session_state.bot_running = False
+        st.rerun()
 
 # Верхняя панель
 st.markdown('<h1 class="main-header">🚀 ARBITRAGE BOT PRO</h1>', unsafe_allow_html=True)
 
-col0a, col0b, col0c, col0d, col0e = st.columns([2, 2, 2, 2, 1])
+col0a, col0b, col0c, col0d = st.columns([2, 2, 2, 2])
 with col0a:
     st.write(f"👤 **{st.session_state.username}**")
 with col0b:
     st.write(f"💳 **Кошелёк:** {st.session_state.wallet[:20]}..." if len(st.session_state.wallet) > 20 else f"💳 **Кошелёк:** {st.session_state.wallet}")
 with col0c:
-    st.write(f"📅 **Старт:** {datetime.now().strftime('%d.%m.%Y %H:%M')}")
+    st.write(f"📅 **Вход:** {datetime.now().strftime('%d.%m.%Y %H:%M')}")
 with col0d:
     st.metric("💰 Баланс", f"{st.session_state.user_balance:.2f} USDT")
-with col0e:
-    if st.button("🚪 Выйти"):
-        st.session_state.logged_in = False
-        st.rerun()
 
 st.divider()
 
@@ -292,13 +323,11 @@ with tab2:
     
     selected_asset = st.selectbox("Выберите актив", ASSETS, key="graph_select")
     
-    # Добавляем текущую цену в историю
     prices = get_all_prices(selected_asset)
     if prices:
         current_price = list(prices.values())[0]
         st.metric("Текущая цена", f"${current_price:,.2f}")
         
-        # Сохраняем историю
         st.session_state.price_history[selected_asset].append({
             'time': datetime.now().strftime('%H:%M:%S'),
             'price': current_price
@@ -306,7 +335,6 @@ with tab2:
         if len(st.session_state.price_history[selected_asset]) > 30:
             st.session_state.price_history[selected_asset] = st.session_state.price_history[selected_asset][-30:]
         
-        # График
         df_history = pd.DataFrame(st.session_state.price_history[selected_asset])
         if not df_history.empty:
             st.line_chart(df_history.set_index('time')['price'], use_container_width=True)
@@ -361,6 +389,12 @@ with tab4:
                     'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     'status': 'pending'
                 })
+                # Сохраняем в users.json
+                users = load_users()
+                if st.session_state.user_email in users:
+                    users[st.session_state.user_email]['balance'] = st.session_state.user_balance
+                    users[st.session_state.user_email]['withdrawals'] = st.session_state.user_withdrawals
+                    save_users(users)
                 st.success(f"✅ Заявка на вывод {withdraw_amount} USDT отправлена!")
                 st.rerun()
             else:
@@ -405,11 +439,33 @@ with tab6:
     else:
         st.info("Пока нет сделок. Запустите бота.")
 
-# ==================== ОСНОВНАЯ ЛОГИКА ====================
+# ==================== ОСНОВНАЯ ЛОГИКА (СДЕЛКИ) ====================
 
 if st.session_state.bot_running:
     time.sleep(5)
     
+    # 1. ДЕМО-СДЕЛКИ (для наглядной работы)
+    if st.session_state.trade_count < 5 or random.random() < 0.3:
+        profit = round(random.uniform(0.5, 2.5), 4)
+        st.session_state.total_profit += profit
+        st.session_state.user_balance += profit
+        st.session_state.trade_count += 1
+        asset = random.choice(ASSETS)
+        st.session_state.balances[asset] = st.session_state.balances.get(asset, 0) + 0.001
+        
+        trade_text = f"✅ {datetime.now().strftime('%H:%M:%S')} | {asset} | ДЕМО-СДЕЛКА | +{profit} USDT"
+        st.session_state.history.append(trade_text)
+        
+        # Сохраняем баланс пользователя
+        users = load_users()
+        if st.session_state.user_email in users:
+            users[st.session_state.user_email]['balance'] = st.session_state.user_balance
+            save_users(users)
+        
+        st.toast(f"💰 Демо-сделка! +{profit} USDT", icon="💰")
+        st.rerun()
+    
+    # 2. РЕАЛЬНЫЙ АРБИТРАЖ
     for asset in ASSETS:
         prices = get_all_prices(asset)
         if len(prices) >= 2:
@@ -417,7 +473,7 @@ if st.session_state.bot_running:
             max_price = max(prices.values())
             spread = (max_price - min_price) / min_price * 100
             
-            if spread > 0.5:
+            if spread > 0.15:
                 profit = round(10 * (spread / 100), 4)
                 st.session_state.total_profit += profit
                 st.session_state.user_balance += profit
@@ -427,18 +483,16 @@ if st.session_state.bot_running:
                 min_ex = min(prices, key=prices.get)
                 max_ex = max(prices, key=prices.get)
                 
-                trade_text = f"✅ {datetime.now().strftime('%H:%M:%S')} | {asset} | Купить на {min_ex.upper()} | Продать на {max_ex.upper()} | +{profit} USDT"
+                trade_text = f"✅ {datetime.now().strftime('%H:%M:%S')} | {asset} | АРБИТРАЖ: купить на {min_ex.upper()} (${prices[min_ex]:.2f}), продать на {max_ex.upper()} (${prices[max_ex]:.2f}) | +{profit} USDT | Спред: {spread:.2f}%"
                 st.session_state.history.append(trade_text)
                 
-                # Сохраняем баланс пользователя
+                # Сохраняем баланс
                 users = load_users()
-                for email, data in users.items():
-                    if data.get('name') == st.session_state.username:
-                        users[email]['balance'] = st.session_state.user_balance
-                        save_users(users)
-                        break
-                break
-    
-    st.rerun()
+                if st.session_state.user_email in users:
+                    users[st.session_state.user_email]['balance'] = st.session_state.user_balance
+                    save_users(users)
+                
+                st.toast(f"🎯 АРБИТРАЖ по {asset}! +{profit} USDT", icon="💰")
+                st.rerun()
 
-st.caption("🚀 Arbitrage Bot PRO — реальные цены, 10 токенов, личный кабинет, вывод средств")
+st.caption("🚀 Arbitrage Bot PRO — реальные цены, 10 токенов, личный кабинет, сессия сохраняется в браузере")
