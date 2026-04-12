@@ -16,15 +16,20 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# Встроенный список токенов (на случай пустого config.json)
+DEFAULT_ASSETS = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "SUI", "HYPE"]
+DEFAULT_TARGETS = {"BTC": 0.5, "ETH": 2.0, "SOL": 50.0, "BNB": 20.0, "XRP": 10000.0, "ADA": 5000.0,
+                   "AVAX": 100.0, "LINK": 300.0, "SUI": 800.0, "HYPE": 400.0}
+
 # Загрузка конфига
 try:
     with open('config.json', 'r', encoding='utf-8') as f:
         config = json.load(f)
 except:
-    config = {"asset_config": [], "target_asset_amount": {}}
+    config = {}
 
-ASSET_CONFIG = config.get('asset_config', [])
-TARGET_ASSET_AMOUNT = config.get('target_asset_amount', {})
+ASSET_CONFIG = config.get('asset_config', [{"asset": a} for a in DEFAULT_ASSETS])
+TARGET_ASSET_AMOUNT = config.get('target_asset_amount', DEFAULT_TARGETS)
 
 # Инициализация sandbox бирж
 @st.cache_resource
@@ -32,14 +37,12 @@ def init_sandbox_exchanges():
     try:
         binance = ccxt.binance({'enableRateLimit': True})
         binance.set_sandbox_mode(True)
-        
         bybit = ccxt.bybit({'enableRateLimit': True})
         bybit.set_sandbox_mode(True)
-        
-        st.success("✅ Sandbox биржи подключены (Binance + Bybit)")
+        st.success("✅ Sandbox биржи подключены: Binance + Bybit")
         return {'binance': binance, 'bybit': bybit}
     except:
-        st.warning("Не удалось подключить sandbox. Используем симуляцию.")
+        st.warning("Sandbox не подключился. Используем симуляцию.")
         return None
 
 exchanges = init_sandbox_exchanges()
@@ -126,7 +129,7 @@ with tab1:
 
 with tab2:
     st.subheader("📈 Японские свечи")
-    selected = st.selectbox("Выберите токен", [a.get('asset', 'BTC') for a in ASSET_CONFIG] or ["BTC"])
+    selected = st.selectbox("Выберите токен", [a.get('asset', 'BTC') for a in ASSET_CONFIG])
     try:
         if exchanges and 'binance' in exchanges:
             ohlcv = exchanges['binance'].fetch_ohlcv(selected + '/USDT', '1h', limit=50)
@@ -146,8 +149,10 @@ with tab3:
     cols = st.columns(5)
     for i, asset in enumerate(ASSET_CONFIG):
         with cols[i % 5]:
-            target = TARGET_ASSET_AMOUNT.get(asset.get('asset'), 0)
-            st.metric(asset.get('asset'), f"Цель: {target}")
+            asset_name = asset.get('asset', 'BTC')
+            target = st.session_state.get(f"target_{asset_name}", TARGET_ASSET_AMOUNT.get(asset_name, 0))
+            new_target = st.number_input(f"Цель {asset_name}", min_value=0.0, value=float(target), step=0.1, key=f"target_{asset_name}")
+            st.metric(asset_name, f"Цель: {new_target}")
 
 with tab4:
     st.subheader("💰 Кошелёк")
@@ -156,14 +161,14 @@ with tab4:
     
     col_in, col_out = st.columns(2)
     with col_in:
-        deposit_amount = st.number_input("Сумма ввода (USDT)", min_value=10.0, step=10.0)
+        deposit_amount = st.number_input("Сумма ввода (USDT)", min_value=10.0, step=10.0, key="deposit")
         if st.button("Внести средства"):
             if deposit_amount > 0:
                 st.session_state.user_balance += deposit_amount
                 st.success(f"Внесено {deposit_amount} USDT!")
     with col_out:
-        withdraw_amount = st.number_input("Сумма вывода (USDT)", min_value=10.0, max_value=float(st.session_state.user_balance), step=10.0)
-        address = st.text_input("Адрес кошелька")
+        withdraw_amount = st.number_input("Сумма вывода (USDT)", min_value=10.0, max_value=float(st.session_state.user_balance), step=10.0, key="withdraw")
+        address = st.text_input("Адрес кошелька", key="withdraw_address")
         if st.button("Вывести средства"):
             if withdraw_amount > 0 and address:
                 st.session_state.user_balance -= withdraw_amount
@@ -176,7 +181,7 @@ with tab5:
     for trade in reversed(st.session_state.history[-20:]):
         st.write(trade)
 
-# ================== СИМУЛЯЦИЯ С SANDBOX ==================
+# ================== СИМУЛЯЦИЯ ==================
 if st.session_state.bot_running:
     time.sleep(2)
     asset = random.choice([a.get('asset', 'BTC') for a in ASSET_CONFIG] or ["BTC"])
@@ -196,4 +201,4 @@ if st.session_state.bot_running:
 
     st.rerun()
 
-st.caption("Веб-версия 3.5 — sandbox биржи + кошелёк с вводом/выводом")
+st.caption("Веб-версия 3.6 — улучшены активы и кошелёк")
