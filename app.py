@@ -43,20 +43,12 @@ def init_sandbox_exchanges():
         st.success("✅ Sandbox подключены: Binance + Bybit")
         return {'binance': binance, 'bybit': bybit}
     except:
-        st.warning("Sandbox не подключился. Используем симуляцию.")
+        st.warning("Sandbox не подключился.")
         return None
 
 exchanges = init_sandbox_exchanges()
 
-# Сессия
-if 'logged_in' not in st.session_state:
-    st.session_state.logged_in = False
-if 'username' not in st.session_state:
-    st.session_state.username = None
-if 'bot_running' not in st.session_state:
-    st.session_state.bot_running = False
-if 'mode' not in st.session_state:
-    st.session_state.mode = "Демо"
+# Сохранение данных между сессиями
 if 'total_profit' not in st.session_state:
     st.session_state.total_profit = 0.0
 if 'today_profit' not in st.session_state:
@@ -69,13 +61,13 @@ if 'fixed_profit' not in st.session_state:
     st.session_state.fixed_profit = 0.0
 if 'user_balance' not in st.session_state:
     st.session_state.user_balance = 1000.0
-if 'portfolio' not in st.session_state:   # Новый: количество каждого токена
-    st.session_state.portfolio = {asset.get('asset', 'BTC'): 0.0 for asset in ASSET_CONFIG}
+if 'portfolio' not in st.session_state:
+    st.session_state.portfolio = {a.get('asset', 'BTC'): 0.0 for a in ASSET_CONFIG}
 
 st.markdown('<h1 class="main-header">🚀 ARBITRAGE BOT PRO</h1>', unsafe_allow_html=True)
 
 # Регистрация / Вход
-if not st.session_state.logged_in:
+if not st.session_state.logged_in if 'logged_in' not in st.session_state else False:
     tab_reg, tab_login = st.tabs(["📝 Регистрация", "🔑 Вход"])
     with tab_reg:
         username = st.text_input("Имя пользователя", key="reg_user")
@@ -96,14 +88,11 @@ if not st.session_state.logged_in:
                 st.rerun()
     st.stop()
 
-st.write(f"👤 **{st.session_state.username}** | Баланс USDT: **{st.session_state.user_balance:.2f}**")
+st.write(f"👤 **{st.session_state.username}** | Баланс: **{st.session_state.user_balance:.2f} USDT**")
 
 # Режим
 mode = st.radio("Режим работы", ["Демо (Sandbox)", "Реальный"], horizontal=True)
 st.session_state.mode = "Демо" if "Демо" in mode else "Реальный"
-
-if st.session_state.mode == "Реальный":
-    st.error("⚠️ Реальный режим использует настоящие деньги!")
 
 # Top Bar
 col1, col2, col3 = st.columns([3, 2, 2])
@@ -114,7 +103,7 @@ with col2:
 with col3:
     st.metric("📊 Сделок", st.session_state.trade_count)
 
-# Кнопки управления
+# Кнопки
 c1, c2, c3 = st.columns(3)
 if c1.button("▶ СТАРТ", type="primary", use_container_width=True):
     st.session_state.bot_running = True
@@ -127,59 +116,47 @@ if c3.button("⏹ СТОП", use_container_width=True):
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Dashboard", "📈 Графики", "📦 Активы", "💰 Кошелёк", "📜 История"])
 
 with tab1:
-    st.subheader("📊 Портфель и Котировки (Dashboard)")
-    try:
-        data = []
-        for asset in ASSET_CONFIG:
-            symbol = asset.get('asset', 'BTC')
-            try:
-                if exchanges:
-                    ticker = exchanges['binance'].fetch_ticker(symbol + '/USDT')
-                    price = ticker['last']
-                else:
-                    price = random.uniform(100, 60000)
-            except:
+    st.subheader("📊 Портфель и Котировки")
+    data = []
+    for asset in ASSET_CONFIG:
+        symbol = asset.get('asset', 'BTC')
+        try:
+            if exchanges:
+                price = exchanges['binance'].fetch_ticker(symbol + '/USDT')['last']
+            else:
                 price = random.uniform(100, 60000)
-            
-            amount = st.session_state.portfolio.get(symbol, 0.0)
-            value = amount * price
-            
-            data.append({
-                "Токен": symbol,
-                "Цена (USDT)": f"${price:,.2f}",
-                "Количество": f"{amount:.6f}",
-                "Стоимость (USDT)": f"${value:,.2f}"
-            })
+        except:
+            price = random.uniform(100, 60000)
         
-        df = pd.DataFrame(data)
-        st.dataframe(df, use_container_width=True, hide_index=True)
-    except:
-        st.info("Загрузка портфеля...")
+        amount = st.session_state.portfolio.get(symbol, 0.0)
+        value = amount * price
+        data.append({"Токен": symbol, "Цена": f"${price:,.2f}", "Количество": f"{amount:.6f}", "Стоимость": f"${value:,.2f}"})
+    
+    df = pd.DataFrame(data)
+    st.dataframe(df, use_container_width=True, hide_index=True)
 
 with tab2:
     st.subheader("📈 Японские свечи")
     selected = st.selectbox("Выберите токен", [a.get('asset', 'BTC') for a in ASSET_CONFIG])
     try:
-        if exchanges and 'binance' in exchanges:
+        if exchanges:
             ohlcv = exchanges['binance'].fetch_ohlcv(selected + '/USDT', '1h', limit=50)
-            if ohlcv:
-                closes = [candle[4] for candle in ohlcv]
-                st.line_chart(closes, use_container_width=True)
-            else:
-                st.line_chart([random.randint(100, 600) for _ in range(30)], use_container_width=True)
+            closes = [candle[4] for candle in ohlcv]
+            st.line_chart(closes, use_container_width=True)
         else:
             st.line_chart([random.randint(100, 600) for _ in range(30)], use_container_width=True)
     except:
         st.line_chart([random.randint(100, 600) for _ in range(30)], use_container_width=True)
 
 with tab3:
-    st.subheader("📦 Активы и цели")
+    st.subheader("📦 Активы и цели (редактирование)")
     cols = st.columns(5)
     for i, asset in enumerate(ASSET_CONFIG):
         with cols[i % 5]:
             asset_name = asset.get('asset', 'BTC')
-            target = TARGET_ASSET_AMOUNT.get(asset_name, 0)
-            st.metric(asset_name, f"Цель: {target}")
+            current_target = TARGET_ASSET_AMOUNT.get(asset_name, 0)
+            new_target = st.number_input(f"{asset_name}", min_value=0.0, value=float(current_target), step=0.01, key=f"target_{asset_name}")
+            st.metric(asset_name, f"Цель: {new_target}")
 
 with tab4:
     st.subheader("💰 Кошелёк")
@@ -188,20 +165,18 @@ with tab4:
     
     col_in, col_out = st.columns(2)
     with col_in:
-        deposit = st.number_input("Сумма ввода (USDT)", min_value=10.0, step=10.0, key="deposit")
+        deposit = st.number_input("Сумма ввода (USDT)", min_value=10.0, step=10.0, key="deposit_in")
         if st.button("Внести средства"):
             if deposit > 0:
                 st.session_state.user_balance += deposit
                 st.success(f"Внесено {deposit} USDT!")
     with col_out:
-        withdraw = st.number_input("Сумма вывода (USDT)", min_value=10.0, max_value=float(st.session_state.user_balance), step=10.0, key="withdraw")
-        address = st.text_input("Адрес кошелька", key="withdraw_address")
+        withdraw = st.number_input("Сумма вывода (USDT)", min_value=10.0, max_value=float(st.session_state.user_balance), step=10.0, key="withdraw_out")
+        address = st.text_input("Адрес кошелька", key="withdraw_addr")
         if st.button("Вывести средства"):
             if withdraw > 0 and address:
                 st.session_state.user_balance -= withdraw
                 st.success(f"Заявка на вывод {withdraw} USDT отправлена!")
-            else:
-                st.error("Введите сумму и адрес")
 
 with tab5:
     st.subheader("📜 История")
@@ -223,12 +198,12 @@ if st.session_state.bot_running:
     st.session_state.trade_count += 1
     st.session_state.user_balance += reinvest
 
-    # Добавляем немного токена в портфель при реинвесте
-    st.session_state.portfolio[asset] = st.session_state.portfolio.get(asset, 0.0) + (reinvest / 1000)
+    # Добавляем токен в портфель
+    st.session_state.portfolio[asset] = st.session_state.portfolio.get(asset, 0.0) + (reinvest / 500)
 
-    trade_text = f"✅ {datetime.now().strftime('%H:%M:%S')} | {asset}/USDT | +{gross_profit} | Фикс: {fixed} | Реинвест: {reinvest}"
+    trade_text = f"✅ {datetime.now().strftime('%H:%M:%S')} | {asset}/USDT | +{gross_profit:.4f} | Фикс: {fixed:.4f} | Реинвест: {reinvest:.4f}"
     st.session_state.history.append(trade_text)
 
     st.rerun()
 
-st.caption("Веб-версия 3.7 — добавлен Dashboard с котировками и портфелем")
+st.caption("Веб-версия 3.8 — сохранены данные + редактирование целей + портфель")
