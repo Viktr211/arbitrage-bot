@@ -54,36 +54,38 @@ def save_user_data():
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
-# ====================== SANDBOX БИРЖИ ======================
+# ====================== ПОДКЛЮЧЕНИЕ К РЕАЛЬНЫМ БИРЖАМ (ПУБЛИЧНЫЕ ДАННЫЕ) ======================
 @st.cache_resource
-def init_sandbox_exchanges():
+def init_exchanges():
+    exchanges = {}
     try:
+        # Binance через публичный API (без ключей)
         binance = ccxt.binance({
             'enableRateLimit': True,
-            'options': {
-                'defaultType': 'spot'
-            }
+            'options': {'defaultType': 'spot'}
         })
-        binance.set_sandbox_mode(True)
-        
-        bybit = ccxt.bybit({
-            'enableRateLimit': True,
-            'options': {
-                'defaultType': 'spot'
-            }
-        })
-        bybit.set_sandbox_mode(True)
-        
-        st.success("✅ Реальные демо-биржи подключены: Binance Sandbox + Bybit Sandbox")
-        return {'binance': binance, 'bybit': bybit}
+        exchanges['binance'] = binance
+        st.success("✅ Binance (реальные данные) — подключена")
     except Exception as e:
-        st.warning(f"⚠️ Sandbox не подключился: {str(e)[:100]}")
-        return None
+        st.warning(f"⚠️ Binance не подключена: {str(e)[:50]}")
+    
+    try:
+        # KuCoin как резерв
+        kucoin = ccxt.kucoin({
+            'enableRateLimit': True,
+            'options': {'defaultType': 'spot'}
+        })
+        exchanges['kucoin'] = kucoin
+        st.success("✅ KuCoin (реальные данные) — подключена")
+    except Exception as e:
+        st.warning(f"⚠️ KuCoin не подключена: {str(e)[:50]}")
+    
+    return exchanges if exchanges else None
 
-exchanges = init_sandbox_exchanges()
+exchanges = init_exchanges()
 
 # ====================== ФУНКЦИЯ ДЛЯ ЯПОНСКИХ СВЕЧЕЙ ======================
-def create_candlestick_chart(ohlcv_data, symbol):
+def create_candlestick_chart(ohlcv_data, symbol, source):
     """Создаёт японские свечи из данных OHLCV"""
     if not ohlcv_data or len(ohlcv_data) == 0:
         return None
@@ -101,7 +103,7 @@ def create_candlestick_chart(ohlcv_data, symbol):
     )])
     
     fig.update_layout(
-        title=f"{symbol}/USDT — Японские свечи (1 час)",
+        title=f"{symbol}/USDT — Японские свечи (1 час) — {source}",
         xaxis_title="Время",
         yaxis_title="Цена (USDT)",
         template="plotly_dark",
@@ -115,6 +117,44 @@ def create_candlestick_chart(ohlcv_data, symbol):
     fig.update_yaxes(gridcolor="rgba(100,100,150,0.3)")
     
     return fig
+
+def get_candles(symbol):
+    """Получает свечи с доступной биржи"""
+    if not exchanges:
+        return None, None
+    
+    # Пробуем Binance
+    if 'binance' in exchanges:
+        try:
+            ohlcv = exchanges['binance'].fetch_ohlcv(f"{symbol}/USDT", '1h', limit=60)
+            if ohlcv and len(ohlcv) > 0:
+                return ohlcv, "Binance (реальные данные)"
+        except Exception as e:
+            st.warning(f"Binance: {str(e)[:80]}")
+    
+    # Пробуем KuCoin
+    if 'kucoin' in exchanges:
+        try:
+            ohlcv = exchanges['kucoin'].fetch_ohlcv(f"{symbol}/USDT", '1h', limit=60)
+            if ohlcv and len(ohlcv) > 0:
+                return ohlcv, "KuCoin (реальные данные)"
+        except Exception as e:
+            st.warning(f"KuCoin: {str(e)[:80]}")
+    
+    return None, None
+
+def generate_simulated_candles(symbol):
+    """Генерирует симулированные свечи для демонстрации"""
+    simulated_data = []
+    base_price = random.uniform(100, 50000)
+    for i in range(60):
+        open_price = base_price + random.uniform(-500, 500)
+        close_price = open_price + random.uniform(-300, 300)
+        high_price = max(open_price, close_price) + random.uniform(0, 200)
+        low_price = min(open_price, close_price) - random.uniform(0, 200)
+        simulated_data.append([i, open_price, high_price, low_price, close_price, 0])
+        base_price = close_price
+    return simulated_data, "Симуляция (нет доступа к биржам)"
 
 # ====================== СЕССИЯ ======================
 for key, default in {
@@ -168,11 +208,8 @@ if not st.session_state.logged_in:
 st.write(f"👤 **{st.session_state.username}** | Баланс: **{st.session_state.user_balance:.2f} USDT**")
 
 # Режим
-mode = st.radio("Режим работы", ["Демо (Sandbox)", "Реальный"], horizontal=True)
+mode = st.radio("Режим работы", ["Демо (симуляция)", "Реальный (данные с бирж)"], horizontal=True)
 st.session_state.mode = "Демо" if "Демо" in mode else "Реальный"
-
-if st.session_state.mode == "Реальный":
-    st.error("⚠️ Реальный режим использует настоящие деньги!")
 
 # Top Bar
 col1, col2, col3 = st.columns([3, 2, 2])
@@ -201,17 +238,26 @@ with tab1:
     data = []
     for asset in ASSET_CONFIG:
         symbol = asset['asset']
-        try:
-            if exchanges and 'binance' in exchanges:
-                ticker = exchanges['binance'].fetch_ticker(symbol + '/USDT')
-                price = ticker['last']
-                source = "✅ Binance Sandbox"
-            else:
-                price = random.uniform(100, 60000)
-                source = "Симуляция"
-        except:
+        price = 0.0
+        source = "Нет данных"
+        
+        if exchanges and st.session_state.mode == "Реальный (данные с бирж)":
+            for ex_name, ex in exchanges.items():
+                try:
+                    ticker = ex.fetch_ticker(f"{symbol}/USDT")
+                    price = ticker['last']
+                    source = f"{ex_name} (реал.)"
+                    break
+                except:
+                    continue
+        else:
             price = random.uniform(100, 60000)
-            source = "Симуляция"
+            source = "Демо-симуляция"
+        
+        if price == 0:
+            price = random.uniform(100, 60000)
+            source = "Симуляция (ошибка биржи)"
+        
         amount = st.session_state.portfolio.get(symbol, 0.0)
         value = amount * price
         data.append({"Токен": symbol, "Цена": f"${price:,.2f}", "Количество": f"{amount:.6f}", "Стоимость": f"${value:,.2f}", "Источник": source})
@@ -219,69 +265,32 @@ with tab1:
 
 # ====================== TAB 2: ЯПОНСКИЕ СВЕЧИ ======================
 with tab2:
-    st.subheader("📈 Японские свечи (реальные данные из Binance Sandbox)")
+    st.subheader("📈 Японские свечи")
     selected = st.selectbox("Выберите токен", [a['asset'] for a in ASSET_CONFIG])
     
     if st.button("🔄 Обновить график", use_container_width=True):
         st.cache_data.clear()
     
-    try:
-        if exchanges and 'binance' in exchanges:
-            ohlcv = exchanges['binance'].fetch_ohlcv(selected + '/USDT', '1h', limit=60)
-            if ohlcv and len(ohlcv) > 0:
-                fig = create_candlestick_chart(ohlcv, selected)
-                if fig:
-                    st.plotly_chart(fig, use_container_width=True)
-                    st.caption(f"✅ Реальные японские свечи {selected}/USDT из Binance Sandbox (последние 60 часов)")
-                else:
-                    st.warning("Не удалось построить график")
-            else:
-                st.warning("Нет данных от биржи, показываем симуляцию")
-                # Симуляция свечей
-                simulated_data = []
-                base_price = random.uniform(100, 50000)
-                for i in range(60):
-                    open_price = base_price + random.uniform(-500, 500)
-                    close_price = open_price + random.uniform(-300, 300)
-                    high_price = max(open_price, close_price) + random.uniform(0, 200)
-                    low_price = min(open_price, close_price) - random.uniform(0, 200)
-                    simulated_data.append([i, open_price, high_price, low_price, close_price, 0])
-                    base_price = close_price
-                fig = create_candlestick_chart(simulated_data, selected)
-                if fig:
-                    st.plotly_chart(fig, use_container_width=True)
-                    st.caption("⚠️ Симуляция свечей (нет данных от биржи)")
-        else:
-            st.warning("Sandbox не подключён, показываем симуляцию")
-            simulated_data = []
-            base_price = random.uniform(100, 50000)
-            for i in range(60):
-                open_price = base_price + random.uniform(-500, 500)
-                close_price = open_price + random.uniform(-300, 300)
-                high_price = max(open_price, close_price) + random.uniform(0, 200)
-                low_price = min(open_price, close_price) - random.uniform(0, 200)
-                simulated_data.append([i, open_price, high_price, low_price, close_price, 0])
-                base_price = close_price
-            fig = create_candlestick_chart(simulated_data, selected)
+    if st.session_state.mode == "Реальный (данные с бирж)":
+        ohlcv, source = get_candles(selected)
+        if ohlcv:
+            fig = create_candlestick_chart(ohlcv, selected, source)
             if fig:
                 st.plotly_chart(fig, use_container_width=True)
-                st.caption("⚠️ Симуляция свечей (Sandbox не доступен)")
-    except Exception as e:
-        st.error(f"Ошибка при получении свечей: {str(e)[:100]}")
-        # Симуляция при ошибке
-        simulated_data = []
-        base_price = random.uniform(100, 50000)
-        for i in range(60):
-            open_price = base_price + random.uniform(-500, 500)
-            close_price = open_price + random.uniform(-300, 300)
-            high_price = max(open_price, close_price) + random.uniform(0, 200)
-            low_price = min(open_price, close_price) - random.uniform(0, 200)
-            simulated_data.append([i, open_price, high_price, low_price, close_price, 0])
-            base_price = close_price
-        fig = create_candlestick_chart(simulated_data, selected)
+            else:
+                st.warning("Не удалось построить график")
+        else:
+            st.warning("Не удалось получить данные с бирж. Показываем симуляцию.")
+            ohlcv_sim, source_sim = generate_simulated_candles(selected)
+            fig = create_candlestick_chart(ohlcv_sim, selected, source_sim)
+            if fig:
+                st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Демо-режим: симуляция свечей")
+        ohlcv_sim, source_sim = generate_simulated_candles(selected)
+        fig = create_candlestick_chart(ohlcv_sim, selected, source_sim)
         if fig:
             st.plotly_chart(fig, use_container_width=True)
-            st.caption("⚠️ Симуляция свечей (ошибка подключения к бирже)")
 
 # ====================== TAB 3: АКТИВЫ ======================
 with tab3:
@@ -335,16 +344,7 @@ with tab5:
 if st.session_state.bot_running:
     time.sleep(2)
     asset = random.choice([a['asset'] for a in ASSET_CONFIG])
-    
-    try:
-        if exchanges and 'binance' in exchanges:
-            ticker = exchanges['binance'].fetch_ticker(asset + '/USDT')
-            price = ticker['last']
-            gross_profit = round(random.uniform(0.3, 1.5), 4)
-        else:
-            gross_profit = round(random.uniform(0.8, 5.5), 4)
-    except:
-        gross_profit = round(random.uniform(0.8, 5.5), 4)
+    gross_profit = round(random.uniform(0.3, 1.5), 4)
 
     fixed = round(gross_profit * 0.5, 4)
     reinvest = round(gross_profit * 0.5, 4)
@@ -363,4 +363,4 @@ if st.session_state.bot_running:
     st.toast(f"🎯 Сделка по {asset}! +{gross_profit} USDT", icon="💰")
     st.rerun()
 
-st.caption("🚀 Arbitrage Bot PRO — реальные японские свечи из Binance Sandbox")
+st.caption("🚀 Arbitrage Bot PRO — реальные данные с бирж (Binance/KuCoin) или симуляция при блокировке")
