@@ -44,26 +44,30 @@ def save_user_data():
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
-# Встроенные токены
+# Токены
 DEFAULT_ASSETS = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "SUI", "HYPE"]
-DEFAULT_TARGETS = {"BTC": 0.5, "ETH": 2.0, "SOL": 50.0, "BNB": 20.0, "XRP": 10000.0, "ADA": 5000.0,
-                   "AVAX": 100.0, "LINK": 300.0, "SUI": 800.0, "HYPE": 400.0}
-
 ASSET_CONFIG = [{"asset": a} for a in DEFAULT_ASSETS]
-TARGET_ASSET_AMOUNT = DEFAULT_TARGETS
 
-# Sandbox биржи
+# Инициализация Sandbox бирж
 @st.cache_resource
 def init_sandbox_exchanges():
     try:
-        binance = ccxt.binance({'enableRateLimit': True})
+        binance = ccxt.binance({
+            'enableRateLimit': True,
+            'options': {'defaultType': 'spot'}
+        })
         binance.set_sandbox_mode(True)
-        bybit = ccxt.bybit({'enableRateLimit': True})
+
+        bybit = ccxt.bybit({
+            'enableRateLimit': True,
+            'options': {'defaultType': 'spot'}
+        })
         bybit.set_sandbox_mode(True)
-        st.success("✅ Sandbox Binance + Bybit подключены")
+
+        st.success("✅ Реальные демо-биржи подключены: Binance Sandbox + Bybit Sandbox")
         return {'binance': binance, 'bybit': bybit}
-    except:
-        st.warning("Sandbox не подключился")
+    except Exception as e:
+        st.error(f"Ошибка подключения к sandbox: {str(e)}")
         return None
 
 exchanges = init_sandbox_exchanges()
@@ -85,8 +89,8 @@ for key, default in {
     if key not in st.session_state:
         st.session_state[key] = default
 
-# Загрузка сохранённых данных при старте
-if st.session_state.user_balance == 1000.0 and os.path.exists(DATA_FILE):
+# Загрузка сохранённых данных
+if os.path.exists(DATA_FILE):
     data = load_user_data()
     for key in ['total_profit', 'today_profit', 'trade_count', 'fixed_profit', 'user_balance', 'history', 'portfolio']:
         if key in data:
@@ -94,7 +98,7 @@ if st.session_state.user_balance == 1000.0 and os.path.exists(DATA_FILE):
 
 st.markdown('<h1 class="main-header">🚀 ARBITRAGE BOT PRO</h1>', unsafe_allow_html=True)
 
-# Регистрация и Вход
+# Регистрация / Вход
 if not st.session_state.logged_in:
     tab_reg, tab_login = st.tabs(["📝 Регистрация", "🔑 Вход"])
     with tab_reg:
@@ -123,9 +127,6 @@ st.write(f"👤 **{st.session_state.username}** | Баланс: **{st.session_st
 mode = st.radio("Режим работы", ["Демо (Sandbox)", "Реальный"], horizontal=True)
 st.session_state.mode = "Демо" if "Демо" in mode else "Реальный"
 
-if st.session_state.mode == "Реальный":
-    st.error("⚠️ Реальный режим использует настоящие деньги!")
-
 # Top Bar
 col1, col2, col3 = st.columns([3, 2, 2])
 with col1:
@@ -135,7 +136,7 @@ with col2:
 with col3:
     st.metric("📊 Сделок", st.session_state.trade_count)
 
-# Кнопки
+# Кнопки управления
 c1, c2, c3 = st.columns(3)
 if c1.button("▶ СТАРТ", type="primary", use_container_width=True):
     st.session_state.bot_running = True
@@ -153,26 +154,41 @@ with tab1:
     for asset in ASSET_CONFIG:
         symbol = asset['asset']
         try:
-            price = exchanges['binance'].fetch_ticker(symbol + '/USDT')['last'] if exchanges else random.uniform(100, 60000)
+            if exchanges:
+                ticker = exchanges['binance'].fetch_ticker(symbol + '/USDT')
+                price = ticker['last']
+            else:
+                price = random.uniform(100, 60000)
         except:
             price = random.uniform(100, 60000)
+        
         amount = st.session_state.portfolio.get(symbol, 0.0)
         value = amount * price
-        data.append({"Токен": symbol, "Цена": f"${price:,.2f}", "Количество": f"{amount:.6f}", "Стоимость": f"${value:,.2f}"})
+        data.append({
+            "Токен": symbol,
+            "Цена (USDT)": f"${price:,.2f}",
+            "Количество": f"{amount:.6f}",
+            "Стоимость (USDT)": f"${value:,.2f}"
+        })
     st.dataframe(pd.DataFrame(data), use_container_width=True, hide_index=True)
 
 with tab2:
-    st.subheader("📈 Японские свечи")
+    st.subheader("📈 Японские свечи (реальные из Sandbox)")
     selected = st.selectbox("Выберите токен", [a['asset'] for a in ASSET_CONFIG])
     try:
-        if exchanges:
-            ohlcv = exchanges['binance'].fetch_ohlcv(selected + '/USDT', '1h', limit=50)
-            closes = [c[4] for c in ohlcv]
-            st.line_chart(closes, use_container_width=True)
+        if exchanges and 'binance' in exchanges:
+            ohlcv = exchanges['binance'].fetch_ohlcv(selected + '/USDT', '1h', limit=60)
+            if ohlcv:
+                df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                st.line_chart(df['close'], use_container_width=True)
+                st.caption(f"Реальные 1-часовые свечи {selected}/USDT из Binance Sandbox")
+            else:
+                st.warning("Нет данных свечей")
         else:
             st.line_chart([random.randint(100, 600) for _ in range(30)], use_container_width=True)
-    except:
+    except Exception as e:
         st.line_chart([random.randint(100, 600) for _ in range(30)], use_container_width=True)
+        st.caption("Ошибка получения свечей → используется симуляция")
 
 with tab3:
     st.subheader("📦 Активы и цели (редактирование)")
@@ -180,13 +196,13 @@ with tab3:
     for i, asset in enumerate(ASSET_CONFIG):
         with cols[i % 5]:
             name = asset['asset']
-            current = TARGET_ASSET_AMOUNT.get(name, 0)
+            current = DEFAULT_TARGETS.get(name, 0)
             new_target = st.number_input(f"Цель {name}", min_value=0.0, value=float(current), step=0.01, key=f"target_{name}")
             st.metric(name, f"Цель: {new_target}")
 
 with tab4:
     st.subheader("💰 Кошелёк")
-    st.metric("Общий баланс", f"{st.session_state.user_balance:.2f} USDT")
+    st.metric("Общий баланс USDT", f"{st.session_state.user_balance:.2f}")
     st.metric("Сегодня заработано", f"{st.session_state.today_profit:.2f} USDT")
     
     col_in, col_out = st.columns(2)
@@ -234,4 +250,4 @@ if st.session_state.bot_running:
     save_user_data()
     st.rerun()
 
-st.caption("Веб-версия 4.1 — данные сохраняются + исправлены ошибки")
+st.caption("Веб-версия 4.2 — реальные свечи + sandbox биржи + сохранение данных")
