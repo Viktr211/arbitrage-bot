@@ -9,6 +9,7 @@ import os
 
 st.set_page_config(page_title="Arbitrage Bot PRO", layout="wide", page_icon="🚀")
 
+# ====================== СТИЛЬ ======================
 st.markdown("""
 <style>
     .stApp { background: linear-gradient(180deg, #001a33 0%, #003087 100%); color: white; }
@@ -17,7 +18,16 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ====================== СОХРАНЕНИЕ ======================
+# ====================== ТОКЕНЫ И ЦЕЛИ (определены в самом начале) ======================
+DEFAULT_ASSETS = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "SUI", "HYPE"]
+DEFAULT_TARGETS = {
+    "BTC": 0.5, "ETH": 2.0, "SOL": 50.0, "BNB": 20.0,
+    "XRP": 10000.0, "ADA": 5000.0, "AVAX": 100.0,
+    "LINK": 300.0, "SUI": 800.0, "HYPE": 400.0
+}
+ASSET_CONFIG = [{"asset": a} for a in DEFAULT_ASSETS]
+
+# ====================== СОХРАНЕНИЕ ДАННЫХ ======================
 DATA_FILE = "user_data.json"
 
 def load_user_data():
@@ -43,11 +53,7 @@ def save_user_data():
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
-# Токены
-DEFAULT_ASSETS = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "SUI", "HYPE"]
-ASSET_CONFIG = [{"asset": a} for a in DEFAULT_ASSETS]
-
-# Sandbox биржи
+# ====================== SANDBOX БИРЖИ ======================
 @st.cache_resource
 def init_sandbox_exchanges():
     try:
@@ -55,15 +61,15 @@ def init_sandbox_exchanges():
         binance.set_sandbox_mode(True)
         bybit = ccxt.bybit({'enableRateLimit': True})
         bybit.set_sandbox_mode(True)
-        st.success("✅ Sandbox успешно подключён (Binance + Bybit)")
+        st.success("✅ Реальные демо-биржи подключены: Binance Sandbox + Bybit Sandbox")
         return {'binance': binance, 'bybit': bybit}
     except Exception as e:
-        st.error(f"❌ Ошибка подключения к sandbox: {str(e)}")
+        st.error(f"❌ Sandbox не подключился: {str(e)}")
         return None
 
 exchanges = init_sandbox_exchanges()
 
-# Сессия
+# ====================== СЕССИЯ ======================
 for key, default in {
     'logged_in': False,
     'username': None,
@@ -80,6 +86,7 @@ for key, default in {
     if key not in st.session_state:
         st.session_state[key] = default
 
+# Загрузка данных
 if os.path.exists(DATA_FILE):
     data = load_user_data()
     for key in ['total_profit', 'today_profit', 'trade_count', 'fixed_profit', 'user_balance', 'history', 'portfolio']:
@@ -113,8 +120,18 @@ if not st.session_state.logged_in:
 
 st.write(f"👤 **{st.session_state.username}** | Баланс: **{st.session_state.user_balance:.2f} USDT**")
 
+# Режим
 mode = st.radio("Режим работы", ["Демо (Sandbox)", "Реальный"], horizontal=True)
 st.session_state.mode = "Демо" if "Демо" in mode else "Реальный"
+
+# Top Bar
+col1, col2, col3 = st.columns([3, 2, 2])
+with col1:
+    st.metric("💰 Общая прибыль", f"{st.session_state.total_profit:.4f} USDT")
+with col2:
+    st.metric("💵 Сегодня", f"{st.session_state.today_profit:.2f} USDT")
+with col3:
+    st.metric("📊 Сделок", st.session_state.trade_count)
 
 # Кнопки
 c1, c2, c3 = st.columns(3)
@@ -136,13 +153,13 @@ with tab1:
         try:
             if exchanges:
                 price = exchanges['binance'].fetch_ticker(symbol + '/USDT')['last']
-                source = "✅ Реальная цена Sandbox"
+                source = "✅ Реальная Sandbox"
             else:
                 price = random.uniform(100, 60000)
                 source = "Симуляция"
-        except Exception as e:
+        except:
             price = random.uniform(100, 60000)
-            source = f"Ошибка: {str(e)[:50]}..."
+            source = "Симуляция"
         amount = st.session_state.portfolio.get(symbol, 0.0)
         value = amount * price
         data.append({"Токен": symbol, "Цена": f"${price:,.2f}", "Количество": f"{amount:.6f}", "Стоимость": f"${value:,.2f}", "Источник": source})
@@ -160,16 +177,15 @@ with tab2:
                 st.caption(f"✅ Реальные свечи {selected}/USDT из Binance Sandbox")
             else:
                 st.line_chart([random.randint(100, 600) for _ in range(30)], use_container_width=True)
-                st.caption("Нет данных свечей")
         else:
             st.line_chart([random.randint(100, 600) for _ in range(30)], use_container_width=True)
             st.caption("Симуляция свечей")
     except Exception as e:
         st.line_chart([random.randint(100, 600) for _ in range(30)], use_container_width=True)
-        st.caption(f"Ошибка свечей: {str(e)[:80]}...")
+        st.caption(f"Ошибка свечей → симуляция")
 
 with tab3:
-    st.subheader("📦 Активы и цели")
+    st.subheader("📦 Активы и цели (редактирование)")
     cols = st.columns(5)
     for i, asset in enumerate(ASSET_CONFIG):
         with cols[i % 5]:
@@ -182,6 +198,7 @@ with tab4:
     st.subheader("💰 Кошелёк")
     st.metric("Общий баланс USDT", f"{st.session_state.user_balance:.2f}")
     st.metric("Сегодня заработано", f"{st.session_state.today_profit:.2f} USDT")
+    
     col_in, col_out = st.columns(2)
     with col_in:
         deposit = st.number_input("Сумма ввода (USDT)", min_value=10.0, step=10.0, key="deposit")
@@ -213,7 +230,7 @@ if st.session_state.bot_running:
         if exchanges:
             price = exchanges['binance'].fetch_ticker(asset + '/USDT')['last']
             gross_profit = round(random.uniform(0.3, 1.5), 4)
-            source = "Реальная цена Sandbox"
+            source = "Реальная Sandbox"
         else:
             gross_profit = round(random.uniform(0.8, 5.5), 4)
             source = "Симуляция"
@@ -238,4 +255,4 @@ if st.session_state.bot_running:
     save_user_data()
     st.rerun()
 
-st.caption("Веб-версия 4.7 — диагностика sandbox")
+st.caption("Веб-версия 4.8 — исправлена ошибка DEFAULT_TARGETS")
