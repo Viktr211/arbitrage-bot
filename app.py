@@ -2,7 +2,7 @@ import streamlit as st
 import time
 import random
 import json
-from datetime import datetime, date
+from datetime import datetime
 
 st.set_page_config(page_title="Arbitrage Bot PRO", layout="wide", page_icon="🚀")
 
@@ -55,23 +55,23 @@ if not st.session_state.logged_in:
 
     with tab_reg:
         st.subheader("Регистрация")
-        username = st.text_input("Имя пользователя")
-        email = st.text_input("Email")
-        password = st.text_input("Пароль", type="password")
-        if st.button("Зарегистрироваться"):
+        username = st.text_input("Имя пользователя", key="reg_username")
+        email = st.text_input("Email", key="reg_email")
+        password = st.text_input("Пароль", type="password", key="reg_password")
+        if st.button("Зарегистрироваться", use_container_width=True):
             if username and email and password:
                 st.session_state.logged_in = True
                 st.session_state.username = username
-                st.success("Регистрация успешна!")
+                st.success("Регистрация успешна! Теперь войдите.")
                 st.rerun()
             else:
                 st.error("Заполните все поля")
 
     with tab_login:
         st.subheader("Вход")
-        email = st.text_input("Email")
-        password = st.text_input("Пароль", type="password")
-        if st.button("Войти"):
+        email = st.text_input("Email", key="login_email")
+        password = st.text_input("Пароль", type="password", key="login_password")
+        if st.button("Войти", use_container_width=True):
             if email and password:
                 st.session_state.logged_in = True
                 st.session_state.username = email.split('@')[0]
@@ -120,10 +120,9 @@ with tab1:
     st.write(f"**Режим:** {st.session_state.mode}")
 
 with tab2:
-    st.subheader("📈 Японские свечи")
-    selected = st.selectbox("Выберите токен", [a.get('asset', 'BTC') for a in ASSET_CONFIG])
-    # Симуляция японских свечей
-    st.warning("Реальные свечи будут добавлены в следующей версии")
+    st.subheader("📈 Графики")
+    selected = st.selectbox("Выберите токен", [a.get('asset', 'BTC') for a in ASSET_CONFIG] or ["BTC"])
+    st.line_chart([random.randint(100, 600) for _ in range(30)], use_container_width=True)
 
 with tab3:
     st.subheader("📦 Активы и цели")
@@ -138,7 +137,7 @@ with tab4:
     st.metric("Общий баланс", f"{st.session_state.user_balance:.2f} USDT")
     st.metric("Сегодня заработано", f"{st.session_state.today_profit:.2f} USDT")
     amount = st.number_input("Сумма вывода (USDT)", min_value=10.0, max_value=float(st.session_state.user_balance))
-    address = st.text_input("Адрес кошелька для вывода")
+    address = st.text_input("Адрес кошелька")
     if st.button("Вывести средства"):
         if amount > 0 and address:
             st.session_state.user_balance -= amount
@@ -153,8 +152,11 @@ with tab5:
 
 # ================== СИМУЛЯЦИЯ ==================
 if st.session_state.bot_running:
-    time.sleep(2)
-    asset = random.choice([a.get('asset', 'BTC') for a in ASSET_CONFIG] or ["BTC"])
+    time.sleep(1.8)
+    asset_list = [a.get('asset', 'BTC') for a in ASSET_CONFIG]
+    if not asset_list:
+        asset_list = ["BTC"]
+    asset = random.choice(asset_list)
     gross_profit = round(random.uniform(0.8, 5.5), 4)
 
     fixed = round(gross_profit * 0.5, 4)
@@ -171,4 +173,4 @@ if st.session_state.bot_running:
 
     st.rerun()
 
-st.caption("Веб-версия 3.0 — добавлен кошелёк и улучшена структура")
+st.caption("Веб-версия 3.1 — исправлены дубликаты ключей")
