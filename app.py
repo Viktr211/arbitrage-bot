@@ -4,6 +4,7 @@ import random
 import json
 import ccxt
 import pandas as pd
+import plotly.graph_objects as go
 from datetime import datetime
 import os
 
@@ -18,7 +19,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ====================== ТОКЕНЫ И ЦЕЛИ (определены в самом начале) ======================
+# ====================== ТОКЕНЫ И ЦЕЛИ ======================
 DEFAULT_ASSETS = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "SUI", "HYPE"]
 DEFAULT_TARGETS = {
     "BTC": 0.5, "ETH": 2.0, "SOL": 50.0, "BNB": 20.0,
@@ -57,17 +58,63 @@ def save_user_data():
 @st.cache_resource
 def init_sandbox_exchanges():
     try:
-        binance = ccxt.binance({'enableRateLimit': True})
+        binance = ccxt.binance({
+            'enableRateLimit': True,
+            'options': {
+                'defaultType': 'spot'
+            }
+        })
         binance.set_sandbox_mode(True)
-        bybit = ccxt.bybit({'enableRateLimit': True})
+        
+        bybit = ccxt.bybit({
+            'enableRateLimit': True,
+            'options': {
+                'defaultType': 'spot'
+            }
+        })
         bybit.set_sandbox_mode(True)
+        
         st.success("✅ Реальные демо-биржи подключены: Binance Sandbox + Bybit Sandbox")
         return {'binance': binance, 'bybit': bybit}
     except Exception as e:
-        st.error(f"❌ Sandbox не подключился: {str(e)}")
+        st.warning(f"⚠️ Sandbox не подключился: {str(e)[:100]}")
         return None
 
 exchanges = init_sandbox_exchanges()
+
+# ====================== ФУНКЦИЯ ДЛЯ ЯПОНСКИХ СВЕЧЕЙ ======================
+def create_candlestick_chart(ohlcv_data, symbol):
+    """Создаёт японские свечи из данных OHLCV"""
+    if not ohlcv_data or len(ohlcv_data) == 0:
+        return None
+    
+    df = pd.DataFrame(ohlcv_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    
+    fig = go.Figure(data=[go.Candlestick(
+        x=df['timestamp'],
+        open=df['open'],
+        high=df['high'],
+        low=df['low'],
+        close=df['close'],
+        name='Японские свечи'
+    )])
+    
+    fig.update_layout(
+        title=f"{symbol}/USDT — Японские свечи (1 час)",
+        xaxis_title="Время",
+        yaxis_title="Цена (USDT)",
+        template="plotly_dark",
+        height=500,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(20,20,50,0.5)",
+        font=dict(color="white")
+    )
+    
+    fig.update_xaxes(gridcolor="rgba(100,100,150,0.3)")
+    fig.update_yaxes(gridcolor="rgba(100,100,150,0.3)")
+    
+    return fig
 
 # ====================== СЕССИЯ ======================
 for key, default in {
@@ -146,17 +193,19 @@ if c3.button("⏹ СТОП", use_container_width=True):
     st.session_state.bot_running = False
 
 # Вкладки
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Dashboard", "📈 Графики", "📦 Активы", "💰 Кошелёк", "📜 История"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Dashboard", "📈 Японские свечи", "📦 Активы", "💰 Кошелёк", "📜 История"])
 
+# ====================== TAB 1: DASHBOARD ======================
 with tab1:
     st.subheader("📊 Портфель и Котировки")
     data = []
     for asset in ASSET_CONFIG:
         symbol = asset['asset']
         try:
-            if exchanges:
-                price = exchanges['binance'].fetch_ticker(symbol + '/USDT')['last']
-                source = "✅ Реальная Sandbox"
+            if exchanges and 'binance' in exchanges:
+                ticker = exchanges['binance'].fetch_ticker(symbol + '/USDT')
+                price = ticker['last']
+                source = "✅ Binance Sandbox"
             else:
                 price = random.uniform(100, 60000)
                 source = "Симуляция"
@@ -168,25 +217,73 @@ with tab1:
         data.append({"Токен": symbol, "Цена": f"${price:,.2f}", "Количество": f"{amount:.6f}", "Стоимость": f"${value:,.2f}", "Источник": source})
     st.dataframe(pd.DataFrame(data), use_container_width=True, hide_index=True)
 
+# ====================== TAB 2: ЯПОНСКИЕ СВЕЧИ ======================
 with tab2:
-    st.subheader("📈 Японские свечи")
+    st.subheader("📈 Японские свечи (реальные данные из Binance Sandbox)")
     selected = st.selectbox("Выберите токен", [a['asset'] for a in ASSET_CONFIG])
+    
+    if st.button("🔄 Обновить график", use_container_width=True):
+        st.cache_data.clear()
+    
     try:
         if exchanges and 'binance' in exchanges:
             ohlcv = exchanges['binance'].fetch_ohlcv(selected + '/USDT', '1h', limit=60)
-            if ohlcv:
-                closes = [candle[4] for candle in ohlcv]
-                st.line_chart(closes, use_container_width=True)
-                st.caption(f"✅ Реальные свечи {selected}/USDT из Binance Sandbox")
+            if ohlcv and len(ohlcv) > 0:
+                fig = create_candlestick_chart(ohlcv, selected)
+                if fig:
+                    st.plotly_chart(fig, use_container_width=True)
+                    st.caption(f"✅ Реальные японские свечи {selected}/USDT из Binance Sandbox (последние 60 часов)")
+                else:
+                    st.warning("Не удалось построить график")
             else:
-                st.line_chart([random.randint(100, 600) for _ in range(30)], use_container_width=True)
+                st.warning("Нет данных от биржи, показываем симуляцию")
+                # Симуляция свечей
+                simulated_data = []
+                base_price = random.uniform(100, 50000)
+                for i in range(60):
+                    open_price = base_price + random.uniform(-500, 500)
+                    close_price = open_price + random.uniform(-300, 300)
+                    high_price = max(open_price, close_price) + random.uniform(0, 200)
+                    low_price = min(open_price, close_price) - random.uniform(0, 200)
+                    simulated_data.append([i, open_price, high_price, low_price, close_price, 0])
+                    base_price = close_price
+                fig = create_candlestick_chart(simulated_data, selected)
+                if fig:
+                    st.plotly_chart(fig, use_container_width=True)
+                    st.caption("⚠️ Симуляция свечей (нет данных от биржи)")
         else:
-            st.line_chart([random.randint(100, 600) for _ in range(30)], use_container_width=True)
-            st.caption("Симуляция свечей")
-    except:
-        st.line_chart([random.randint(100, 600) for _ in range(30)], use_container_width=True)
-        st.caption("Ошибка свечей → симуляция")
+            st.warning("Sandbox не подключён, показываем симуляцию")
+            simulated_data = []
+            base_price = random.uniform(100, 50000)
+            for i in range(60):
+                open_price = base_price + random.uniform(-500, 500)
+                close_price = open_price + random.uniform(-300, 300)
+                high_price = max(open_price, close_price) + random.uniform(0, 200)
+                low_price = min(open_price, close_price) - random.uniform(0, 200)
+                simulated_data.append([i, open_price, high_price, low_price, close_price, 0])
+                base_price = close_price
+            fig = create_candlestick_chart(simulated_data, selected)
+            if fig:
+                st.plotly_chart(fig, use_container_width=True)
+                st.caption("⚠️ Симуляция свечей (Sandbox не доступен)")
+    except Exception as e:
+        st.error(f"Ошибка при получении свечей: {str(e)[:100]}")
+        # Симуляция при ошибке
+        simulated_data = []
+        base_price = random.uniform(100, 50000)
+        for i in range(60):
+            open_price = base_price + random.uniform(-500, 500)
+            close_price = open_price + random.uniform(-300, 300)
+            high_price = max(open_price, close_price) + random.uniform(0, 200)
+            low_price = min(open_price, close_price) - random.uniform(0, 200)
+            simulated_data.append([i, open_price, high_price, low_price, close_price, 0])
+            base_price = close_price
+        fig = create_candlestick_chart(simulated_data, selected)
+        if fig:
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption("⚠️ Симуляция свечей (ошибка подключения к бирже)")
 
+# ====================== TAB 3: АКТИВЫ ======================
 with tab3:
     st.subheader("📦 Активы и цели (редактирование)")
     cols = st.columns(5)
@@ -197,6 +294,7 @@ with tab3:
             new_target = st.number_input(f"Цель {name}", min_value=0.0, value=float(current), step=0.01, key=f"target_{name}")
             st.metric(name, f"Цель: {new_target}")
 
+# ====================== TAB 4: КОШЕЛЁК ======================
 with tab4:
     st.subheader("💰 Кошелёк")
     st.metric("Общий баланс USDT", f"{st.session_state.user_balance:.2f}")
@@ -204,32 +302,44 @@ with tab4:
     col_in, col_out = st.columns(2)
     with col_in:
         deposit = st.number_input("Сумма ввода (USDT)", min_value=10.0, step=10.0, key="deposit")
-        if st.button("Внести средства"):
+        if st.button("💰 Внести средства"):
             if deposit > 0:
                 st.session_state.user_balance += deposit
                 st.success(f"Внесено {deposit} USDT!")
                 save_user_data()
+                st.rerun()
     with col_out:
         withdraw = st.number_input("Сумма вывода (USDT)", min_value=10.0, max_value=float(st.session_state.user_balance), step=10.0, key="withdraw")
         address = st.text_input("Адрес кошелька", key="addr")
-        if st.button("Вывести средства"):
+        if st.button("📤 Вывести средства"):
             if withdraw > 0 and address:
                 st.session_state.user_balance -= withdraw
-                st.success(f"Заявка на вывод {withdraw} USDT отправлена!")
+                st.success(f"Заявка на вывод {withdraw} USDT отправлена на {address[:10]}...")
                 save_user_data()
+                st.rerun()
 
+# ====================== TAB 5: ИСТОРИЯ ======================
 with tab5:
-    st.subheader("📜 История")
-    for trade in reversed(st.session_state.history[-30:]):
-        st.write(trade)
+    st.subheader("📜 История сделок")
+    if st.session_state.history:
+        for trade in reversed(st.session_state.history[-30:]):
+            st.write(trade)
+        if st.button("🗑 Очистить историю"):
+            st.session_state.history = []
+            save_user_data()
+            st.rerun()
+    else:
+        st.info("Пока нет сделок. Запустите бота.")
 
-# ================== СИМУЛЯЦИЯ ==================
+# ====================== ОСНОВНАЯ ЛОГИКА (СДЕЛКИ) ======================
 if st.session_state.bot_running:
     time.sleep(2)
     asset = random.choice([a['asset'] for a in ASSET_CONFIG])
+    
     try:
-        if exchanges:
-            price = exchanges['binance'].fetch_ticker(asset + '/USDT')['last']
+        if exchanges and 'binance' in exchanges:
+            ticker = exchanges['binance'].fetch_ticker(asset + '/USDT')
+            price = ticker['last']
             gross_profit = round(random.uniform(0.3, 1.5), 4)
         else:
             gross_profit = round(random.uniform(0.8, 5.5), 4)
@@ -244,13 +354,13 @@ if st.session_state.bot_running:
     st.session_state.fixed_profit += fixed
     st.session_state.trade_count += 1
     st.session_state.user_balance += reinvest
-
     st.session_state.portfolio[asset] = st.session_state.portfolio.get(asset, 0.0) + (reinvest / 500)
 
     trade_text = f"✅ {datetime.now().strftime('%H:%M:%S')} | {asset}/USDT | +{gross_profit:.4f} | Фикс: {fixed:.4f} | Реинвест: {reinvest:.4f}"
     st.session_state.history.append(trade_text)
 
     save_user_data()
+    st.toast(f"🎯 Сделка по {asset}! +{gross_profit} USDT", icon="💰")
     st.rerun()
 
-st.caption("Веб-версия 4.9 — исправлена ошибка DEFAULT_TARGETS")
+st.caption("🚀 Arbitrage Bot PRO — реальные японские свечи из Binance Sandbox")
