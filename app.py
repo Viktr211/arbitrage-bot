@@ -153,14 +153,23 @@ with tab4:
     st.subheader("💰 Кошелёк")
     st.metric("Общий баланс", f"{st.session_state.user_balance:.2f} USDT")
     st.metric("Сегодня заработано", f"{st.session_state.today_profit:.2f} USDT")
-    amount = st.number_input("Сумма вывода (USDT)", min_value=10.0, max_value=float(st.session_state.user_balance))
-    address = st.text_input("Адрес кошелька")
-    if st.button("Вывести средства"):
-        if amount > 0 and address:
-            st.session_state.user_balance -= amount
-            st.success(f"Заявка на вывод {amount} USDT отправлена!")
-        else:
-            st.error("Введите сумму и адрес")
+    
+    col_in, col_out = st.columns(2)
+    with col_in:
+        deposit_amount = st.number_input("Сумма ввода (USDT)", min_value=10.0, step=10.0)
+        if st.button("Внести средства"):
+            if deposit_amount > 0:
+                st.session_state.user_balance += deposit_amount
+                st.success(f"Внесено {deposit_amount} USDT!")
+    with col_out:
+        withdraw_amount = st.number_input("Сумма вывода (USDT)", min_value=10.0, max_value=float(st.session_state.user_balance), step=10.0)
+        address = st.text_input("Адрес кошелька")
+        if st.button("Вывести средства"):
+            if withdraw_amount > 0 and address:
+                st.session_state.user_balance -= withdraw_amount
+                st.success(f"Заявка на вывод {withdraw_amount} USDT отправлена!")
+            else:
+                st.error("Введите сумму и адрес")
 
 with tab5:
     st.subheader("📜 История")
@@ -187,4 +196,4 @@ if st.session_state.bot_running:
 
     st.rerun()
 
-st.caption("Веб-версия 3.4 — sandbox биржи + кошелёк + цели")
+st.caption("Веб-версия 3.5 — sandbox биржи + кошелёк с вводом/выводом")
