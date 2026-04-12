@@ -15,12 +15,18 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Загрузка конфига
+# Загрузка конфига с защитой
 try:
     with open('config.json', 'r', encoding='utf-8') as f:
         config = json.load(f)
 except:
-    config = {"asset_config": [], "target_asset_amount": {}}
+    config = {
+        "asset_config": [
+            {"asset": "BTC"}, {"asset": "ETH"}, {"asset": "SOL"}, {"asset": "BNB"},
+            {"asset": "XRP"}, {"asset": "ADA"}, {"asset": "AVAX"}, {"asset": "LINK"}
+        ],
+        "target_asset_amount": {"BTC": 0.5, "ETH": 2.0, "SOL": 50.0, "BNB": 20.0}
+    }
 
 ASSET_CONFIG = config.get('asset_config', [])
 TARGET_ASSET_AMOUNT = config.get('target_asset_amount', {})
@@ -78,7 +84,7 @@ with tab1:
 
 with tab2:
     st.subheader("📈 Графики")
-    selected = st.selectbox("Выберите токен", [a.get('asset', 'BTC') for a in ASSET_CONFIG])
+    selected = st.selectbox("Выберите токен", [a.get('asset', 'BTC') for a in ASSET_CONFIG] or ["BTC"])
     st.line_chart([random.randint(100, 600) for _ in range(30)], use_container_width=True)
 
 with tab3:
@@ -91,13 +97,19 @@ with tab3:
 
 with tab4:
     st.subheader("📜 История")
-    for trade in reversed(st.session_state.history[-20:]):
-        st.write(trade)
+    if st.session_state.history:
+        for trade in reversed(st.session_state.history[-20:]):
+            st.write(trade)
+    else:
+        st.info("Пока нет сделок. Запустите бота.")
 
 # ================== СИМУЛЯЦИЯ С 50/50 ==================
 if st.session_state.bot_running:
-    time.sleep(2)
-    asset = random.choice([a.get('asset', 'BTC') for a in ASSET_CONFIG])
+    time.sleep(1.8)
+    asset_list = [a.get('asset', 'BTC') for a in ASSET_CONFIG]
+    if not asset_list:
+        asset_list = ["BTC"]
+    asset = random.choice(asset_list)
     gross_profit = round(random.uniform(0.8, 5.5), 4)
 
     fixed = round(gross_profit * 0.5, 4)
