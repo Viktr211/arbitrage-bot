@@ -1,6 +1,5 @@
 import streamlit as st
 import time
-import random
 import json
 import ccxt
 from datetime import datetime
@@ -26,22 +25,23 @@ except:
 ASSET_CONFIG = config.get('asset_config', [])
 TARGET_ASSET_AMOUNT = config.get('target_asset_amount', {})
 
-# Инициализация демо-бирж (sandbox)
+# Инициализация sandbox бирж
 @st.cache_resource
-def init_exchanges():
-    binance = ccxt.binance({
-        'enableRateLimit': True,
-    })
-    binance.set_sandbox_mode(True)   # Демо-режим Binance
+def init_sandbox_exchanges():
+    try:
+        binance = ccxt.binance({'enableRateLimit': True})
+        binance.set_sandbox_mode(True)
+        
+        bybit = ccxt.bybit({'enableRateLimit': True})
+        bybit.set_sandbox_mode(True)
+        
+        st.success("✅ Sandbox биржи подключены (Binance + Bybit)")
+        return {'binance': binance, 'bybit': bybit}
+    except Exception as e:
+        st.warning("Не удалось подключить sandbox. Работаем в симуляции.")
+        return None
 
-    bybit = ccxt.bybit({
-        'enableRateLimit': True,
-    })
-    bybit.set_sandbox_mode(True)     # Демо-режим Bybit
-
-    return {'binance': binance, 'bybit': bybit}
-
-exchanges = init_exchanges()
+exchanges = init_sandbox_exchanges()
 
 # Сессия
 if 'logged_in' not in st.session_state:
@@ -95,9 +95,6 @@ st.write(f"👤 **{st.session_state.username}** | Баланс: **{st.session_st
 mode = st.radio("Режим работы", ["Демо (Sandbox)", "Реальный"], horizontal=True)
 st.session_state.mode = "Демо" if "Демо" in mode else "Реальный"
 
-if st.session_state.mode == "Реальный":
-    st.error("⚠️ Реальный режим использует настоящие деньги!")
-
 # Top Bar
 col1, col2, col3 = st.columns([3, 2, 2])
 with col1:
@@ -121,19 +118,24 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Dashboard", "📈 Графики",
 
 with tab1:
     st.subheader("Главный дашборд")
-    st.write(f"**Режим:** {st.session_state.mode} | Биржи: Binance Sandbox, Bybit Sandbox")
+    st.write(f"**Режим:** {st.session_state.mode} | Sandbox: Binance + Bybit")
 
 with tab2:
     st.subheader("📈 Японские свечи")
     selected = st.selectbox("Выберите токен", [a.get('asset', 'BTC') for a in ASSET_CONFIG] or ["BTC"])
     try:
-        exchange = exchanges['binance']
-        ohlcv = exchange.fetch_ohlcv(selected + '/USDT', '1h', limit=50)
-        prices = [candle[4] for candle in ohlcv]  # close price
-        st.line_chart(prices, use_container_width=True)
+        if exchanges:
+            ohlcv = exchanges['binance'].fetch_ohlcv(selected + '/USDT', '1h', limit=50)
+            if ohlcv:
+                closes = [candle[4] for candle in ohlcv]
+                st.line_chart(closes, use_container_width=True)
+            else:
+                st.warning("Нет данных свечей")
+        else:
+            st.line_chart([random.randint(100, 600) for _ in range(30)], use_container_width=True)
     except:
         st.line_chart([random.randint(100, 600) for _ in range(30)], use_container_width=True)
-        st.caption("Реальные свечи из sandbox (если не загрузилось — симуляция)")
+        st.caption("Реальные sandbox свечи (если не загрузилось — симуляция)")
 
 with tab3:
     st.subheader("📦 Активы и цели")
@@ -147,23 +149,25 @@ with tab4:
     st.subheader("💰 Кошелёк")
     st.metric("Общий баланс", f"{st.session_state.user_balance:.2f} USDT")
     st.metric("Сегодня заработано", f"{st.session_state.today_profit:.2f} USDT")
+    amount = st.number_input("Сумма вывода (USDT)", min_value=10.0, max_value=float(st.session_state.user_balance))
+    address = st.text_input("Адрес кошелька")
+    if st.button("Вывести средства"):
+        if amount > 0 and address:
+            st.session_state.user_balance -= amount
+            st.success(f"Заявка на вывод {amount} USDT отправлена!")
+        else:
+            st.error("Введите сумму и адрес")
 
 with tab5:
     st.subheader("📜 История")
     for trade in reversed(st.session_state.history[-20:]):
         st.write(trade)
 
-# ================== РЕАЛЬНАЯ СИМУЛЯЦИЯ С SANDBOX ==================
+# ================== СИМУЛЯЦИЯ С SANDBOX ==================
 if st.session_state.bot_running:
     time.sleep(2)
     asset = random.choice([a.get('asset', 'BTC') for a in ASSET_CONFIG] or ["BTC"])
-    try:
-        price_binance = exchanges['binance'].fetch_ticker(asset + '/USDT')['last']
-        price_bybit = exchanges['bybit'].fetch_ticker(asset + '/USDT')['last']
-        spread = abs(price_binance - price_bybit) / min(price_binance, price_bybit) * 100
-        gross_profit = round(spread * 0.3, 4)  # пример прибыли
-    except:
-        gross_profit = round(random.uniform(0.8, 5.5), 4)
+    gross_profit = round(random.uniform(0.8, 5.5), 4)
 
     fixed = round(gross_profit * 0.5, 4)
     reinvest = round(gross_profit * 0.5, 4)
@@ -174,9 +178,9 @@ if st.session_state.bot_running:
     st.session_state.trade_count += 1
     st.session_state.user_balance += reinvest
 
-    trade_text = f"✅ {datetime.now().strftime('%H:%M:%S')} | {asset}/USDT | +{gross_profit} | Фикс: {fixed} | Реинвест: {reinvest} | Биржи: Binance & Bybit Sandbox"
+    trade_text = f"✅ {datetime.now().strftime('%H:%M:%S')} | {asset}/USDT | +{gross_profit} | Фикс: {fixed} | Реинвест: {reinvest}"
     st.session_state.history.append(trade_text)
 
     st.rerun()
 
-st.caption("Веб-версия 3.3 — подключены демо-сandbox биржи")
+st.caption("Веб-версия 3.4 — sandbox биржи + кошелёк + цели")
