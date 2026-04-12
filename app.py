@@ -18,16 +18,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ====================== ТОКЕНЫ И ЦЕЛИ (определены в самом начале) ======================
-DEFAULT_ASSETS = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "SUI", "HYPE"]
-DEFAULT_TARGETS = {
-    "BTC": 0.5, "ETH": 2.0, "SOL": 50.0, "BNB": 20.0,
-    "XRP": 10000.0, "ADA": 5000.0, "AVAX": 100.0,
-    "LINK": 300.0, "SUI": 800.0, "HYPE": 400.0
-}
-ASSET_CONFIG = [{"asset": a} for a in DEFAULT_ASSETS]
-
-# ====================== СОХРАНЕНИЕ ДАННЫХ ======================
+# ====================== СОХРАНЕНИЕ ======================
 DATA_FILE = "user_data.json"
 
 def load_user_data():
@@ -53,23 +44,25 @@ def save_user_data():
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
-# ====================== SANDBOX БИРЖИ ======================
+# Токены
+DEFAULT_ASSETS = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "SUI", "HYPE"]
+ASSET_CONFIG = [{"asset": a} for a in DEFAULT_ASSETS]
+
+# Публичные биржи (для демо-режима)
 @st.cache_resource
-def init_sandbox_exchanges():
+def init_exchanges():
     try:
         binance = ccxt.binance({'enableRateLimit': True})
-        binance.set_sandbox_mode(True)
         bybit = ccxt.bybit({'enableRateLimit': True})
-        bybit.set_sandbox_mode(True)
-        st.success("✅ Реальные демо-биржи подключены: Binance Sandbox + Bybit Sandbox")
+        st.success("✅ Подключены реальные биржи (Binance + Bybit) — цены и свечи настоящие")
         return {'binance': binance, 'bybit': bybit}
     except Exception as e:
-        st.error(f"❌ Sandbox не подключился: {str(e)}")
+        st.error(f"Ошибка подключения: {str(e)}")
         return None
 
-exchanges = init_sandbox_exchanges()
+exchanges = init_exchanges()
 
-# ====================== СЕССИЯ ======================
+# Сессия
 for key, default in {
     'logged_in': False,
     'username': None,
@@ -86,7 +79,6 @@ for key, default in {
     if key not in st.session_state:
         st.session_state[key] = default
 
-# Загрузка данных
 if os.path.exists(DATA_FILE):
     data = load_user_data()
     for key in ['total_profit', 'today_profit', 'trade_count', 'fixed_profit', 'user_balance', 'history', 'portfolio']:
@@ -120,18 +112,8 @@ if not st.session_state.logged_in:
 
 st.write(f"👤 **{st.session_state.username}** | Баланс: **{st.session_state.user_balance:.2f} USDT**")
 
-# Режим
 mode = st.radio("Режим работы", ["Демо (Sandbox)", "Реальный"], horizontal=True)
 st.session_state.mode = "Демо" if "Демо" in mode else "Реальный"
-
-# Top Bar
-col1, col2, col3 = st.columns([3, 2, 2])
-with col1:
-    st.metric("💰 Общая прибыль", f"{st.session_state.total_profit:.4f} USDT")
-with col2:
-    st.metric("💵 Сегодня", f"{st.session_state.today_profit:.2f} USDT")
-with col3:
-    st.metric("📊 Сделок", st.session_state.trade_count)
 
 # Кнопки
 c1, c2, c3 = st.columns(3)
@@ -153,7 +135,7 @@ with tab1:
         try:
             if exchanges:
                 price = exchanges['binance'].fetch_ticker(symbol + '/USDT')['last']
-                source = "✅ Реальная Sandbox"
+                source = "✅ Реальная цена"
             else:
                 price = random.uniform(100, 60000)
                 source = "Симуляция"
@@ -169,23 +151,22 @@ with tab2:
     st.subheader("📈 Японские свечи")
     selected = st.selectbox("Выберите токен", [a['asset'] for a in ASSET_CONFIG])
     try:
-        if exchanges and 'binance' in exchanges:
+        if exchanges:
             ohlcv = exchanges['binance'].fetch_ohlcv(selected + '/USDT', '1h', limit=60)
             if ohlcv:
                 closes = [candle[4] for candle in ohlcv]
                 st.line_chart(closes, use_container_width=True)
-                st.caption(f"✅ Реальные свечи {selected}/USDT из Binance Sandbox")
+                st.caption(f"✅ Реальные свечи {selected}/USDT")
             else:
                 st.line_chart([random.randint(100, 600) for _ in range(30)], use_container_width=True)
         else:
             st.line_chart([random.randint(100, 600) for _ in range(30)], use_container_width=True)
-            st.caption("Симуляция свечей")
-    except Exception as e:
+    except:
         st.line_chart([random.randint(100, 600) for _ in range(30)], use_container_width=True)
-        st.caption(f"Ошибка свечей → симуляция")
+        st.caption("Ошибка получения свечей → симуляция")
 
 with tab3:
-    st.subheader("📦 Активы и цели (редактирование)")
+    st.subheader("📦 Активы и цели")
     cols = st.columns(5)
     for i, asset in enumerate(ASSET_CONFIG):
         with cols[i % 5]:
@@ -198,7 +179,6 @@ with tab4:
     st.subheader("💰 Кошелёк")
     st.metric("Общий баланс USDT", f"{st.session_state.user_balance:.2f}")
     st.metric("Сегодня заработано", f"{st.session_state.today_profit:.2f} USDT")
-    
     col_in, col_out = st.columns(2)
     with col_in:
         deposit = st.number_input("Сумма ввода (USDT)", min_value=10.0, step=10.0, key="deposit")
@@ -230,13 +210,10 @@ if st.session_state.bot_running:
         if exchanges:
             price = exchanges['binance'].fetch_ticker(asset + '/USDT')['last']
             gross_profit = round(random.uniform(0.3, 1.5), 4)
-            source = "Реальная Sandbox"
         else:
             gross_profit = round(random.uniform(0.8, 5.5), 4)
-            source = "Симуляция"
     except:
         gross_profit = round(random.uniform(0.8, 5.5), 4)
-        source = "Симуляция"
 
     fixed = round(gross_profit * 0.5, 4)
     reinvest = round(gross_profit * 0.5, 4)
@@ -249,10 +226,10 @@ if st.session_state.bot_running:
 
     st.session_state.portfolio[asset] = st.session_state.portfolio.get(asset, 0.0) + (reinvest / 500)
 
-    trade_text = f"✅ {datetime.now().strftime('%H:%M:%S')} | {asset}/USDT | +{gross_profit:.4f} | Фикс: {fixed:.4f} | Реинвест: {reinvest:.4f} | {source}"
+    trade_text = f"✅ {datetime.now().strftime('%H:%M:%S')} | {asset}/USDT | +{gross_profit:.4f} | Фикс: {fixed:.4f} | Реинвест: {reinvest:.4f}"
     st.session_state.history.append(trade_text)
 
     save_user_data()
     st.rerun()
 
-st.caption("Веб-версия 4.8 — исправлена ошибка DEFAULT_TARGETS")
+st.caption("Веб-версия 4.9 — реальные цены и свечи из Binance")
