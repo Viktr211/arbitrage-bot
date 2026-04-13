@@ -40,19 +40,18 @@ ASSET_CONFIG = [{"asset": a} for a in DEFAULT_ASSETS]
 EXCHANGE_LIST = ["okx", "gateio", "kucoin"]
 
 # Параметры рисков (можно настраивать)
-STOP_LOSS_PERCENT = 2.0  # Стоп-лосс при падении на 2%
-TAKE_PROFIT_PERCENT = 5.0  # Тейк-профит при росте на 5%
+STOP_LOSS_PERCENT = 2.0
+TAKE_PROFIT_PERCENT = 5.0
 
-# Telegram настройки (заполните позже)
-TELEGRAM_BOT_TOKEN = None  # Например: "1234567890:ABCdefGHIjklMNOpqrsTUVwxyz"
-TELEGRAM_CHAT_ID = None    # Например: "123456789"
+# Telegram настройки (заполняются в интерфейсе)
+TELEGRAM_BOT_TOKEN = None
+TELEGRAM_CHAT_ID = None
 
 # ====================== КЭШИРОВАНИЕ ======================
 class PriceCache:
-    """Кэш для цен (уменьшает нагрузку на API)"""
     def __init__(self, ttl=30):
         self.cache = {}
-        self.ttl = ttl  # время жизни в секундах
+        self.ttl = ttl
         self.timestamps = {}
     
     def get(self, key):
@@ -73,7 +72,7 @@ price_cache = PriceCache(ttl=30)
 
 # ====================== TELEGRAM УВЕДОМЛЕНИЯ ======================
 def send_telegram_message(message):
-    """Отправляет сообщение в Telegram"""
+    global TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
         try:
             url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -158,7 +157,6 @@ def init_exchanges(api_keys=None):
 
 # ====================== ФУНКЦИИ СТОП-ЛОСС И ТЕЙК-ПРОФИТ ======================
 def check_stop_loss_take_profit(asset, entry_price, current_price):
-    """Проверяет нужно ли закрыть позицию по стоп-лосс или тейк-профит"""
     profit_pct = (current_price - entry_price) / entry_price * 100
     
     if profit_pct <= -STOP_LOSS_PERCENT:
@@ -167,7 +165,7 @@ def check_stop_loss_take_profit(asset, entry_price, current_price):
         return "take_profit", profit_pct
     return None, profit_pct
 
-# ====================== ФУНКЦИЯ ДЛЯ СВЕЧЕЙ ======================
+# ====================== ФУНКЦИИ ДЛЯ СВЕЧЕЙ И ЦЕН ======================
 def create_candlestick_chart(ohlcv_data, symbol, source):
     if not ohlcv_data or len(ohlcv_data) == 0:
         return None
@@ -221,7 +219,6 @@ def get_simulated_candles(symbol):
     return simulated_data, "Симуляция"
 
 def get_price_with_cache(exchanges, symbol):
-    """Получает цену с кэшированием"""
     cache_key = f"price_{symbol}"
     cached = price_cache.get(cache_key)
     if cached:
@@ -256,7 +253,8 @@ for key, default in {
     'exchanges': None,
     'api_keys': {},
     'open_positions': [],
-    'price_history': {a: deque(maxlen=50) for a in DEFAULT_ASSETS}
+    'telegram_token': None,
+    'telegram_chat_id': None
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
@@ -301,9 +299,11 @@ st.write(f"👤 **{st.session_state.username}** | Баланс: **{st.session_st
 # Настройки Telegram (только для админа)
 with st.expander("⚙️ Настройки уведомлений", expanded=False):
     st.info("Для получения уведомлений в Telegram создайте бота через @BotFather и получите токен")
-    tele_token = st.text_input("Telegram Bot Token", type="password", key="tele_token")
-    tele_chat = st.text_input("Telegram Chat ID", key="tele_chat")
+    tele_token = st.text_input("Telegram Bot Token", type="password", key="tele_token_input")
+    tele_chat = st.text_input("Telegram Chat ID", key="tele_chat_input")
     if st.button("💾 Сохранить Telegram настройки"):
+        st.session_state.telegram_token = tele_token
+        st.session_state.telegram_chat_id = tele_chat
         global TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
         TELEGRAM_BOT_TOKEN = tele_token
         TELEGRAM_CHAT_ID = tele_chat
@@ -460,12 +460,11 @@ with tab4:
                 save_user_data()
                 st.rerun()
 
-# ====================== TAB 5: РИСКИ (ОТКРЫТЫЕ ПОЗИЦИИ) ======================
+# ====================== TAB 5: РИСКИ ======================
 with tab5:
     st.subheader("🛡️ Открытые позиции и управление рисками")
     
     if st.session_state.open_positions:
-        st.write("**Текущие открытые позиции:**")
         for pos in st.session_state.open_positions:
             current_price, _ = get_price_with_cache(st.session_state.exchanges, pos['asset'])
             profit_pct = (current_price - pos['entry_price']) / pos['entry_price'] * 100
@@ -483,7 +482,6 @@ with tab5:
                     st.success(f"Позиция по {pos['asset']} закрыта")
                     st.rerun()
             
-            # Проверка стоп-лосс / тейк-профит
             action, profit_pct = check_stop_loss_take_profit(pos['asset'], pos['entry_price'], current_price)
             if action == "stop_loss":
                 st.warning(f"⚠️ СТОП-ЛОСС по {pos['asset']}! Падение на {abs(profit_pct):.2f}%")
@@ -577,7 +575,7 @@ if st.session_state.bot_running:
     st.session_state.user_balance += reinvest
     st.session_state.portfolio[asset] = st.session_state.portfolio.get(asset, 0.0) + (reinvest / 500)
     
-    # Открываем позицию (для отслеживания стоп-лосса)
+    # Открываем позицию
     st.session_state.open_positions.append({
         'asset': asset,
         'entry_price': price,
@@ -588,11 +586,11 @@ if st.session_state.bot_running:
     trade_text = f"✅ {datetime.now().strftime('%H:%M:%S')} | {asset} | +{gross_profit:.2f} USDT | Фикс: {fixed:.2f} | Реинвест: {reinvest:.2f}"
     st.session_state.history.append(trade_text)
     
-    # Отправляем уведомление в Telegram
-    send_telegram_message(f"🎯 <b>НОВАЯ СДЕЛКА</b>\nАктив: {asset}\nПрибыль: +{gross_profit} USDT\nЦена: ${price:.2f}\nИсточник: {source}")
+    # Отправляем уведомление
+    send_telegram_message(f"🎯 <b>НОВАЯ СДЕЛКА</b>\nАктив: {asset}\nПрибыль: +{gross_profit} USDT\nЦена: ${price:.2f}")
     
     save_user_data()
     st.toast(f"🎯 Сделка по {asset}! +{gross_profit} USDT", icon="💰")
     st.rerun()
 
-st.caption("🚀 Arbitrage Bot PRO v2 — полный апгрейд: кэш, стоп-лосс, тейк-профит, Telegram, лимитные ордера")
+st.caption("🚀 Arbitrage Bot PRO v2 — полный апгрейд: кэш, стоп-лосс, тейк-профит, Telegram")
