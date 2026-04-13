@@ -6,14 +6,10 @@ import ccxt
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
-from datetime import datetime, timedelta
+from datetime import datetime
 import os
 import base64
-import io
-import asyncio
-import threading
 import requests
-from functools import lru_cache
 from collections import deque
 
 st.set_page_config(page_title="Arbitrage Bot PRO v2", layout="wide", page_icon="🚀")
@@ -24,8 +20,6 @@ st.markdown("""
     .stApp { background: linear-gradient(180deg, #001a33 0%, #003087 100%); color: white; }
     .main-header { font-size: 28px; font-weight: bold; color: #00D4FF; text-align: center; }
     .stButton>button { border-radius: 30px; height: 48px; font-weight: bold; }
-    .api-warning { background: rgba(255,100,100,0.2); padding: 10px; border-radius: 10px; margin: 10px 0; }
-    .api-success { background: rgba(0,255,100,0.2); padding: 10px; border-radius: 10px; margin: 10px 0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -38,14 +32,6 @@ DEFAULT_TARGETS = {
 }
 ASSET_CONFIG = [{"asset": a} for a in DEFAULT_ASSETS]
 EXCHANGE_LIST = ["okx", "gateio", "kucoin"]
-
-# Параметры рисков (можно настраивать)
-STOP_LOSS_PERCENT = 2.0
-TAKE_PROFIT_PERCENT = 5.0
-
-# Telegram настройки (заполняются в интерфейсе)
-TELEGRAM_BOT_TOKEN = None
-TELEGRAM_CHAT_ID = None
 
 # ====================== КЭШИРОВАНИЕ ======================
 class PriceCache:
@@ -70,13 +56,13 @@ class PriceCache:
 
 price_cache = PriceCache(ttl=30)
 
-# ====================== TELEGRAM УВЕДОМЛЕНИЯ ======================
+# ====================== TELEGRAM ======================
 def send_telegram_message(message):
-    global TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+    """Отправляет сообщение в Telegram"""
+    if st.session_state.get('telegram_token') and st.session_state.get('telegram_chat_id'):
         try:
-            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-            payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
+            url = f"https://api.telegram.org/bot{st.session_state.telegram_token}/sendMessage"
+            payload = {"chat_id": st.session_state.telegram_chat_id, "text": message, "parse_mode": "HTML"}
             requests.post(url, json=payload, timeout=5)
         except Exception as e:
             print(f"Telegram ошибка: {e}")
@@ -104,7 +90,9 @@ def save_user_data():
         'history': st.session_state.get('history', [])[-500:],
         'portfolio': st.session_state.get('portfolio', {}),
         'real_trades': st.session_state.get('real_trades', 0),
-        'open_positions': st.session_state.get('open_positions', [])
+        'open_positions': st.session_state.get('open_positions', []),
+        'stop_loss': st.session_state.get('stop_loss', 2.0),
+        'take_profit': st.session_state.get('take_profit', 5.0)
     }
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
@@ -155,17 +143,18 @@ def init_exchanges(api_keys=None):
     
     return exchanges if exchanges else None
 
-# ====================== ФУНКЦИИ СТОП-ЛОСС И ТЕЙК-ПРОФИТ ======================
-def check_stop_loss_take_profit(asset, entry_price, current_price):
+# ====================== ФУНКЦИИ ======================
+def check_stop_loss_take_profit(entry_price, current_price):
     profit_pct = (current_price - entry_price) / entry_price * 100
+    sl = st.session_state.get('stop_loss', 2.0)
+    tp = st.session_state.get('take_profit', 5.0)
     
-    if profit_pct <= -STOP_LOSS_PERCENT:
+    if profit_pct <= -sl:
         return "stop_loss", profit_pct
-    elif profit_pct >= TAKE_PROFIT_PERCENT:
+    elif profit_pct >= tp:
         return "take_profit", profit_pct
     return None, profit_pct
 
-# ====================== ФУНКЦИИ ДЛЯ СВЕЧЕЙ И ЦЕН ======================
 def create_candlestick_chart(ohlcv_data, symbol, source):
     if not ohlcv_data or len(ohlcv_data) == 0:
         return None
@@ -253,6 +242,8 @@ for key, default in {
     'exchanges': None,
     'api_keys': {},
     'open_positions': [],
+    'stop_loss': 2.0,
+    'take_profit': 5.0,
     'telegram_token': None,
     'telegram_chat_id': None
 }.items():
@@ -261,7 +252,7 @@ for key, default in {
 
 if os.path.exists(DATA_FILE):
     data = load_user_data()
-    for key in ['total_profit', 'today_profit', 'trade_count', 'user_balance', 'history', 'portfolio', 'real_trades', 'open_positions']:
+    for key in ['total_profit', 'today_profit', 'trade_count', 'user_balance', 'history', 'portfolio', 'real_trades', 'open_positions', 'stop_loss', 'take_profit']:
         if key in data:
             st.session_state[key] = data[key]
 
@@ -280,7 +271,6 @@ if not st.session_state.logged_in:
                 st.session_state.logged_in = True
                 st.session_state.username = username
                 st.success("Регистрация успешна!")
-                send_telegram_message(f"🆕 Новый пользователь: {username} ({email})")
                 save_user_data()
                 st.rerun()
     with tab_login:
@@ -296,32 +286,28 @@ if not st.session_state.logged_in:
 # ====================== ОСНОВНОЙ ИНТЕРФЕЙС ======================
 st.write(f"👤 **{st.session_state.username}** | Баланс: **{st.session_state.user_balance:.2f} USDT**")
 
-# Настройки Telegram (только для админа)
-with st.expander("⚙️ Настройки уведомлений", expanded=False):
-    st.info("Для получения уведомлений в Telegram создайте бота через @BotFather и получите токен")
+# Настройки Telegram
+with st.expander("⚙️ Настройки уведомлений Telegram", expanded=False):
     tele_token = st.text_input("Telegram Bot Token", type="password", key="tele_token_input")
     tele_chat = st.text_input("Telegram Chat ID", key="tele_chat_input")
-    if st.button("💾 Сохранить Telegram настройки"):
+    if st.button("💾 Сохранить Telegram"):
         st.session_state.telegram_token = tele_token
         st.session_state.telegram_chat_id = tele_chat
-        global TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-        TELEGRAM_BOT_TOKEN = tele_token
-        TELEGRAM_CHAT_ID = tele_chat
-        st.success("Настройки сохранены! Бот будет присылать уведомления.")
+        st.success("Настройки сохранены!")
+        send_telegram_message("✅ Бот подключён к Telegram уведомлениям")
 
 # Настройки рисков
-with st.expander("🛡️ Настройки рисков (стоп-лосс / тейк-профит)", expanded=False):
+with st.expander("🛡️ Настройки рисков", expanded=False):
     col_risk1, col_risk2 = st.columns(2)
     with col_risk1:
-        new_sl = st.number_input("Стоп-лосс (%)", min_value=0.5, max_value=20.0, value=float(STOP_LOSS_PERCENT), step=0.5)
+        new_sl = st.number_input("Стоп-лосс (%)", min_value=0.5, max_value=20.0, value=float(st.session_state.stop_loss), step=0.5)
     with col_risk2:
-        new_tp = st.number_input("Тейк-профит (%)", min_value=1.0, max_value=50.0, value=float(TAKE_PROFIT_PERCENT), step=1.0)
+        new_tp = st.number_input("Тейк-профит (%)", min_value=1.0, max_value=50.0, value=float(st.session_state.take_profit), step=1.0)
     
     if st.button("💾 Применить настройки рисков"):
-        global STOP_LOSS_PERCENT, TAKE_PROFIT_PERCENT
-        STOP_LOSS_PERCENT = new_sl
-        TAKE_PROFIT_PERCENT = new_tp
-        st.success(f"✅ Стоп-лосс: {STOP_LOSS_PERCENT}%, Тейк-профит: {TAKE_PROFIT_PERCENT}%")
+        st.session_state.stop_loss = new_sl
+        st.session_state.take_profit = new_tp
+        st.success(f"✅ Стоп-лосс: {new_sl}%, Тейк-профит: {new_tp}%")
 
 # Режимы работы
 col_mode1, col_mode2 = st.columns(2)
@@ -333,15 +319,15 @@ with col_mode2:
     data_mode = st.radio("Режим данных", ["Реальные данные с бирж", "Демо (симуляция)"], horizontal=True)
     st.session_state.data_mode = data_mode
 
-# API настройки
+# API ключи для реального режима
 if st.session_state.trade_mode == "Реальный":
-    with st.expander("🔐 API ключи (для реальных сделок)", expanded=False):
+    with st.expander("🔐 API ключи", expanded=False):
         new_api_keys = {}
         for ex_name in EXCHANGE_LIST:
             st.subheader(f"{ex_name.upper()}")
             current_keys = st.session_state.api_keys.get(ex_name, {})
-            api_key = st.text_input(f"API Key ({ex_name})", value=current_keys.get('api_key', ''), type="password", key=f"api_key_v2_{ex_name}")
-            secret = st.text_input(f"Secret Key ({ex_name})", value=current_keys.get('secret', ''), type="password", key=f"secret_v2_{ex_name}")
+            api_key = st.text_input(f"API Key ({ex_name})", value=current_keys.get('api_key', ''), type="password", key=f"api_key_{ex_name}")
+            secret = st.text_input(f"Secret Key ({ex_name})", value=current_keys.get('secret', ''), type="password", key=f"secret_{ex_name}")
             if api_key and secret:
                 new_api_keys[ex_name] = {'api_key': api_key, 'secret': secret}
         
@@ -351,7 +337,7 @@ if st.session_state.trade_mode == "Реальный":
             st.success("API ключи сохранены!")
             st.rerun()
 
-# Инициализируем биржи
+# Инициализация бирж
 st.session_state.exchanges = init_exchanges(st.session_state.api_keys if st.session_state.trade_mode == "Реальный" else None)
 
 # Статистика
@@ -363,8 +349,7 @@ with col2:
 with col3:
     st.metric("📊 Сделок", f"{st.session_state.trade_count} ({st.session_state.real_trades} реал.)")
 with col4:
-    sl_status = "🟢 Активен" if STOP_LOSS_PERCENT > 0 else "⚪ Выкл"
-    st.metric("🛡️ Стоп-лосс", f"{STOP_LOSS_PERCENT}% / {TAKE_PROFIT_PERCENT}%")
+    st.metric("🛡️ Риски", f"SL:{st.session_state.stop_loss}% / TP:{st.session_state.take_profit}%")
 
 # Кнопки управления
 c1, c2, c3 = st.columns(3)
@@ -373,16 +358,14 @@ if c1.button("▶ СТАРТ", type="primary", use_container_width=True):
     send_telegram_message(f"🚀 Бот запущен пользователем {st.session_state.username}")
 if c2.button("⏸ ПАУЗА", use_container_width=True):
     st.session_state.bot_running = False
-    send_telegram_message(f"⏸ Бот остановлен пользователем {st.session_state.username}")
 if c3.button("⏹ СТОП", use_container_width=True):
     st.session_state.bot_running = False
     st.session_state.open_positions = []
-    send_telegram_message(f"⏹ Бот полностью остановлен {st.session_state.username}")
 
 # ====================== ВКЛАДКИ ======================
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["📊 Dashboard", "📈 Японские свечи", "📦 Активы", "💰 Кошелёк", "🛡️ Риски", "📈 Доходность", "📜 История"])
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 Dashboard", "📈 Японские свечи", "📦 Активы", "💰 Кошелёк", "🛡️ Риски", "📜 История"])
 
-# ====================== TAB 1: DASHBOARD ======================
+# TAB 1
 with tab1:
     st.subheader("📊 Портфель и Котировки")
     data = []
@@ -394,17 +377,17 @@ with tab1:
         data.append({"Токен": symbol, "Цена": f"${price:,.2f}", "Количество": f"{amount:.6f}", "Стоимость": f"${value:,.2f}", "Источник": source})
     st.dataframe(pd.DataFrame(data), use_container_width=True, hide_index=True)
 
-# ====================== TAB 2: ЯПОНСКИЕ СВЕЧИ ======================
+# TAB 2
 with tab2:
     st.subheader("📈 Японские свечи")
     col_a, col_b = st.columns(2)
     with col_a:
         selected_asset = st.selectbox("Выберите токен", [a['asset'] for a in ASSET_CONFIG])
     with col_b:
-        available_exchanges = list(st.session_state.exchanges.keys()) if st.session_state.exchanges else []
-        selected_exchange = st.selectbox("Выберите биржу", available_exchanges if available_exchanges else ["okx"])
+        available = list(st.session_state.exchanges.keys()) if st.session_state.exchanges else []
+        selected_exchange = st.selectbox("Выберите биржу", available if available else ["okx"])
     
-    if st.button("🔄 Обновить график", use_container_width=True):
+    if st.button("🔄 Обновить график"):
         price_cache.clear()
         st.cache_data.clear()
     
@@ -425,144 +408,82 @@ with tab2:
         if fig:
             st.plotly_chart(fig, use_container_width=True)
 
-# ====================== TAB 3: АКТИВЫ ======================
+# TAB 3
 with tab3:
-    st.subheader("📦 Активы и цели (редактирование)")
+    st.subheader("📦 Активы и цели")
     cols = st.columns(5)
     for i, asset in enumerate(ASSET_CONFIG):
         with cols[i % 5]:
             name = asset['asset']
             current = DEFAULT_TARGETS.get(name, 0)
-            new_target = st.number_input(f"Цель {name}", min_value=0.0, value=float(current), step=0.01, key=f"target_v2_{name}")
+            new_target = st.number_input(f"Цель {name}", min_value=0.0, value=float(current), step=0.01, key=f"target_{name}")
             st.metric(name, f"Цель: {new_target}")
 
-# ====================== TAB 4: КОШЕЛЁК ======================
+# TAB 4
 with tab4:
     st.subheader("💰 Кошелёк")
-    st.metric("Общий баланс USDT", f"{st.session_state.user_balance:.2f}")
-    st.metric("Сегодня заработано", f"{st.session_state.today_profit:.2f} USDT")
+    st.metric("Общий баланс", f"{st.session_state.user_balance:.2f} USDT")
     col_in, col_out = st.columns(2)
     with col_in:
-        deposit = st.number_input("Сумма ввода (USDT)", min_value=10.0, step=10.0, key="deposit_v2")
-        if st.button("💰 Внести средства"):
-            if deposit > 0:
-                st.session_state.user_balance += deposit
-                st.success(f"Внесено {deposit} USDT!")
-                save_user_data()
-                st.rerun()
+        deposit = st.number_input("Сумма ввода", min_value=10.0, step=10.0, key="deposit")
+        if st.button("💰 Внести"):
+            st.session_state.user_balance += deposit
+            save_user_data()
+            st.rerun()
     with col_out:
-        withdraw = st.number_input("Сумма вывода (USDT)", min_value=10.0, max_value=float(st.session_state.user_balance), step=10.0, key="withdraw_v2")
-        address = st.text_input("Адрес кошелька", key="addr_v2")
-        if st.button("📤 Вывести средства"):
-            if withdraw > 0 and address:
-                st.session_state.user_balance -= withdraw
-                st.success(f"Заявка на вывод {withdraw} USDT отправлена")
-                save_user_data()
-                st.rerun()
+        withdraw = st.number_input("Сумма вывода", min_value=10.0, max_value=float(st.session_state.user_balance), step=10.0, key="withdraw")
+        address = st.text_input("Адрес кошелька", key="addr")
+        if st.button("📤 Вывести"):
+            st.session_state.user_balance -= withdraw
+            save_user_data()
+            st.rerun()
 
-# ====================== TAB 5: РИСКИ ======================
+# TAB 5
 with tab5:
-    st.subheader("🛡️ Открытые позиции и управление рисками")
-    
+    st.subheader("🛡️ Открытые позиции")
     if st.session_state.open_positions:
-        for pos in st.session_state.open_positions:
+        for pos in st.session_state.open_positions[:]:
             current_price, _ = get_price_with_cache(st.session_state.exchanges, pos['asset'])
-            profit_pct = (current_price - pos['entry_price']) / pos['entry_price'] * 100
-            col_pos1, col_pos2, col_pos3, col_pos4 = st.columns(4)
-            with col_pos1:
-                st.write(f"**{pos['asset']}**")
-            with col_pos2:
-                st.write(f"Вход: ${pos['entry_price']:.2f}")
-            with col_pos3:
-                color = "🟢" if profit_pct >= 0 else "🔴"
-                st.write(f"{color} Текущая: ${current_price:.2f} ({profit_pct:.2f}%)")
-            with col_pos4:
-                if st.button(f"Закрыть {pos['asset']}", key=f"close_{pos['asset']}"):
-                    st.session_state.open_positions.remove(pos)
-                    st.success(f"Позиция по {pos['asset']} закрыта")
-                    st.rerun()
+            action, profit_pct = check_stop_loss_take_profit(pos['entry_price'], current_price)
             
-            action, profit_pct = check_stop_loss_take_profit(pos['asset'], pos['entry_price'], current_price)
+            col_pos1, col_pos2, col_pos3, col_pos4 = st.columns(4)
+            col_pos1.write(f"**{pos['asset']}**")
+            col_pos2.write(f"Вход: ${pos['entry_price']:.2f}")
+            col_pos3.write(f"Текущая: ${current_price:.2f} ({profit_pct:.2f}%)")
+            if col_pos4.button(f"Закрыть", key=f"close_{pos['asset']}"):
+                st.session_state.open_positions.remove(pos)
+                st.rerun()
+            
             if action == "stop_loss":
-                st.warning(f"⚠️ СТОП-ЛОСС по {pos['asset']}! Падение на {abs(profit_pct):.2f}%")
+                st.warning(f"⚠️ СТОП-ЛОСС по {pos['asset']}! Убыток: {abs(profit_pct):.2f}%")
                 st.session_state.open_positions.remove(pos)
                 send_telegram_message(f"🔴 СТОП-ЛОСС по {pos['asset']}! Убыток: {abs(profit_pct):.2f}%")
                 st.rerun()
             elif action == "take_profit":
-                st.success(f"✅ ТЕЙК-ПРОФИТ по {pos['asset']}! Рост на {profit_pct:.2f}%")
+                st.success(f"✅ ТЕЙК-ПРОФИТ по {pos['asset']}! Прибыль: {profit_pct:.2f}%")
                 st.session_state.open_positions.remove(pos)
                 send_telegram_message(f"🟢 ТЕЙК-ПРОФИТ по {pos['asset']}! Прибыль: {profit_pct:.2f}%")
                 st.rerun()
     else:
         st.info("Нет открытых позиций")
-    
-    st.divider()
-    st.subheader("📊 Настройки рисков")
-    st.write(f"🔻 **Стоп-лосс:** {STOP_LOSS_PERCENT}% — автоматическая продажа при падении")
-    st.write(f"📈 **Тейк-профит:** {TAKE_PROFIT_PERCENT}% — автоматическая фиксация прибыли")
 
-# ====================== TAB 6: ДОХОДНОСТЬ ======================
+# TAB 6
 with tab6:
-    st.subheader("📈 Графики доходности")
-    
-    if st.session_state.history:
-        history_data = []
-        for trade in st.session_state.history[-100:]:
-            if "✅" in trade and "+" in trade:
-                try:
-                    parts = trade.split("|")
-                    time_str = parts[0].replace("✅", "").strip()
-                    asset = parts[1].strip() if len(parts) > 1 else "Unknown"
-                    profit_str = parts[2].split("+")[1].split()[0] if len(parts) > 2 else "0"
-                    profit = float(profit_str)
-                    history_data.append({"datetime": time_str, "asset": asset, "profit": profit})
-                except:
-                    pass
-        
-        if history_data:
-            df = pd.DataFrame(history_data)
-            df['cumulative'] = df['profit'].cumsum()
-            fig_cum = px.line(df, x='datetime', y='cumulative', title="Накопленная прибыль", color_discrete_sequence=['#00D4FF'])
-            fig_cum.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(20,20,50,0.5)")
-            st.plotly_chart(fig_cum, use_container_width=True)
-            
-            st.subheader("📊 Доходность по активам")
-            asset_df = df.groupby('asset')['profit'].sum().reset_index()
-            asset_df.columns = ['Актив', 'Прибыль (USDT)']
-            fig_asset = px.pie(asset_df, values='Прибыль (USDT)', names='Актив', title="Распределение прибыли")
-            fig_asset.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(20,20,50,0.5)")
-            st.plotly_chart(fig_asset, use_container_width=True)
-        else:
-            st.info("Недостаточно данных")
-    else:
-        st.info("Нет данных о сделках")
-
-# ====================== TAB 7: ИСТОРИЯ ======================
-with tab7:
     st.subheader("📜 История сделок")
-    
     if st.session_state.history:
-        history_df = pd.DataFrame([{"Время": trade.split("|")[0].replace("✅", "").strip(), "Сделка": trade} for trade in st.session_state.history])
-        st.dataframe(history_df, use_container_width=True, hide_index=True)
-        
-        if st.button("📄 Экспорт в CSV", use_container_width=True):
-            csv_data = history_df.to_csv(index=False)
-            b64 = base64.b64encode(csv_data.encode()).decode()
-            href = f'<a href="data:file/csv;base64,{b64}" download="history_v2_{datetime.now().strftime("%Y%m%d")}.csv" style="color: #00FF88;">📥 Скачать CSV</a>'
-            st.markdown(href, unsafe_allow_html=True)
-        
-        if st.button("🗑 Очистить историю", use_container_width=True):
+        for trade in reversed(st.session_state.history[-30:]):
+            st.write(trade)
+        if st.button("🗑 Очистить историю"):
             st.session_state.history = []
             save_user_data()
             st.rerun()
     else:
-        st.info("Пока нет сделок")
+        st.info("Нет сделок")
 
 # ====================== ОСНОВНАЯ ЛОГИКА ======================
 if st.session_state.bot_running:
     time.sleep(3)
     asset = random.choice([a['asset'] for a in ASSET_CONFIG])
-    
     price, source = get_price_with_cache(st.session_state.exchanges, asset)
     gross_profit = round(price * random.uniform(0.0005, 0.002), 2)
     
@@ -575,7 +496,6 @@ if st.session_state.bot_running:
     st.session_state.user_balance += reinvest
     st.session_state.portfolio[asset] = st.session_state.portfolio.get(asset, 0.0) + (reinvest / 500)
     
-    # Открываем позицию
     st.session_state.open_positions.append({
         'asset': asset,
         'entry_price': price,
@@ -586,11 +506,10 @@ if st.session_state.bot_running:
     trade_text = f"✅ {datetime.now().strftime('%H:%M:%S')} | {asset} | +{gross_profit:.2f} USDT | Фикс: {fixed:.2f} | Реинвест: {reinvest:.2f}"
     st.session_state.history.append(trade_text)
     
-    # Отправляем уведомление
-    send_telegram_message(f"🎯 <b>НОВАЯ СДЕЛКА</b>\nАктив: {asset}\nПрибыль: +{gross_profit} USDT\nЦена: ${price:.2f}")
+    send_telegram_message(f"🎯 Новая сделка!\nАктив: {asset}\nПрибыль: +{gross_profit} USDT")
     
     save_user_data()
     st.toast(f"🎯 Сделка по {asset}! +{gross_profit} USDT", icon="💰")
     st.rerun()
 
-st.caption("🚀 Arbitrage Bot PRO v2 — полный апгрейд: кэш, стоп-лосс, тейк-профит, Telegram")
+st.caption("🚀 Arbitrage Bot PRO v2 — кэш, стоп-лосс, тейк-профит, Telegram")
