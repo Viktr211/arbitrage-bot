@@ -58,7 +58,6 @@ price_cache = PriceCache(ttl=30)
 
 # ====================== TELEGRAM ======================
 def send_telegram_message(message):
-    """Отправляет сообщение в Telegram"""
     if st.session_state.get('telegram_token') and st.session_state.get('telegram_chat_id'):
         try:
             url = f"https://api.telegram.org/bot{st.session_state.telegram_token}/sendMessage"
@@ -368,14 +367,14 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 Dashboard", "📈 Японс
 # TAB 1
 with tab1:
     st.subheader("📊 Портфель и Котировки")
-    data = []
+    table_data = []
     for asset in ASSET_CONFIG:
         symbol = asset['asset']
         price, source = get_price_with_cache(st.session_state.exchanges, symbol)
         amount = st.session_state.portfolio.get(symbol, 0.0)
         value = amount * price
-        data.append({"Токен": symbol, "Цена": f"${price:,.2f}", "Количество": f"{amount:.6f}", "Стоимость": f"${value:,.2f}", "Источник": source})
-    st.dataframe(pd.DataFrame(data), use_container_width=True, hide_index=True)
+        table_data.append({"Токен": symbol, "Цена": f"${price:,.2f}", "Количество": f"{amount:.6f}", "Стоимость": f"${value:,.2f}", "Источник": source})
+    st.dataframe(pd.DataFrame(table_data), use_container_width=True, hide_index=True)
 
 # TAB 2
 with tab2:
@@ -442,7 +441,8 @@ with tab4:
 with tab5:
     st.subheader("🛡️ Открытые позиции")
     if st.session_state.open_positions:
-        for pos in st.session_state.open_positions[:]:
+        positions_to_remove = []
+        for idx, pos in enumerate(st.session_state.open_positions):
             current_price, _ = get_price_with_cache(st.session_state.exchanges, pos['asset'])
             action, profit_pct = check_stop_loss_take_profit(pos['entry_price'], current_price)
             
@@ -450,20 +450,24 @@ with tab5:
             col_pos1.write(f"**{pos['asset']}**")
             col_pos2.write(f"Вход: ${pos['entry_price']:.2f}")
             col_pos3.write(f"Текущая: ${current_price:.2f} ({profit_pct:.2f}%)")
-            if col_pos4.button(f"Закрыть", key=f"close_{pos['asset']}"):
-                st.session_state.open_positions.remove(pos)
+            if col_pos4.button(f"Закрыть", key=f"close_{pos['asset']}_{idx}"):
+                positions_to_remove.append(pos)
                 st.rerun()
             
             if action == "stop_loss":
                 st.warning(f"⚠️ СТОП-ЛОСС по {pos['asset']}! Убыток: {abs(profit_pct):.2f}%")
-                st.session_state.open_positions.remove(pos)
+                positions_to_remove.append(pos)
                 send_telegram_message(f"🔴 СТОП-ЛОСС по {pos['asset']}! Убыток: {abs(profit_pct):.2f}%")
                 st.rerun()
             elif action == "take_profit":
                 st.success(f"✅ ТЕЙК-ПРОФИТ по {pos['asset']}! Прибыль: {profit_pct:.2f}%")
-                st.session_state.open_positions.remove(pos)
+                positions_to_remove.append(pos)
                 send_telegram_message(f"🟢 ТЕЙК-ПРОФИТ по {pos['asset']}! Прибыль: {profit_pct:.2f}%")
                 st.rerun()
+        
+        for pos in positions_to_remove:
+            if pos in st.session_state.open_positions:
+                st.session_state.open_positions.remove(pos)
     else:
         st.info("Нет открытых позиций")
 
