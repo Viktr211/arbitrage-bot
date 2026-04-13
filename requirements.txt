@@ -2,4 +2,4 @@ streamlit
 ccxt
 pandas
 plotly
-openpyxl
+requests
