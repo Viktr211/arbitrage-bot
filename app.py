@@ -9,6 +9,7 @@ import plotly.express as px
 from datetime import datetime, timedelta
 import os
 import base64
+import io
 
 st.set_page_config(page_title="Arbitrage Bot PRO", layout="wide", page_icon="🚀")
 
@@ -30,8 +31,9 @@ DEFAULT_TARGETS = {
 }
 ASSET_CONFIG = [{"asset": a} for a in DEFAULT_ASSETS]
 
-# ====================== БИРЖИ ======================
-EXCHANGE_LIST = ["binance", "kucoin", "bybit", "okx", "gateio"]
+# ====================== БИРЖИ (только работающие) ======================
+# Поменяем порядок: OKX и Gate.io первые, они работают
+EXCHANGE_LIST = ["okx", "gateio", "kucoin"]  # Binance и Bybit убраны
 
 # ====================== СОХРАНЕНИЕ ДАННЫХ ======================
 DATA_FILE = "user_data.json"
@@ -61,7 +63,7 @@ def save_user_data():
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
-# ====================== ПОДКЛЮЧЕНИЕ К БИРЖАМ ======================
+# ====================== ПОДКЛЮЧЕНИЕ К БИРЖАМ (ТОЛЬКО РАБОТАЮЩИЕ) ======================
 @st.cache_resource
 def init_exchanges():
     exchanges = {}
@@ -73,12 +75,18 @@ def init_exchanges():
                 'enableRateLimit': True,
                 'options': {'defaultType': 'spot'}
             })
-            # Проверяем подключение
-            exchange.fetch_ticker('BTC/USDT')
-            exchanges[ex_name] = exchange
-            st.success(f"✅ {ex_name.upper()} — подключена")
+            # Проверяем подключение (короткий таймаут)
+            ticker = exchange.fetch_ticker('BTC/USDT')
+            if ticker and ticker.get('last'):
+                exchanges[ex_name] = exchange
+                st.success(f"✅ {ex_name.upper()} — подключена")
+            else:
+                st.warning(f"⚠️ {ex_name.upper()}: нет данных")
         except Exception as e:
             st.warning(f"⚠️ {ex_name.upper()}: {str(e)[:50]}")
+    
+    if not exchanges:
+        st.error("❌ Ни одна биржа не подключена. Работаем в демо-режиме.")
     
     return exchanges if exchanges else None
 
@@ -117,7 +125,7 @@ def create_candlestick_chart(ohlcv_data, symbol, source):
     
     return fig
 
-def get_real_candles(symbol, exchange_name="binance"):
+def get_real_candles(symbol, exchange_name="okx"):
     if not exchanges or exchange_name not in exchanges:
         return None, None
     try:
@@ -138,7 +146,7 @@ def get_simulated_candles(symbol):
         low_price = min(open_price, close_price) - random.uniform(0, 200)
         simulated_data.append([i, open_price, high_price, low_price, close_price, 0])
         base_price = close_price
-    return simulated_data, "Симуляция"
+    return simulated_data, "Симуляция (нет доступа к биржам)"
 
 def get_price(symbol, mode):
     if mode == "Реальные данные" and exchanges:
@@ -146,7 +154,8 @@ def get_price(symbol, mode):
             if ex_name in exchanges:
                 try:
                     ticker = exchanges[ex_name].fetch_ticker(f"{symbol}/USDT")
-                    return ticker['last'], ex_name.upper()
+                    if ticker and ticker.get('last'):
+                        return ticker['last'], ex_name.upper()
                 except:
                     continue
         return random.uniform(100, 60000), "Симуляция"
@@ -158,15 +167,6 @@ def get_csv_download_link(df, filename):
     csv = df.to_csv(index=False)
     b64 = base64.b64encode(csv.encode()).decode()
     href = f'<a href="data:file/csv;base64,{b64}" download="{filename}" style="color: #00FF88;">📥 Скачать {filename}</a>'
-    return href
-
-def get_excel_download_link(df, filename):
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='История')
-    excel_data = output.getvalue()
-    b64 = base64.b64encode(excel_data).decode()
-    href = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="{filename}" style="color: #00FF88;">📥 Скачать {filename}</a>'
     return href
 
 # ====================== СЕССИЯ ======================
@@ -227,7 +227,8 @@ st.session_state.mode = mode
 
 if st.session_state.mode == "Реальные данные":
     if exchanges:
-        st.success("✅ Режим: реальные цены и свечи с бирж (Binance, KuCoin, Bybit, OKX, Gate.io)")
+        working_exchanges = ", ".join([ex.upper() for ex in exchanges.keys()])
+        st.success(f"✅ Режим: реальные цены и свечи с бирж: {working_exchanges}")
     else:
         st.warning("⚠️ Биржи не подключены, работаем в демо-режиме")
         st.session_state.mode = "Демо (симуляция)"
@@ -265,19 +266,25 @@ with tab1:
         data.append({"Токен": symbol, "Цена": f"${price:,.2f}", "Количество": f"{amount:.6f}", "Стоимость": f"${value:,.2f}", "Источник": source})
     st.dataframe(pd.DataFrame(data), use_container_width=True, hide_index=True)
 
-# ====================== TAB 2: ЯПОНСКИЕ СВЕЧИ (С ВЫБОРОМ БИРЖИ) ======================
+# ====================== TAB 2: ЯПОНСКИЕ СВЕЧИ ======================
 with tab2:
     st.subheader("📈 Японские свечи")
     col_a, col_b = st.columns(2)
     with col_a:
         selected_asset = st.selectbox("Выберите токен", [a['asset'] for a in ASSET_CONFIG])
     with col_b:
-        selected_exchange = st.selectbox("Выберите биржу", EXCHANGE_LIST)
+        # Только доступные биржи
+        available_exchanges = list(exchanges.keys()) if exchanges else []
+        if available_exchanges:
+            selected_exchange = st.selectbox("Выберите биржу", available_exchanges)
+        else:
+            selected_exchange = None
+            st.warning("Нет доступных бирж")
     
     if st.button("🔄 Обновить график", use_container_width=True):
         st.cache_data.clear()
     
-    if st.session_state.mode == "Реальные данные":
+    if st.session_state.mode == "Реальные данные" and selected_exchange:
         ohlcv, source = get_real_candles(selected_asset, selected_exchange)
         if ohlcv:
             fig = create_candlestick_chart(ohlcv, selected_asset, source)
@@ -330,11 +337,10 @@ with tab4:
                 save_user_data()
                 st.rerun()
 
-# ====================== TAB 5: ДОХОДНОСТЬ (ГРАФИКИ) ======================
+# ====================== TAB 5: ДОХОДНОСТЬ ======================
 with tab5:
     st.subheader("📈 Графики доходности")
     
-    # Преобразуем историю сделок в DataFrame
     if st.session_state.history:
         history_data = []
         for trade in st.session_state.history:
@@ -354,7 +360,6 @@ with tab5:
         if history_data:
             df = pd.DataFrame(history_data)
             
-            # Дневная доходность
             st.subheader("📊 Дневная доходность")
             daily_df = df.groupby('date')['profit'].sum().reset_index()
             daily_df.columns = ['Дата', 'Прибыль (USDT)']
@@ -362,62 +367,37 @@ with tab5:
             fig_daily.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(20,20,50,0.5)")
             st.plotly_chart(fig_daily, use_container_width=True)
             
-            # Недельная доходность
-            st.subheader("📊 Недельная доходность")
-            weekly_df = df.groupby('week')['profit'].sum().reset_index()
-            weekly_df.columns = ['Неделя', 'Прибыль (USDT)']
-            fig_weekly = px.bar(weekly_df, x='Неделя', y='Прибыль (USDT)', title="Доходность по неделям", color_discrete_sequence=['#FF6B6B'])
-            fig_weekly.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(20,20,50,0.5)")
-            st.plotly_chart(fig_weekly, use_container_width=True)
-            
-            # Доходность по активам
-            st.subheader("📊 Доходность по активам")
-            asset_df = df.groupby('asset')['profit'].sum().reset_index()
-            asset_df.columns = ['Актив', 'Прибыль (USDT)']
-            fig_asset = px.pie(asset_df, values='Прибыль (USDT)', names='Актив', title="Распределение прибыли по активам", color_discrete_sequence=px.colors.sequential.Viridis)
-            fig_asset.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(20,20,50,0.5)")
-            st.plotly_chart(fig_asset, use_container_width=True)
-            
-            # Накопленная прибыль
             st.subheader("📊 Накопленная прибыль")
             df['cumulative'] = df['profit'].cumsum()
             fig_cum = px.line(df, x='datetime', y='cumulative', title="Накопленная прибыль", color_discrete_sequence=['#00D4FF'])
             fig_cum.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(20,20,50,0.5)")
             st.plotly_chart(fig_cum, use_container_width=True)
+            
+            st.subheader("📊 Доходность по активам")
+            asset_df = df.groupby('asset')['profit'].sum().reset_index()
+            asset_df.columns = ['Актив', 'Прибыль (USDT)']
+            fig_asset = px.pie(asset_df, values='Прибыль (USDT)', names='Актив', title="Распределение прибыли по активам")
+            fig_asset.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(20,20,50,0.5)")
+            st.plotly_chart(fig_asset, use_container_width=True)
         else:
-            st.info("Недостаточно данных для построения графиков. Запустите бота и совершите несколько сделок.")
+            st.info("Недостаточно данных для построения графиков.")
     else:
         st.info("Нет данных о сделках. Запустите бота.")
 
-# ====================== TAB 6: ИСТОРИЯ (С ЭКСПОРТОМ) ======================
+# ====================== TAB 6: ИСТОРИЯ ======================
 with tab6:
     st.subheader("📜 История сделок")
     
     if st.session_state.history:
-        # Преобразуем историю в DataFrame
         history_df = pd.DataFrame([{"Время": trade.split("|")[0].replace("✅", "").strip(), "Сделка": trade} for trade in st.session_state.history])
-        
         st.dataframe(history_df, use_container_width=True, hide_index=True)
         
         st.subheader("📥 Экспорт истории")
-        col_export1, col_export2 = st.columns(2)
-        
-        with col_export1:
-            if st.button("📄 Экспорт в CSV", use_container_width=True):
-                csv_data = history_df.to_csv(index=False)
-                b64 = base64.b64encode(csv_data.encode()).decode()
-                href = f'<a href="data:file/csv;base64,{b64}" download="history_{datetime.now().strftime("%Y%m%d")}.csv" style="color: #00FF88; text-decoration: none;">📥 Нажмите для скачивания CSV</a>'
-                st.markdown(href, unsafe_allow_html=True)
-        
-        with col_export2:
-            if st.button("📊 Экспорт в Excel", use_container_width=True):
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                    history_df.to_excel(writer, index=False, sheet_name='История сделок')
-                excel_data = output.getvalue()
-                b64 = base64.b64encode(excel_data).decode()
-                href = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="history_{datetime.now().strftime("%Y%m%d")}.xlsx" style="color: #00FF88; text-decoration: none;">📥 Нажмите для скачивания Excel</a>'
-                st.markdown(href, unsafe_allow_html=True)
+        if st.button("📄 Экспорт в CSV", use_container_width=True):
+            csv_data = history_df.to_csv(index=False)
+            b64 = base64.b64encode(csv_data.encode()).decode()
+            href = f'<a href="data:file/csv;base64,{b64}" download="history_{datetime.now().strftime("%Y%m%d")}.csv" style="color: #00FF88;">📥 Нажмите для скачивания CSV</a>'
+            st.markdown(href, unsafe_allow_html=True)
         
         if st.button("🗑 Очистить историю", use_container_width=True):
             st.session_state.history = []
@@ -458,4 +438,4 @@ if st.session_state.bot_running:
     st.toast(f"🎯 Сделка по {asset}! +{gross_profit} USDT", icon="💰")
     st.rerun()
 
-st.caption("🚀 Arbitrage Bot PRO — реальные данные с 5 бирж, графики доходности, экспорт истории")
+st.caption("🚀 Arbitrage Bot PRO — работающие биржи: OKX, Gate.io, KuCoin")
