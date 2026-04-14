@@ -23,9 +23,10 @@ st.markdown("""
     .status-stopped { background-color: #FF4444; box-shadow: 0 0 8px #FF4444; }
     @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
     .stButton>button { border-radius: 30px; height: 42px; font-weight: bold; }
+    .green-button button { background-color: #00AA44 !important; color: white !important; }
+    .yellow-button button { background-color: #CC8800 !important; color: white !important; }
+    .red-button button { background-color: #CC3333 !important; color: white !important; }
     .token-card { background: rgba(0,100,200,0.2); border-radius: 10px; padding: 8px; margin: 4px; text-align: center; }
-    .scanning { animation: blink 1s infinite; }
-    @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
 </style>
 """, unsafe_allow_html=True)
 
@@ -44,8 +45,8 @@ DEMO_PORTFOLIO = {
 DEMO_USDT_RESERVES = 10000
 
 # ====================== ФАЙЛЫ ======================
-USER_DATA_FILE = "user_data_v10.json"
-HISTORY_FILE = "history_v10.json"
+USER_DATA_FILE = "user_data_v11.json"
+HISTORY_FILE = "history_v11.json"
 
 def load_user_data():
     if os.path.exists(USER_DATA_FILE):
@@ -108,8 +109,7 @@ for key, default in [
     ('bot_running', saved_user.get('bot_running', False)),
     ('trade_mode', "Демо"),
     ('exchange_status', {}),
-    ('is_first_time', not saved_user.get('is_registered', False)),
-    ('last_scan', datetime.now())
+    ('is_first_time', not saved_user.get('is_registered', False))
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -147,26 +147,20 @@ def get_historical_ohlcv(exchange, symbol, timeframe='1h', limit=100):
         return pd.DataFrame()
 
 def find_all_arbitrage_opportunities():
-    """Ищет арбитраж для ВСЕХ токенов на ВСЕХ биржах одновременно"""
     opportunities = []
-    
     if not st.session_state.exchanges or MAIN_EXCHANGE not in st.session_state.exchanges:
         return opportunities
     
-    # Получаем цены на главной бирже для всех токенов
     main_prices = {}
     for asset in DEFAULT_ASSETS:
         price = get_price(st.session_state.exchanges[MAIN_EXCHANGE], asset)
         if price:
             main_prices[asset] = price
     
-    # Проверяем каждую вспомогательную биржу для каждого токена
     for asset in DEFAULT_ASSETS:
         if asset not in main_prices:
             continue
-        
         main_price = main_prices[asset]
-        
         for aux_ex in AUX_EXCHANGES:
             if aux_ex in st.session_state.exchanges and st.session_state.exchanges[aux_ex]:
                 aux_price = get_price(st.session_state.exchanges[aux_ex], asset)
@@ -183,7 +177,6 @@ def find_all_arbitrage_opportunities():
                             'spread_pct': round(spread_pct, 2),
                             'profit_usdt': profit_usdt
                         })
-    
     return sorted(opportunities, key=lambda x: x['profit_usdt'], reverse=True)
 
 def update_profit_stats(profit):
@@ -259,16 +252,17 @@ if not st.session_state.logged_in:
     st.stop()
 
 # ====================== ОСНОВНОЙ ИНТЕРФЕЙС ======================
+# Верхняя строка: название, индикатор, кнопка выхода
 col_logo, col_status, col_logout = st.columns([3, 1, 1])
 with col_logo:
     st.markdown('<h1 class="main-header">🚀 НАКОПИТЕЛЬНЫЙ АРБИТРАЖ PRO</h1>', unsafe_allow_html=True)
 with col_status:
     if st.session_state.bot_running:
-        st.markdown('<div style="text-align: center;"><span class="status-indicator status-running"></span> <b style="color: #00FF88;">СКАНИРОВАНИЕ {len(DEFAULT_ASSETS)} токенов</b></div>', unsafe_allow_html=True)
+        st.markdown('<div style="text-align: center;"><span class="status-indicator status-running"></span> <b style="color: #00FF88;">РАБОТАЕТ</b></div>', unsafe_allow_html=True)
     else:
         st.markdown('<div style="text-align: center;"><span class="status-indicator status-stopped"></span> <b style="color: #FF4444;">ОСТАНОВЛЕН</b></div>', unsafe_allow_html=True)
 with col_logout:
-    if st.button("🚪 Выйти"):
+    if st.button("🚪 Выйти", key="logout"):
         st.session_state.bot_running = False
         st.session_state.logged_in = False
         save_user_data()
@@ -286,33 +280,38 @@ col1, col2 = st.columns(2)
 col1.metric("💰 Общая прибыль", f"{st.session_state.total_profit:.2f} USDT")
 col2.metric("📊 Сделок", st.session_state.trade_count)
 
+# Кнопки управления с цветами
 c1, c2, c3, c4 = st.columns(4)
 with c1:
+    st.markdown('<div class="green-button">', unsafe_allow_html=True)
     if st.button("▶ СТАРТ", use_container_width=True):
         st.session_state.bot_running = True
         save_user_data()
         st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
 with c2:
+    st.markdown('<div class="yellow-button">', unsafe_allow_html=True)
     if st.button("⏸ ПАУЗА", use_container_width=True):
         st.session_state.bot_running = False
         save_user_data()
         st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
 with c3:
+    st.markdown('<div class="red-button">', unsafe_allow_html=True)
     if st.button("⏹ СТОП", use_container_width=True):
         st.session_state.bot_running = False
         save_user_data()
         st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
 with c4:
     st.session_state.trade_mode = st.selectbox("Режим", ["Демо", "Реальный"])
 
 # ====================== ВКЛАДКИ ======================
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 Dashboard", "📈 Графики", "🔄 Арбитраж", "📦 Портфель", "💰 Кошелёк", "📜 История"])
 
-# TAB 1 - Dashboard с активностью по всем токенам
+# TAB 1 - Dashboard
 with tab1:
     st.subheader("📊 Статус сканирования токенов")
-    
-    # Отображаем все токены и их текущие цены
     st.write("### 🪙 Текущие цены на OKX")
     
     # Две строки по 5 токенов
@@ -323,17 +322,21 @@ with tab1:
                 price = None
                 if st.session_state.exchanges and MAIN_EXCHANGE in st.session_state.exchanges:
                     price = get_price(st.session_state.exchanges[MAIN_EXCHANGE], asset)
-                st.markdown(f"""
-                <div class="token-card">
-                    <b>{asset}</b><br>
-                    <span style="font-size: 18px; color: #00D4FF;">${price:,.0f}</span>
-                </div>
-                """, unsafe_allow_html=True) if price else st.markdown(f"<div class='token-card'><b>{asset}</b><br>❌</div>", unsafe_allow_html=True)
+                if price:
+                    st.markdown(f"""
+                    <div class="token-card">
+                        <b>{asset}</b><br>
+                        <span style="font-size: 18px; color: #00D4FF;">${price:,.0f}</span>
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    st.markdown(f"<div class='token-card'><b>{asset}</b><br>❌</div>", unsafe_allow_html=True)
     
     st.divider()
     st.write("### 🔍 Активные биржи для поиска")
+    active_exchanges = [ex for ex in AUX_EXCHANGES if ex.upper() in [x.lower() for x in connected] or ex.upper() in connected]
     cols = st.columns(4)
-    for i, ex in enumerate([ex for ex in AUX_EXCHANGES if ex in connected][:8]):
+    for i, ex in enumerate(active_exchanges[:8]):
         with cols[i % 4]:
             st.markdown(f"<div class='token-card'>✅ {ex.upper()}<br><span style='font-size: 11px;'>USDT: {DEMO_USDT_RESERVES:.0f}</span></div>", unsafe_allow_html=True)
     
@@ -433,6 +436,7 @@ with tab5:
     if st.button("💾 Сохранить"):
         st.session_state.wallet_address = wallet_input
         save_user_data()
+        st.success("Адрес сохранён!")
     withdraw = st.number_input("Сумма вывода", min_value=10.0, step=10.0)
     if st.button("📤 Вывести"):
         if st.session_state.wallet_address:
@@ -454,21 +458,17 @@ with tab6:
     else:
         st.info("Нет совершённых сделок")
 
-# ====================== АВТОМАТИЧЕСКИЙ АРБИТРАЖ (ПО ВСЕМ ТОКЕНАМ) ======================
+# ====================== АВТОМАТИЧЕСКИЙ АРБИТРАЖ ======================
 if st.session_state.bot_running and st.session_state.exchanges:
     time.sleep(8)
-    
     opportunities = find_all_arbitrage_opportunities()
-    
     if opportunities:
         best = opportunities[0]
         profit = best['profit_usdt']
-        
         if profit >= 0.30:
             st.session_state.total_profit += profit
             st.session_state.trade_count += 1
             update_profit_stats(profit)
-            
             trade_text = f"✅ {datetime.now().strftime('%H:%M:%S')} | {best['asset']} | Куплен на {best['aux_exchange'].upper()} по ${best['aux_price']:.2f} | Продан на OKX по ${best['main_price']:.2f} | +{profit:.2f} USDT"
             st.session_state.history.append(trade_text)
             save_user_data()
