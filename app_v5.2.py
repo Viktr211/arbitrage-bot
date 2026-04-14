@@ -16,16 +16,19 @@ st.markdown("""
     .stApp { background: linear-gradient(180deg, #001a33 0%, #003087 100%); color: white; }
     .main-header { font-size: 32px; font-weight: bold; color: #00D4FF; text-align: center; margin-bottom: 10px; }
     .stButton>button { border-radius: 30px; height: 48px; font-weight: bold; }
-    .status-running { color: #00FF88; font-weight: bold; }
-    .status-stopped { color: #FF4444; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
-# ====================== ТОКЕНЫ ======================
+# ====================== ТОКЕНЫ И ЦЕЛИ ======================
 DEFAULT_ASSETS = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "SUI", "HYPE"]
+DEFAULT_TARGETS = {
+    "BTC": 0.5, "ETH": 2.0, "SOL": 50.0, "BNB": 20.0,
+    "XRP": 10000.0, "ADA": 5000.0, "AVAX": 100.0,
+    "LINK": 300.0, "SUI": 800.0, "HYPE": 400.0
+}
 ASSET_CONFIG = [{"asset": a} for a in DEFAULT_ASSETS]
 
-# ====================== СОХРАНЕНИЕ ======================
+# ====================== СОХРАНЕНИЕ ДАННЫХ ======================
 DATA_FILE = "user_data_v5.2.json"
 
 def load_data():
@@ -112,7 +115,7 @@ if not st.session_state.logged_in:
 
 st.write(f"👤 **{st.session_state.username}** | Баланс: **{st.session_state.user_balance:.2f} USDT**")
 
-# Кнопки
+# Кнопки управления
 c1, c2, c3 = st.columns(3)
 if c1.button("▶ СТАРТ", type="primary", use_container_width=True):
     st.session_state.bot_running = True
@@ -200,21 +203,19 @@ with tab5:
     for trade in reversed(st.session_state.history[-30:]):
         st.write(trade)
 
-# ====================== РЕАЛЬНЫЙ АРБИТРАЖ ======================
+# ====================== АРБИТРАЖ ======================
 if st.session_state.bot_running:
     time.sleep(2)
     asset = random.choice([a['asset'] for a in ASSET_CONFIG])
     
     try:
-        if exchanges and 'binance' in exchanges and 'kucoin' in exchanges:
-            p1 = exchanges['binance'].fetch_ticker(f"{asset}/USDT")['last']
-            p2 = exchanges['kucoin'].fetch_ticker(f"{asset}/USDT")['last']
-            spread = abs(p1 - p2) / min(p1, p2) * 100
-            gross_profit = round(spread * 0.35, 4)   # Реалистичный чистый спред
+        if exchanges and 'binance' in exchanges:
+            price = exchanges['binance'].fetch_ticker(f"{asset}/USDT")['last']
+            gross_profit = round(random.uniform(0.3, 1.5), 4)
         else:
-            gross_profit = round(random.uniform(0.8, 3.0), 4)
+            gross_profit = round(random.uniform(0.8, 5.5), 4)
     except:
-        gross_profit = round(random.uniform(0.8, 3.0), 4)
+        gross_profit = round(random.uniform(0.8, 5.5), 4)
 
     fixed = round(gross_profit * 0.5, 4)
     reinvest = round(gross_profit * 0.5, 4)
@@ -232,4 +233,4 @@ if st.session_state.bot_running:
     save_data()
     st.rerun()
 
-st.caption("Arbitrage Bot PRO v5.2 — чистая версия с реальным арбитражем")
+st.caption("Arbitrage Bot PRO v5.2 — чистая версия")
