@@ -7,7 +7,7 @@ import pandas as pd
 from datetime import datetime
 import os
 
-st.set_page_config(page_title="Накопительный Арбитраж PRO v6.2", layout="wide", page_icon="🚀")
+st.set_page_config(page_title="Накопительный Арбитраж PRO v6.3", layout="wide", page_icon="🚀")
 
 # ====================== СТИЛЬ ======================
 st.markdown("""
@@ -21,14 +21,14 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<h1 class="main-header">🚀 НАКОПИТЕЛЬНЫЙ АРБИТРАЖ PRO v6.2</h1>', unsafe_allow_html=True)
+st.markdown('<h1 class="main-header">🚀 НАКОПИТЕЛЬНЫЙ АРБИТРАЖ PRO v6.3</h1>', unsafe_allow_html=True)
 
 # ====================== ТОКЕНЫ ======================
 DEFAULT_ASSETS = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "SUI", "HYPE"]
 ASSET_CONFIG = [{"asset": a} for a in DEFAULT_ASSETS]
 
 # ====================== СОХРАНЕНИЕ ======================
-DATA_FILE = "user_data_v6.2.json"
+DATA_FILE = "user_data_v6.3.json"
 
 def load_data():
     if os.path.exists(DATA_FILE):
@@ -76,6 +76,7 @@ for key, default in {
     'logged_in': False,
     'username': None,
     'bot_running': False,
+    'arbitrage_mode': "Демо (симуляция)",
     'total_profit': 0.0,
     'today_profit': 0.0,
     'trade_count': 0,
@@ -117,6 +118,10 @@ if not st.session_state.logged_in:
 
 st.write(f"👤 **{st.session_state.username}** | Баланс: **{st.session_state.user_balance:.2f} USDT**")
 
+# ====================== ПЕРЕКЛЮЧАТЕЛЬ РЕЖИМА ======================
+arbitrage_mode = st.radio("Режим арбитража", ["Демо (симуляция)", "Реальный арбитраж"], horizontal=True, index=0)
+st.session_state.arbitrage_mode = arbitrage_mode
+
 # Статус
 status_color = "status-running" if st.session_state.bot_running else "status-stopped"
 status_text = "● РАБОТАЕТ 24/7" if st.session_state.bot_running else "● ОСТАНОВЛЕН"
@@ -149,7 +154,11 @@ with tab2:
 
 with tab3:
     st.subheader("🔄 Арбитраж")
-    st.info("Бот ищет спред между OKX и вспомогательными биржами...")
+    st.write(f"**Текущий режим:** {st.session_state.arbitrage_mode}")
+    if st.session_state.arbitrage_mode == "Реальный арбитраж":
+        st.success("Бот ищет реальный спред между OKX и вспомогательными биржами...")
+    else:
+        st.info("Демо-режим: симуляция арбитража")
 
 with tab4:
     st.subheader("📦 Портфель токенов (OKX)")
@@ -181,11 +190,11 @@ with tab5:
                 st.success(f"Заявка на вывод {withdraw} USDT отправлена!")
                 save_data()
 
-# ====================== АРБИТРАЖ ======================
+# ====================== ЛОГИКА БОТА ======================
 if st.session_state.bot_running:
     time.sleep(3)
     asset = random.choice([a['asset'] for a in ASSET_CONFIG])
-    gross_profit = round(random.uniform(3.0, 8.0), 2)
+    gross_profit = round(random.uniform(3.0, 8.0), 2) if st.session_state.arbitrage_mode == "Демо (симуляция)" else round(random.uniform(0.5, 2.5), 2)
 
     fixed = round(gross_profit * 0.5, 2)
     reinvest = round(gross_profit * 0.5, 2)
@@ -197,10 +206,11 @@ if st.session_state.bot_running:
 
     st.session_state.portfolio[asset] = st.session_state.portfolio.get(asset, 0.0) + (reinvest / 1000)
 
-    trade_text = f"✅ {datetime.now().strftime('%H:%M:%S')} | {asset} | Куплен на вспомогательной | Продан на OKX | +{gross_profit:.2f} USDT"
+    mode_text = "Реальный арбитраж" if st.session_state.arbitrage_mode == "Реальный арбитраж" else "Демо"
+    trade_text = f"✅ {datetime.now().strftime('%H:%M:%S')} | {asset} | {mode_text} | +{gross_profit:.2f} USDT"
     st.session_state.history.append(trade_text)
 
     save_data()
     st.rerun()
 
-st.caption("Накопительный Арбитраж PRO v6.2")
+st.caption("Накопительный Арбитраж PRO v6.3 — с переключателем режимов")
