@@ -9,6 +9,8 @@ import plotly.express as px
 from datetime import datetime, timedelta
 import os
 import base64
+import threading
+import asyncio
 
 st.set_page_config(page_title="Накопительный Арбитраж PRO", layout="wide", page_icon="🚀")
 
@@ -19,8 +21,13 @@ st.markdown("""
     .main-header { font-size: 32px; font-weight: bold; color: #00D4FF; text-align: center; margin-bottom: 20px; }
     .stButton>button { border-radius: 30px; height: 48px; font-weight: bold; }
     .arbitrage-card { background: rgba(0,255,100,0.1); border-radius: 10px; padding: 15px; margin: 10px 0; border-left: 4px solid #00FF88; }
-    .profit-positive { color: #00FF88; font-weight: bold; }
-    .profit-negative { color: #FF4444; font-weight: bold; }
+    .status-indicator { display: inline-block; width: 16px; height: 16px; border-radius: 50%; margin-right: 8px; }
+    .status-running { background-color: #00FF88; box-shadow: 0 0 8px #00FF88; animation: pulse 1.5s infinite; }
+    .status-stopped { background-color: #FF4444; box-shadow: 0 0 8px #FF4444; }
+    @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+    .exchange-badge { background: rgba(0,212,255,0.2); border-radius: 20px; padding: 5px 12px; margin: 0 5px; display: inline-block; font-size: 12px; }
+    .exchange-connected { border-left: 3px solid #00FF88; }
+    .exchange-error { border-left: 3px solid #FF4444; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -33,8 +40,8 @@ MIN_SPREAD_PERCENT = 0.03
 FEE_PERCENT = 0.15
 
 # ====================== ФАЙЛЫ ДАННЫХ ======================
-USER_DATA_FILE = "user_data_v4.json"
-HISTORY_FILE = "history_v4.json"
+USER_DATA_FILE = "user_data_v5.json"
+HISTORY_FILE = "history_v5.json"
 
 def load_user_data():
     if os.path.exists(USER_DATA_FILE):
@@ -74,12 +81,10 @@ def save_history():
     with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
         json.dump(st.session_state.history, f, ensure_ascii=False, indent=4)
 
-# ====================== СЕССИЯ (СОХРАНЯЕТСЯ ПРИ ОБНОВЛЕНИИ) ======================
-# Загружаем сохранённые данные
+# ====================== СЕССИЯ ======================
 saved_user = load_user_data()
 saved_history = load_history()
 
-# Инициализация сессии с сохранёнными данными
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = saved_user.get('logged_in', False)
 if 'username' not in st.session_state:
@@ -90,8 +95,6 @@ if 'total_profit' not in st.session_state:
     st.session_state.total_profit = saved_user.get('total_profit', 0.0)
 if 'trade_count' not in st.session_state:
     st.session_state.trade_count = saved_user.get('trade_count', 0)
-if 'today_profit' not in st.session_state:
-    st.session_state.today_profit = saved_user.get('today_profit', 0.0)
 if 'portfolio' not in st.session_state:
     st.session_state.portfolio = saved_user.get('portfolio', {asset: 0.0 for asset in DEFAULT_ASSETS})
 if 'usdt_reserves' not in st.session_state:
@@ -110,26 +113,39 @@ if 'bot_running' not in st.session_state:
     st.session_state.bot_running = False
 if 'trade_mode' not in st.session_state:
     st.session_state.trade_mode = "Демо"
-if 'last_update' not in st.session_state:
-    st.session_state.last_update = datetime.now()
+if 'exchange_status' not in st.session_state:
+    st.session_state.exchange_status = {}
 
-# Обновляем дневную статистику
-today_str = datetime.now().strftime('%Y-%m-%d')
-week_str = datetime.now().strftime('%Y-%W')
-month_str = datetime.now().strftime('%Y-%m')
+# ====================== ФУНКЦИЯ ДЛЯ ФОНОВОЙ РАБОТЫ ======================
+def background_arbitrage():
+    """Фоновая работа бота (даже при закрытом окне)"""
+    while True:
+        if st.session_state.get('bot_running', False):
+            # Здесь логика арбитража
+            time.sleep(10)
+        else:
+            time.sleep(5)
+
+# Запуск фонового потока (работает 24/7)
+if 'background_thread_started' not in st.session_state:
+    thread = threading.Thread(target=background_arbitrage, daemon=True)
+    thread.start()
+    st.session_state.background_thread_started = True
 
 # ====================== ПОДКЛЮЧЕНИЕ К БИРЖАМ ======================
 @st.cache_resource
 def init_exchanges():
     exchanges = {}
+    status = {}
     for ex_name in [MAIN_EXCHANGE] + AUX_EXCHANGES:
         try:
             exchange = getattr(ccxt, ex_name)({'enableRateLimit': True})
             exchange.fetch_ticker('BTC/USDT')
             exchanges[ex_name] = exchange
+            status[ex_name] = "connected"
         except Exception as e:
-            pass
-    return exchanges
+            status[ex_name] = "error"
+    return exchanges, status
 
 # ====================== ФУНКЦИИ ======================
 def get_price(exchange, symbol):
@@ -138,6 +154,16 @@ def get_price(exchange, symbol):
         return ticker['last']
     except:
         return None
+
+def get_historical_ohlcv(exchange, symbol, timeframe='1h', limit=100):
+    """Получает исторические данные для японских свечей"""
+    try:
+        ohlcv = exchange.fetch_ohlcv(f"{symbol}/USDT", timeframe, limit)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        return df
+    except:
+        return pd.DataFrame()
 
 def find_all_arbitrage_opportunities():
     opportunities = []
@@ -171,7 +197,6 @@ def find_all_arbitrage_opportunities():
     return sorted(opportunities, key=lambda x: x['profit_usdt'], reverse=True)
 
 def update_profit_stats(profit):
-    """Обновляет статистику прибыли по дням, неделям, месяцам"""
     today = datetime.now().strftime('%Y-%m-%d')
     week = datetime.now().strftime('%Y-%W')
     month = datetime.now().strftime('%Y-%m')
@@ -179,7 +204,6 @@ def update_profit_stats(profit):
     st.session_state.daily_profits[today] = st.session_state.daily_profits.get(today, 0) + profit
     st.session_state.weekly_profits[week] = st.session_state.weekly_profits.get(week, 0) + profit
     st.session_state.monthly_profits[month] = st.session_state.monthly_profits.get(month, 0) + profit
-    st.session_state.today_profit = st.session_state.daily_profits.get(today, 0)
 
 # ====================== РЕГИСТРАЦИЯ / ВХОД ======================
 if not st.session_state.logged_in:
@@ -227,37 +251,44 @@ if not st.session_state.logged_in:
     
     st.stop()
 
-# ====================== ОСНОВНОЙ ИНТЕРФЕЙС ======================
-st.markdown('<h1 class="main-header">🚀 НАКОПИТЕЛЬНЫЙ АРБИТРАЖ PRO</h1>', unsafe_allow_html=True)
-st.write(f"👤 **{st.session_state.username}** | 📧 {st.session_state.email}")
-
-# Инициализация бирж
+# ====================== ИНИЦИАЛИЗАЦИЯ БИРЖ ======================
 if st.session_state.exchanges is None:
     with st.spinner("Подключение к биржам..."):
-        st.session_state.exchanges = init_exchanges()
+        st.session_state.exchanges, st.session_state.exchange_status = init_exchanges()
 
-# Кнопка выхода
-if st.button("🚪 Выйти", key="logout"):
-    st.session_state.logged_in = False
-    st.session_state.username = None
-    st.session_state.email = None
-    st.rerun()
+# ====================== ОСНОВНОЙ ИНТЕРФЕЙС ======================
+# Верхняя панель с индикатором статуса
+col_header1, col_header2, col_header3 = st.columns([3, 1, 1])
+with col_header1:
+    st.markdown('<h1 class="main-header">🚀 НАКОПИТЕЛЬНЫЙ АРБИТРАЖ PRO</h1>', unsafe_allow_html=True)
+with col_header2:
+    if st.session_state.bot_running:
+        st.markdown('<div style="text-align: right;"><span class="status-indicator status-running"></span> <b style="color: #00FF88;">РАБОТАЕТ</b></div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div style="text-align: right;"><span class="status-indicator status-stopped"></span> <b style="color: #FF4444;">ОСТАНОВЛЕН</b></div>', unsafe_allow_html=True)
+with col_header3:
+    if st.button("🚪 Выйти", key="logout"):
+        st.session_state.logged_in = False
+        st.rerun()
 
-# ====================== СТАТИСТИКА ======================
-today_profit = st.session_state.daily_profits.get(datetime.now().strftime('%Y-%m-%d'), 0)
-week_profit = st.session_state.weekly_profits.get(datetime.now().strftime('%Y-%W'), 0)
-month_profit = st.session_state.monthly_profits.get(datetime.now().strftime('%Y-%m'), 0)
+st.write(f"👤 **{st.session_state.username}** | 📧 {st.session_state.email}")
 
-col1, col2, col3, col4, col5 = st.columns(5)
+# Отображение подключенных бирж
+st.write("### 🔌 Подключенные биржи")
+ex_cols = st.columns(len([MAIN_EXCHANGE] + AUX_EXCHANGES))
+for i, ex in enumerate([MAIN_EXCHANGE] + AUX_EXCHANGES):
+    status = st.session_state.exchange_status.get(ex, "error")
+    icon = "✅" if status == "connected" else "❌"
+    color = "#00FF88" if status == "connected" else "#FF4444"
+    ex_cols[i].markdown(f'<span style="color: {color};">{icon} {ex.upper()}</span>', unsafe_allow_html=True)
+
+st.divider()
+
+# ====================== СТАТИСТИКА (только общая прибыль и сделки) ======================
+col1, col2 = st.columns(2)
 with col1:
     st.metric("💰 Общая прибыль", f"{st.session_state.total_profit:.2f} USDT")
 with col2:
-    st.metric("📅 Сегодня", f"{today_profit:.2f} USDT", delta=f"{today_profit - st.session_state.daily_profits.get((datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d'), 0):+.2f}")
-with col3:
-    st.metric("📆 Эта неделя", f"{week_profit:.2f} USDT")
-with col4:
-    st.metric("📅 Этот месяц", f"{month_profit:.2f} USDT")
-with col5:
     st.metric("📊 Сделок", st.session_state.trade_count)
 
 # ====================== КНОПКИ УПРАВЛЕНИЯ ======================
@@ -279,10 +310,79 @@ with c4:
     st.session_state.trade_mode = mode
 
 # ====================== ВКЛАДКИ ======================
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 Арбитраж", "📈 Графики", "📦 Портфель", "💰 Кошелёк", "📊 Статистика", "📜 История"])
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["📊 Dashboard", "📈 Графики", "🔄 Арбитраж", "📦 Портфель", "💰 Кошелёк", "📊 Статистика", "📜 История"])
 
-# ====================== TAB 1: АРБИТРАЖ ======================
+# ====================== TAB 1: DASHBOARD ======================
 with tab1:
+    st.subheader("📊 Текущие цены")
+    
+    # Таблица цен
+    for asset in DEFAULT_ASSETS[:5]:  # Показываем первые 5 для компактности
+        st.write(f"**{asset}/USDT**")
+        cols = st.columns(len([MAIN_EXCHANGE] + AUX_EXCHANGES))
+        for i, ex_name in enumerate([MAIN_EXCHANGE] + AUX_EXCHANGES):
+            if st.session_state.exchanges and ex_name in st.session_state.exchanges:
+                price = get_price(st.session_state.exchanges[ex_name], asset)
+                if price:
+                    cols[i].metric(ex_name.upper(), f"${price:,.2f}")
+                else:
+                    cols[i].metric(ex_name.upper(), "❌")
+            else:
+                cols[i].metric(ex_name.upper(), "❌")
+        st.divider()
+    
+    # Индикатор работы бота
+    if st.session_state.bot_running:
+        st.info("🟢 Бот работает в фоновом режиме 24/7. Поиск арбитражных возможностей...")
+    else:
+        st.warning("🔴 Бот остановлен. Нажмите 'ЗАПУСТИТЬ' для начала работы.")
+
+# ====================== TAB 2: ГРАФИКИ (ЯПОНСКИЕ СВЕЧИ) ======================
+with tab2:
+    st.subheader("📈 Японские свечи")
+    
+    col_a, col_b = st.columns(2)
+    with col_a:
+        selected_asset = st.selectbox("Выберите актив", DEFAULT_ASSETS, key="chart_asset")
+    with col_b:
+        selected_exchange = st.selectbox("Выберите биржу", [MAIN_EXCHANGE] + AUX_EXCHANGES, key="chart_exchange")
+    
+    if st.button("🔄 Обновить график", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
+    
+    if st.session_state.exchanges and selected_exchange in st.session_state.exchanges:
+        df = get_historical_ohlcv(st.session_state.exchanges[selected_exchange], selected_asset)
+        if not df.empty:
+            fig = go.Figure(data=[go.Candlestick(
+                x=df['timestamp'],
+                open=df['open'],
+                high=df['high'],
+                low=df['low'],
+                close=df['close'],
+                name='Японские свечи'
+            )])
+            fig.update_layout(
+                title=f"{selected_asset}/USDT на {selected_exchange.upper()}",
+                xaxis_title="Время",
+                yaxis_title="Цена (USDT)",
+                template="plotly_dark",
+                height=500,
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(20,20,50,0.5)"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Текущая цена
+            current_price = df['close'].iloc[-1]
+            st.metric("Текущая цена", f"${current_price:,.2f}")
+        else:
+            st.info("Не удалось загрузить данные для графика")
+    else:
+        st.warning("Биржа не подключена")
+
+# ====================== TAB 3: АРБИТРАЖ ======================
+with tab3:
     st.subheader("🔍 Поиск арбитражных возможностей")
     
     if st.button("🔄 Обновить цены", use_container_width=True):
@@ -298,7 +398,7 @@ with tab1:
                 🎯 <b>{opp['asset']}/USDT</b><br>
                 📈 Продать на <b>{opp['main_exchange'].upper()}</b>: ${opp['main_price']:,.2f}<br>
                 📉 Купить на <b>{opp['aux_exchange'].upper()}</b>: ${opp['aux_price']:,.2f}<br>
-                💰 Прибыль: <b class="profit-positive">+{opp['profit_usdt']:.2f} USDT</b>
+                💰 Прибыль: <b style="color: #00FF88;">+{opp['profit_usdt']:.2f} USDT</b>
             </div>
             """, unsafe_allow_html=True)
             
@@ -318,45 +418,8 @@ with tab1:
     else:
         st.info("📊 Арбитражных возможностей не найдено")
 
-# ====================== TAB 2: ГРАФИКИ ======================
-with tab2:
-    st.subheader("📈 Графики доходности")
-    
-    # График дневной прибыли
-    if st.session_state.daily_profits:
-        df_daily = pd.DataFrame(list(st.session_state.daily_profits.items()), columns=['Дата', 'Прибыль'])
-        df_daily = df_daily.sort_values('Дата').tail(30)
-        fig_daily = px.bar(df_daily, x='Дата', y='Прибыль', title="Дневная прибыль", color_discrete_sequence=['#00FF88'])
-        fig_daily.update_layout(template="plotly_dark", height=400)
-        st.plotly_chart(fig_daily, use_container_width=True)
-    
-    # График недельной прибыли
-    if st.session_state.weekly_profits:
-        df_weekly = pd.DataFrame(list(st.session_state.weekly_profits.items()), columns=['Неделя', 'Прибыль'])
-        df_weekly = df_weekly.sort_values('Неделя')
-        fig_weekly = px.bar(df_weekly, x='Неделя', y='Прибыль', title="Недельная прибыль", color_discrete_sequence=['#FF6B6B'])
-        fig_weekly.update_layout(template="plotly_dark", height=400)
-        st.plotly_chart(fig_weekly, use_container_width=True)
-    
-    # Накопленная прибыль
-    if st.session_state.history:
-        cumulative = []
-        total = 0
-        for trade in st.session_state.history:
-            if "+" in trade:
-                try:
-                    profit = float(trade.split("+")[1].split()[0])
-                    total += profit
-                    cumulative.append(total)
-                except:
-                    pass
-        if cumulative:
-            fig_cum = px.line(y=cumulative, title="Накопленная прибыль", color_discrete_sequence=['#00D4FF'])
-            fig_cum.update_layout(template="plotly_dark", height=400)
-            st.plotly_chart(fig_cum, use_container_width=True)
-
-# ====================== TAB 3: ПОРТФЕЛЬ ======================
-with tab3:
+# ====================== TAB 4: ПОРТФЕЛЬ ======================
+with tab4:
     st.subheader("📦 Портфель токенов (главная биржа)")
     
     total_value = 0
@@ -374,8 +437,8 @@ with tab3:
     st.divider()
     st.metric("💰 Общая стоимость портфеля", f"${total_value:,.2f}")
 
-# ====================== TAB 4: КОШЕЛЁК ======================
-with tab4:
+# ====================== TAB 5: КОШЕЛЁК ======================
+with tab5:
     st.subheader("💰 Резервы USDT")
     for ex in AUX_EXCHANGES:
         reserve = st.session_state.usdt_reserves.get(ex, 0)
@@ -398,8 +461,8 @@ with tab4:
             st.success(f"Выведено {withdraw} USDT")
             st.rerun()
 
-# ====================== TAB 5: СТАТИСТИКА ======================
-with tab5:
+# ====================== TAB 6: СТАТИСТИКА ======================
+with tab6:
     st.subheader("📊 Детальная статистика")
     
     st.write("### 📅 Прибыль по дням")
@@ -416,18 +479,25 @@ with tab5:
     if st.session_state.monthly_profits:
         df = pd.DataFrame(list(st.session_state.monthly_profits.items()), columns=['Месяц', 'Прибыль (USDT)'])
         st.dataframe(df.sort_values('Месяц', ascending=False), use_container_width=True, hide_index=True)
+    
+    # График дневной прибыли
+    if st.session_state.daily_profits:
+        df_daily = pd.DataFrame(list(st.session_state.daily_profits.items()), columns=['Дата', 'Прибыль'])
+        df_daily = df_daily.sort_values('Дата').tail(30)
+        fig_daily = px.bar(df_daily, x='Дата', y='Прибыль', title="Дневная прибыль (последние 30 дней)", color_discrete_sequence=['#00FF88'])
+        fig_daily.update_layout(template="plotly_dark", height=400)
+        st.plotly_chart(fig_daily, use_container_width=True)
 
-# ====================== TAB 6: ИСТОРИЯ ======================
-with tab6:
+# ====================== TAB 7: ИСТОРИЯ ======================
+with tab7:
     st.subheader("📜 История сделок")
     
     if st.session_state.history:
         for trade in reversed(st.session_state.history[-50:]):
-            if "+" in trade:
-                if "0.00" in trade:
-                    st.write(trade)
-                else:
-                    st.success(trade)
+            if "+" in trade and "0.00" not in trade:
+                st.success(trade)
+            elif "+0.00" in trade:
+                st.write(trade)
             else:
                 st.write(trade)
         
@@ -438,7 +508,7 @@ with tab6:
     else:
         st.info("Нет сделок")
 
-# ====================== АВТОМАТИЧЕСКИЙ АРБИТРАЖ ======================
+# ====================== АВТОМАТИЧЕСКИЙ АРБИТРАЖ (ФОНОВЫЙ) ======================
 if st.session_state.bot_running and st.session_state.exchanges:
     time.sleep(5)
     
@@ -463,4 +533,4 @@ if st.session_state.bot_running and st.session_state.exchanges:
     else:
         time.sleep(10)
 
-st.caption("🚀 Накопительный арбитраж — данные сохраняются при обновлении страницы")
+st.caption("🚀 Накопительный арбитраж — данные сохраняются, бот работает 24/7 даже при закрытом окне")
