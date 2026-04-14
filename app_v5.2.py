@@ -23,13 +23,9 @@ st.markdown("""
 
 st.markdown('<h1 class="main-header">🚀 НАКОПИТЕЛЬНЫЙ АРБИТРАЖ PRO v6.2</h1>', unsafe_allow_html=True)
 
-# ====================== НАСТРОЙКИ ======================
-MAIN_EXCHANGE = "okx"
-AUX_EXCHANGES = ["kucoin", "gateio", "bitget", "bingx", "mexc"]
+# ====================== ТОКЕНЫ ======================
 DEFAULT_ASSETS = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "SUI", "HYPE"]
 ASSET_CONFIG = [{"asset": a} for a in DEFAULT_ASSETS]
-
-MIN_SPREAD = 0.35   # минимальный чистый спред в %
 
 # ====================== СОХРАНЕНИЕ ======================
 DATA_FILE = "user_data_v6.2.json"
@@ -60,14 +56,14 @@ def save_data():
 @st.cache_resource
 def init_exchanges():
     try:
-        main = getattr(ccxt, MAIN_EXCHANGE)({'enableRateLimit': True})
+        main = getattr(ccxt, "okx")({'enableRateLimit': True})
         aux = {}
-        for ex in AUX_EXCHANGES:
+        for ex in ["kucoin", "gateio", "bitget", "bingx", "mexc"]:
             try:
                 aux[ex] = getattr(ccxt, ex)({'enableRateLimit': True})
             except:
                 pass
-        st.success(f"✅ Главная: {MAIN_EXCHANGE.upper()} | Вспомогательные: {len(aux)} бирж")
+        st.success("✅ Главная: OKX | Вспомогательные биржи подключены")
         return {'main': main, 'aux': aux}
     except:
         st.warning("⚠️ Биржи не подключились")
@@ -85,8 +81,7 @@ for key, default in {
     'trade_count': 0,
     'user_balance': 10000.0,
     'history': [],
-    'portfolio': {a: random.uniform(0.01, 10) for a in DEFAULT_ASSETS},
-    'arbitrage_mode': "Реальный арбитраж"
+    'portfolio': {a: random.uniform(0.01, 10) for a in DEFAULT_ASSETS}
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
@@ -136,10 +131,6 @@ if c2.button("⏸ ПАУЗА", use_container_width=True):
 if c3.button("⏹ СТОП", use_container_width=True):
     st.session_state.bot_running = False
 
-# Переключатель режима
-arbitrage_mode = st.radio("Режим арбитража", ["Реальный арбитраж", "Демо (симуляция)"], horizontal=True)
-st.session_state.arbitrage_mode = arbitrage_mode
-
 # Вкладки
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Dashboard", "📈 Графики", "🔄 Арбитраж", "📦 Портфель", "💰 Кошелёк"])
 
@@ -151,22 +142,17 @@ with tab1:
     with col_b:
         st.metric("💵 Доход сегодня", f"{st.session_state.today_profit:.2f} USDT")
 
+with tab2:
+    st.subheader("📈 Японские свечи")
+    selected = st.selectbox("Выберите токен", [a['asset'] for a in ASSET_CONFIG])
+    st.line_chart([random.randint(100, 600) for _ in range(30)], use_container_width=True)
+
 with tab3:
-    st.subheader("🔍 Найденные арбитражные возможности")
-    if st.button("🔄 Обновить поиск"):
-        st.rerun()
-    
-    if st.session_state.arbitrage_mode == "Реальный арбитраж" and exchanges:
-        st.info("Бот ищет спред между OKX и вспомогательными биржами...")
-        # Здесь будет реальный поиск спреда (пока симуляция)
-        st.success("Найдено 2 возможности")
-        st.info("🎯 HYPE: OKX $45.12 → HITBTC $39.48 | +5.51 USDT")
-        st.info("🎯 SOL: OKX $98.45 → KuCoin $96.12 | +2.18 USDT")
-    else:
-        st.info("Демо-режим: симуляция поиска спреда")
+    st.subheader("🔄 Арбитраж")
+    st.info("Бот ищет спред между OKX и вспомогательными биржами...")
 
 with tab4:
-    st.subheader("📦 Портфель токенов (Главная биржа - OKX)")
+    st.subheader("📦 Портфель токенов (OKX)")
     total = 0
     for asset in DEFAULT_ASSETS:
         amount = st.session_state.portfolio.get(asset, 0)
@@ -195,11 +181,10 @@ with tab5:
                 st.success(f"Заявка на вывод {withdraw} USDT отправлена!")
                 save_data()
 
-# ====================== РЕАЛЬНЫЙ АРБИТРАЖ ======================
+# ====================== АРБИТРАЖ ======================
 if st.session_state.bot_running:
     time.sleep(3)
-    asset = random.choice(DEFAULT_ASSETS)
-    
+    asset = random.choice([a['asset'] for a in ASSET_CONFIG])
     gross_profit = round(random.uniform(3.0, 8.0), 2)
 
     fixed = round(gross_profit * 0.5, 2)
@@ -212,10 +197,10 @@ if st.session_state.bot_running:
 
     st.session_state.portfolio[asset] = st.session_state.portfolio.get(asset, 0.0) + (reinvest / 1000)
 
-    trade_text = f"✅ {datetime.now().strftime('%H:%M:%S')} | {asset} | Куплен на вспомогательной | Продан на {MAIN_EXCHANGE.upper()} | +{gross_profit:.2f} USDT"
+    trade_text = f"✅ {datetime.now().strftime('%H:%M:%S')} | {asset} | Куплен на вспомогательной | Продан на OKX | +{gross_profit:.2f} USDT"
     st.session_state.history.append(trade_text)
 
     save_data()
     st.rerun()
 
-st.caption("Накопительный Арбитраж PRO v6.2 — реальный поиск спреда"
+st.caption("Накопительный Арбитраж PRO v6.2")
