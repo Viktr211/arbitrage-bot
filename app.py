@@ -6,9 +6,10 @@ import ccxt
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 import threading
+import numpy as np
 
 st.set_page_config(page_title="Накопительный Арбитраж PRO", layout="wide", page_icon="🚀")
 
@@ -27,6 +28,7 @@ st.markdown("""
     .yellow-button button { background-color: #CC8800 !important; color: white !important; }
     .red-button button { background-color: #CC3333 !important; color: white !important; }
     .token-card { background: rgba(0,100,200,0.2); border-radius: 10px; padding: 8px; margin: 4px; text-align: center; }
+    .profit-card { background: rgba(0,255,100,0.1); border-radius: 10px; padding: 15px; margin: 10px 0; border-left: 4px solid #00FF88; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -47,6 +49,7 @@ DEMO_USDT_RESERVES = 10000
 # ====================== ФАЙЛЫ ======================
 USER_DATA_FILE = "user_data_v11.json"
 HISTORY_FILE = "history_v11.json"
+OPPORTUNITIES_FILE = "opportunities_history.json"
 
 def load_user_data():
     if os.path.exists(USER_DATA_FILE):
@@ -88,9 +91,26 @@ def save_history():
     with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
         json.dump(st.session_state.history[-500:], f, ensure_ascii=False, indent=4)
 
+def load_opportunities():
+    if os.path.exists(OPPORTUNITIES_FILE):
+        try:
+            with open(OPPORTUNITIES_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return []
+    return []
+
+def save_opportunities(opps):
+    # Ограничим до последних 10000 записей
+    if len(opps) > 10000:
+        opps = opps[-10000:]
+    with open(OPPORTUNITIES_FILE, 'w', encoding='utf-8') as f:
+        json.dump(opps, f, ensure_ascii=False, indent=4)
+
 # ====================== СЕССИЯ ======================
 saved_user = load_user_data()
 saved_history = load_history()
+saved_opportunities = load_opportunities()
 
 for key, default in [
     ('logged_in', saved_user.get('logged_in', False)),
@@ -105,6 +125,7 @@ for key, default in [
     ('weekly_profits', saved_user.get('weekly_profits', {})),
     ('monthly_profits', saved_user.get('monthly_profits', {})),
     ('history', saved_history),
+    ('opportunities_history', saved_opportunities),
     ('exchanges', None),
     ('bot_running', saved_user.get('bot_running', False)),
     ('trade_mode', "Демо"),
@@ -146,7 +167,8 @@ def get_historical_ohlcv(exchange, symbol, timeframe='1h', limit=100):
     except:
         return pd.DataFrame()
 
-def find_all_arbitrage_opportunities():
+def find_all_arbitrage_opportunities(record=True):
+    """Ищет арбитраж и если record=True, сохраняет в историю"""
     opportunities = []
     if not st.session_state.exchanges or MAIN_EXCHANGE not in st.session_state.exchanges:
         return opportunities
@@ -157,6 +179,7 @@ def find_all_arbitrage_opportunities():
         if price:
             main_prices[asset] = price
     
+    now = datetime.now().isoformat()
     for asset in DEFAULT_ASSETS:
         if asset not in main_prices:
             continue
@@ -169,14 +192,22 @@ def find_all_arbitrage_opportunities():
                     net_spread = spread_pct - FEE_PERCENT
                     profit_usdt = round((main_price - aux_price) - (main_price * 0.0008) - (aux_price * 0.0008), 2)
                     if net_spread > MIN_SPREAD_PERCENT and profit_usdt >= 0.20:
-                        opportunities.append({
+                        opp = {
                             'asset': asset,
                             'aux_exchange': aux_ex,
                             'main_price': main_price,
                             'aux_price': aux_price,
                             'spread_pct': round(spread_pct, 2),
-                            'profit_usdt': profit_usdt
-                        })
+                            'profit_usdt': profit_usdt,
+                            'timestamp': now
+                        }
+                        opportunities.append(opp)
+                        if record:
+                            st.session_state.opportunities_history.append(opp)
+    
+    if record and opportunities:
+        save_opportunities(st.session_state.opportunities_history)
+    
     return sorted(opportunities, key=lambda x: x['profit_usdt'], reverse=True)
 
 def update_profit_stats(profit):
@@ -186,6 +217,41 @@ def update_profit_stats(profit):
     st.session_state.daily_profits[today] = st.session_state.daily_profits.get(today, 0) + profit
     st.session_state.weekly_profits[week] = st.session_state.weekly_profits.get(week, 0) + profit
     st.session_state.monthly_profits[month] = st.session_state.monthly_profits.get(month, 0) + profit
+
+def compute_expected_return(capital_usdt, lookback_days=7):
+    """Рассчитывает ожидаемую дневную доходность на основе исторических возможностей"""
+    opps = st.session_state.opportunities_history
+    if not opps:
+        return None, None, None
+    
+    # Фильтруем по дате
+    cutoff = datetime.now() - timedelta(days=lookback_days)
+    recent = [o for o in opps if datetime.fromisoformat(o['timestamp']) > cutoff]
+    if not recent:
+        return None, None, None
+    
+    # Группируем по часу/дню
+    # Сначала получим уникальные временные слоты (например, каждый час)
+    # Упростим: считаем среднюю прибыль на одну сделку и предположим, что можно совершить N сделок в день
+    avg_profit_per_opp = np.mean([o['profit_usdt'] for o in recent])
+    # Количество возможностей в день
+    # Уникальные дни
+    days = set(datetime.fromisoformat(o['timestamp']).date() for o in recent)
+    if not days:
+        return None, None, None
+    total_opps = len(recent)
+    avg_opps_per_day = total_opps / len(days)
+    
+    # Предполагаем, что мы используем капитал = сумма USDT на вспомогательных биржах (усреднённо)
+    # Но для калькулятора пользователь вводит свою сумму, пересчитываем пропорционально
+    # Ориентир: в демо-режиме на каждую биржу заложено 10000 USDT, всего бирж ~8, итого ~80000 USDT
+    reference_capital = 80000.0  # примерный объём USDT, который бот использует для поиска (не точный, но для масштаба)
+    scaling_factor = capital_usdt / reference_capital if reference_capital > 0 else 1
+    
+    expected_daily_profit = avg_profit_per_opp * avg_opps_per_day * scaling_factor
+    expected_daily_return_pct = (expected_daily_profit / capital_usdt) * 100 if capital_usdt > 0 else 0
+    
+    return expected_daily_profit, expected_daily_return_pct, avg_opps_per_day
 
 # ====================== ИНИЦИАЛИЗАЦИЯ БИРЖ ======================
 if st.session_state.exchanges is None:
@@ -252,7 +318,6 @@ if not st.session_state.logged_in:
     st.stop()
 
 # ====================== ОСНОВНОЙ ИНТЕРФЕЙС ======================
-# Верхняя строка: название, индикатор, кнопка выхода
 col_logo, col_status, col_logout = st.columns([3, 1, 1])
 with col_logo:
     st.markdown('<h1 class="main-header">🚀 НАКОПИТЕЛЬНЫЙ АРБИТРАЖ PRO</h1>', unsafe_allow_html=True)
@@ -270,7 +335,6 @@ with col_logout:
 
 st.markdown(f'<div class="user-info">👤 {st.session_state.username} | 📧 {st.session_state.email}</div>', unsafe_allow_html=True)
 
-# Биржи
 connected = [ex.upper() for ex, status in st.session_state.exchange_status.items() if status == "connected"]
 st.write(f"🔌 **Биржи:** {', '.join(connected[:8])}" + (f" +{len(connected)-8}" if len(connected) > 8 else ""))
 st.write(f"🪙 **Токены:** {', '.join(DEFAULT_ASSETS)} (10 токенов)")
@@ -280,7 +344,6 @@ col1, col2 = st.columns(2)
 col1.metric("💰 Общая прибыль", f"{st.session_state.total_profit:.2f} USDT")
 col2.metric("📊 Сделок", st.session_state.trade_count)
 
-# Кнопки управления с цветами
 c1, c2, c3, c4 = st.columns(4)
 with c1:
     st.markdown('<div class="green-button">', unsafe_allow_html=True)
@@ -307,73 +370,49 @@ with c4:
     st.session_state.trade_mode = st.selectbox("Режим", ["Демо", "Реальный"])
 
 # ====================== ВКЛАДКИ ======================
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 Dashboard", "📈 Графики", "🔄 Арбитраж", "📦 Портфель", "💰 Кошелёк", "📜 История"])
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["📊 Dashboard", "📈 Графики", "🔄 Арбитраж", "📊 Доходность", "📦 Портфель", "💰 Кошелёк", "📜 История"])
 
-# TAB 1 - Dashboard
+# TAB 1 - Dashboard (как ранее)
 with tab1:
     st.subheader("📊 Статус сканирования токенов")
     st.write("### 🪙 Текущие цены на OKX")
-    
-    # Две строки по 5 токенов
     for i in range(0, len(DEFAULT_ASSETS), 5):
         cols = st.columns(5)
         for j, asset in enumerate(DEFAULT_ASSETS[i:i+5]):
             with cols[j]:
-                price = None
-                if st.session_state.exchanges and MAIN_EXCHANGE in st.session_state.exchanges:
-                    price = get_price(st.session_state.exchanges[MAIN_EXCHANGE], asset)
+                price = get_price(st.session_state.exchanges[MAIN_EXCHANGE], asset) if st.session_state.exchanges and MAIN_EXCHANGE in st.session_state.exchanges else None
                 if price:
-                    st.markdown(f"""
-                    <div class="token-card">
-                        <b>{asset}</b><br>
-                        <span style="font-size: 18px; color: #00D4FF;">${price:,.0f}</span>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    st.markdown(f"<div class='token-card'><b>{asset}</b><br><span style='font-size: 18px; color: #00D4FF;'>${price:,.0f}</span></div>", unsafe_allow_html=True)
                 else:
                     st.markdown(f"<div class='token-card'><b>{asset}</b><br>❌</div>", unsafe_allow_html=True)
-    
     st.divider()
-    st.write("### 🔍 Активные биржи для поиска")
-    active_exchanges = [ex for ex in AUX_EXCHANGES if ex.upper() in [x.lower() for x in connected] or ex.upper() in connected]
-    cols = st.columns(4)
-    for i, ex in enumerate(active_exchanges[:8]):
+    st.write("### 🔍 Активные биржи")
+    active = [ex for ex in AUX_EXCHANGES if ex.upper() in [x.upper() for x in connected]]
+    for i, ex in enumerate(active[:8]):
+        if i % 4 == 0:
+            cols = st.columns(4)
         with cols[i % 4]:
             st.markdown(f"<div class='token-card'>✅ {ex.upper()}<br><span style='font-size: 11px;'>USDT: {DEMO_USDT_RESERVES:.0f}</span></div>", unsafe_allow_html=True)
-    
     if st.session_state.bot_running:
         st.info(f"🟢 Бот сканирует **{len(DEFAULT_ASSETS)} токенов** на **{len(connected)} биржах** одновременно. Последнее обновление: {datetime.now().strftime('%H:%M:%S')}")
     else:
         st.warning("🔴 Бот остановлен. Нажмите СТАРТ для начала сканирования.")
 
-# TAB 2 - Графики
+# TAB 2 - Графики (без изменений)
 with tab2:
     st.subheader("📈 Японские свечи")
     col_a, col_b = st.columns(2)
     selected_asset = col_a.selectbox("Актив", DEFAULT_ASSETS)
     selected_exchange = col_b.selectbox("Биржа", [MAIN_EXCHANGE] + AUX_EXCHANGES[:5])
-    
     if st.button("🔄 Обновить график", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
-    
     if st.session_state.exchanges and selected_exchange in st.session_state.exchanges:
         try:
             df = get_historical_ohlcv(st.session_state.exchanges[selected_exchange], selected_asset)
-            if not df.empty and len(df) > 0:
-                fig = go.Figure(data=[go.Candlestick(
-                    x=df['timestamp'],
-                    open=df['open'],
-                    high=df['high'],
-                    low=df['low'],
-                    close=df['close']
-                )])
-                fig.update_layout(
-                    title=f"{selected_asset}/USDT на {selected_exchange.upper()}",
-                    template="plotly_dark",
-                    height=500,
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    plot_bgcolor="rgba(20,20,50,0.5)"
-                )
+            if not df.empty:
+                fig = go.Figure(data=[go.Candlestick(x=df['timestamp'], open=df['open'], high=df['high'], low=df['low'], close=df['close'])])
+                fig.update_layout(title=f"{selected_asset}/USDT на {selected_exchange.upper()}", template="plotly_dark", height=500)
                 st.plotly_chart(fig, use_container_width=True)
                 st.metric("Текущая цена", f"${df['close'].iloc[-1]:,.2f}")
             else:
@@ -386,13 +425,10 @@ with tab2:
 # TAB 3 - Арбитраж
 with tab3:
     st.subheader("🔍 Найденные арбитражные возможности")
-    
     if st.button("🔄 Обновить", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
-    
-    opportunities = find_all_arbitrage_opportunities()
-    
+    opportunities = find_all_arbitrage_opportunities(record=True)
     if opportunities:
         st.success(f"✅ Найдено {len(opportunities)} возможностей на {len(set([opp['asset'] for opp in opportunities]))} токенах!")
         for opp in opportunities[:10]:
@@ -412,8 +448,73 @@ with tab3:
     else:
         st.info("📊 Арбитражных возможностей не найдено. Бот сканирует все токены и биржи...")
 
-# TAB 4 - Портфель
+# TAB 4 - КАЛЬКУЛЯТОР ДОХОДНОСТИ
 with tab4:
+    st.subheader("📊 Калькулятор ожидаемой доходности")
+    st.markdown("На основе исторических арбитражных возможностей (последние 7 дней) бот рассчитывает потенциальный доход.")
+    
+    # Загружаем историю возможностей (если пустая, запускаем поиск один раз)
+    if not st.session_state.opportunities_history:
+        with st.spinner("Сбор данных об арбитражных возможностях..."):
+            find_all_arbitrage_opportunities(record=True)
+    
+    # Статистика по возможностям
+    opps = st.session_state.opportunities_history
+    if opps:
+        # Подготовим данные
+        df_opps = pd.DataFrame(opps)
+        df_opps['timestamp'] = pd.to_datetime(df_opps['timestamp'])
+        df_opps['date'] = df_opps['timestamp'].dt.date
+        df_opps['hour'] = df_opps['timestamp'].dt.hour
+        
+        st.write("### 📈 Статистика найденных возможностей за всё время")
+        col_a, col_b, col_c = st.columns(3)
+        col_a.metric("Всего возможностей", len(df_opps))
+        col_b.metric("Средняя прибыль на сделку", f"${df_opps['profit_usdt'].mean():.2f}")
+        col_c.metric("Максимальная прибыль", f"${df_opps['profit_usdt'].max():.2f}")
+        
+        # График по дням
+        daily_counts = df_opps.groupby('date').size().reset_index(name='count')
+        fig_counts = px.bar(daily_counts, x='date', y='count', title="Количество возможностей по дням", color_discrete_sequence=['#00FF88'])
+        fig_counts.update_layout(template="plotly_dark", height=400)
+        st.plotly_chart(fig_counts, use_container_width=True)
+        
+        # Распределение по активам
+        asset_counts = df_opps['asset'].value_counts().reset_index()
+        asset_counts.columns = ['Актив', 'Количество']
+        fig_assets = px.bar(asset_counts, x='Актив', y='Количество', title="Возможности по активам", color_discrete_sequence=['#00D4FF'])
+        fig_assets.update_layout(template="plotly_dark", height=400)
+        st.plotly_chart(fig_assets, use_container_width=True)
+        
+        st.divider()
+        st.write("### 💰 Калькулятор ожидаемого дохода")
+        st.info("Введите сумму USDT, которую вы планируете использовать для арбитража (средства на вспомогательных биржах). Бот рассчитает ожидаемую дневную прибыль на основе исторических данных.")
+        
+        capital = st.number_input("💵 Капитал для арбитража (USDT)", min_value=100.0, value=10000.0, step=1000.0)
+        lookback = st.selectbox("Период анализа", [3, 7, 14, 30], index=1, format_func=lambda x: f"{x} дней")
+        
+        if st.button("Рассчитать ожидаемую доходность", use_container_width=True):
+            exp_profit, exp_return_pct, avg_opps_per_day = compute_expected_return(capital, lookback_days=lookback)
+            if exp_profit is not None:
+                st.markdown(f"""
+                <div class="profit-card">
+                    <b>📊 Ожидаемая дневная доходность (на основе последних {lookback} дней):</b><br>
+                    💰 Прибыль в день: <b style="color: #00FF88;">${exp_profit:.2f}</b><br>
+                    📈 Доходность: <b style="color: #00FF88;">{exp_return_pct:.2f}%</b> от капитала<br>
+                    🔄 Количество сделок в день (оценка): <b>{avg_opps_per_day:.1f}</b>
+                </div>
+                """, unsafe_allow_html=True)
+                st.caption("⚠️ *Расчёт основан на исторических спредах и не гарантирует будущих результатов. Реальная доходность может отличаться из-за волатильности, задержек исполнения и изменения рыночных условий.*")
+            else:
+                st.warning(f"Недостаточно данных за последние {lookback} дней. Запустите бота и дайте ему поработать.")
+    else:
+        st.info("Пока нет накопленных данных об арбитражных возможностях. Запустите бота и подождите некоторое время, чтобы бот собрал статистику.")
+        if st.button("Принудительно запустить сканирование"):
+            find_all_arbitrage_opportunities(record=True)
+            st.rerun()
+
+# TAB 5 - Портфель
+with tab5:
     st.subheader("📦 Портфель токенов (OKX)")
     total = 0
     for asset in DEFAULT_ASSETS:
@@ -426,8 +527,8 @@ with tab4:
     st.divider()
     st.metric("💰 Общая стоимость портфеля", f"${total:,.2f}")
 
-# TAB 5 - Кошелёк
-with tab5:
+# TAB 6 - Кошелёк
+with tab6:
     st.subheader("💰 Резервы USDT на биржах")
     for ex in AUX_EXCHANGES[:5]:
         st.write(f"{ex.upper()}: {st.session_state.usdt_reserves.get(ex, DEMO_USDT_RESERVES):.0f} USDT")
@@ -442,8 +543,8 @@ with tab5:
         if st.session_state.wallet_address:
             st.success(f"Заявка на вывод {withdraw} USDT отправлена")
 
-# TAB 6 - История
-with tab6:
+# TAB 7 - История
+with tab7:
     st.subheader("📜 История арбитражных сделок")
     if st.session_state.history:
         for trade in reversed(st.session_state.history[-50:]):
@@ -461,7 +562,7 @@ with tab6:
 # ====================== АВТОМАТИЧЕСКИЙ АРБИТРАЖ ======================
 if st.session_state.bot_running and st.session_state.exchanges:
     time.sleep(8)
-    opportunities = find_all_arbitrage_opportunities()
+    opportunities = find_all_arbitrage_opportunities(record=True)
     if opportunities:
         best = opportunities[0]
         profit = best['profit_usdt']
