@@ -47,8 +47,8 @@ DEMO_PORTFOLIO = {
 DEMO_USDT_RESERVES = 10000
 
 # ====================== ФАЙЛЫ ======================
-USER_DATA_FILE = "user_data_v11.json"
-HISTORY_FILE = "history_v11.json"
+USER_DATA_FILE = "user_data_v12.json"
+HISTORY_FILE = "history_v12.json"
 OPPORTUNITIES_FILE = "opportunities_history.json"
 
 def load_user_data():
@@ -101,7 +101,6 @@ def load_opportunities():
     return []
 
 def save_opportunities(opps):
-    # Ограничим до последних 10000 записей
     if len(opps) > 10000:
         opps = opps[-10000:]
     with open(OPPORTUNITIES_FILE, 'w', encoding='utf-8') as f:
@@ -168,7 +167,6 @@ def get_historical_ohlcv(exchange, symbol, timeframe='1h', limit=100):
         return pd.DataFrame()
 
 def find_all_arbitrage_opportunities(record=True):
-    """Ищет арбитраж и если record=True, сохраняет в историю"""
     opportunities = []
     if not st.session_state.exchanges or MAIN_EXCHANGE not in st.session_state.exchanges:
         return opportunities
@@ -219,38 +217,23 @@ def update_profit_stats(profit):
     st.session_state.monthly_profits[month] = st.session_state.monthly_profits.get(month, 0) + profit
 
 def compute_expected_return(capital_usdt, lookback_days=7):
-    """Рассчитывает ожидаемую дневную доходность на основе исторических возможностей"""
     opps = st.session_state.opportunities_history
     if not opps:
         return None, None, None
-    
-    # Фильтруем по дате
     cutoff = datetime.now() - timedelta(days=lookback_days)
     recent = [o for o in opps if datetime.fromisoformat(o['timestamp']) > cutoff]
     if not recent:
         return None, None, None
-    
-    # Группируем по часу/дню
-    # Сначала получим уникальные временные слоты (например, каждый час)
-    # Упростим: считаем среднюю прибыль на одну сделку и предположим, что можно совершить N сделок в день
     avg_profit_per_opp = np.mean([o['profit_usdt'] for o in recent])
-    # Количество возможностей в день
-    # Уникальные дни
     days = set(datetime.fromisoformat(o['timestamp']).date() for o in recent)
     if not days:
         return None, None, None
     total_opps = len(recent)
     avg_opps_per_day = total_opps / len(days)
-    
-    # Предполагаем, что мы используем капитал = сумма USDT на вспомогательных биржах (усреднённо)
-    # Но для калькулятора пользователь вводит свою сумму, пересчитываем пропорционально
-    # Ориентир: в демо-режиме на каждую биржу заложено 10000 USDT, всего бирж ~8, итого ~80000 USDT
-    reference_capital = 80000.0  # примерный объём USDT, который бот использует для поиска (не точный, но для масштаба)
+    reference_capital = 80000.0
     scaling_factor = capital_usdt / reference_capital if reference_capital > 0 else 1
-    
     expected_daily_profit = avg_profit_per_opp * avg_opps_per_day * scaling_factor
     expected_daily_return_pct = (expected_daily_profit / capital_usdt) * 100 if capital_usdt > 0 else 0
-    
     return expected_daily_profit, expected_daily_return_pct, avg_opps_per_day
 
 # ====================== ИНИЦИАЛИЗАЦИЯ БИРЖ ======================
@@ -261,7 +244,6 @@ if st.session_state.exchanges is None:
 # ====================== РЕГИСТРАЦИЯ / ВХОД ======================
 if not st.session_state.logged_in:
     st.markdown('<h1 class="main-header">🚀 НАКОПИТЕЛЬНЫЙ АРБИТРАЖ PRO</h1>', unsafe_allow_html=True)
-    
     if not st.session_state.is_first_time:
         with st.form("login_form"):
             st.subheader("🔑 Вход в аккаунт")
@@ -372,7 +354,7 @@ with c4:
 # ====================== ВКЛАДКИ ======================
 tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["📊 Dashboard", "📈 Графики", "🔄 Арбитраж", "📊 Доходность", "📦 Портфель", "💰 Кошелёк", "📜 История"])
 
-# TAB 1 - Dashboard (как ранее)
+# TAB 1 - Dashboard
 with tab1:
     st.subheader("📊 Статус сканирования токенов")
     st.write("### 🪙 Текущие цены на OKX")
@@ -398,7 +380,7 @@ with tab1:
     else:
         st.warning("🔴 Бот остановлен. Нажмите СТАРТ для начала сканирования.")
 
-# TAB 2 - Графики (без изменений)
+# TAB 2 - Графики
 with tab2:
     st.subheader("📈 Японские свечи")
     col_a, col_b = st.columns(2)
@@ -422,7 +404,7 @@ with tab2:
     else:
         st.warning("Биржа не подключена")
 
-# TAB 3 - Арбитраж
+# TAB 3 - Арбитраж (ИСПРАВЛЕНА ОШИБКА DUPLICATE KEY)
 with tab3:
     st.subheader("🔍 Найденные арбитражные возможности")
     if st.button("🔄 Обновить", use_container_width=True):
@@ -431,9 +413,11 @@ with tab3:
     opportunities = find_all_arbitrage_opportunities(record=True)
     if opportunities:
         st.success(f"✅ Найдено {len(opportunities)} возможностей на {len(set([opp['asset'] for opp in opportunities]))} токенах!")
-        for opp in opportunities[:10]:
+        for idx, opp in enumerate(opportunities[:10]):
+            # Уникальный ключ: asset + биржа + индекс
+            unique_key = f"{opp['asset']}_{opp['aux_exchange']}_{idx}"
             st.info(f"🎯 {opp['asset']}: OKX ${opp['main_price']:,.0f} → {opp['aux_exchange'].upper()} ${opp['aux_price']:,.0f} | +{opp['profit_usdt']:.2f} USDT")
-            if st.button(f"Исполнить {opp['asset']}", key=opp['asset']):
+            if st.button(f"Исполнить {opp['asset']} на {opp['aux_exchange'].upper()}", key=unique_key):
                 if st.session_state.trade_mode == "Демо":
                     profit = opp['profit_usdt']
                     st.session_state.total_profit += profit
@@ -448,51 +432,37 @@ with tab3:
     else:
         st.info("📊 Арбитражных возможностей не найдено. Бот сканирует все токены и биржи...")
 
-# TAB 4 - КАЛЬКУЛЯТОР ДОХОДНОСТИ
+# TAB 4 - Доходность
 with tab4:
     st.subheader("📊 Калькулятор ожидаемой доходности")
     st.markdown("На основе исторических арбитражных возможностей (последние 7 дней) бот рассчитывает потенциальный доход.")
-    
-    # Загружаем историю возможностей (если пустая, запускаем поиск один раз)
     if not st.session_state.opportunities_history:
         with st.spinner("Сбор данных об арбитражных возможностях..."):
             find_all_arbitrage_opportunities(record=True)
-    
-    # Статистика по возможностям
     opps = st.session_state.opportunities_history
     if opps:
-        # Подготовим данные
         df_opps = pd.DataFrame(opps)
         df_opps['timestamp'] = pd.to_datetime(df_opps['timestamp'])
         df_opps['date'] = df_opps['timestamp'].dt.date
-        df_opps['hour'] = df_opps['timestamp'].dt.hour
-        
         st.write("### 📈 Статистика найденных возможностей за всё время")
         col_a, col_b, col_c = st.columns(3)
         col_a.metric("Всего возможностей", len(df_opps))
         col_b.metric("Средняя прибыль на сделку", f"${df_opps['profit_usdt'].mean():.2f}")
         col_c.metric("Максимальная прибыль", f"${df_opps['profit_usdt'].max():.2f}")
-        
-        # График по дням
         daily_counts = df_opps.groupby('date').size().reset_index(name='count')
         fig_counts = px.bar(daily_counts, x='date', y='count', title="Количество возможностей по дням", color_discrete_sequence=['#00FF88'])
         fig_counts.update_layout(template="plotly_dark", height=400)
         st.plotly_chart(fig_counts, use_container_width=True)
-        
-        # Распределение по активам
         asset_counts = df_opps['asset'].value_counts().reset_index()
         asset_counts.columns = ['Актив', 'Количество']
         fig_assets = px.bar(asset_counts, x='Актив', y='Количество', title="Возможности по активам", color_discrete_sequence=['#00D4FF'])
         fig_assets.update_layout(template="plotly_dark", height=400)
         st.plotly_chart(fig_assets, use_container_width=True)
-        
         st.divider()
         st.write("### 💰 Калькулятор ожидаемого дохода")
-        st.info("Введите сумму USDT, которую вы планируете использовать для арбитража (средства на вспомогательных биржах). Бот рассчитает ожидаемую дневную прибыль на основе исторических данных.")
-        
+        st.info("Введите сумму USDT, которую вы планируете использовать для арбитража.")
         capital = st.number_input("💵 Капитал для арбитража (USDT)", min_value=100.0, value=10000.0, step=1000.0)
         lookback = st.selectbox("Период анализа", [3, 7, 14, 30], index=1, format_func=lambda x: f"{x} дней")
-        
         if st.button("Рассчитать ожидаемую доходность", use_container_width=True):
             exp_profit, exp_return_pct, avg_opps_per_day = compute_expected_return(capital, lookback_days=lookback)
             if exp_profit is not None:
@@ -504,11 +474,11 @@ with tab4:
                     🔄 Количество сделок в день (оценка): <b>{avg_opps_per_day:.1f}</b>
                 </div>
                 """, unsafe_allow_html=True)
-                st.caption("⚠️ *Расчёт основан на исторических спредах и не гарантирует будущих результатов. Реальная доходность может отличаться из-за волатильности, задержек исполнения и изменения рыночных условий.*")
+                st.caption("⚠️ *Расчёт основан на исторических спредах и не гарантирует будущих результатов.*")
             else:
-                st.warning(f"Недостаточно данных за последние {lookback} дней. Запустите бота и дайте ему поработать.")
+                st.warning(f"Недостаточно данных за последние {lookback} дней.")
     else:
-        st.info("Пока нет накопленных данных об арбитражных возможностях. Запустите бота и подождите некоторое время, чтобы бот собрал статистику.")
+        st.info("Пока нет накопленных данных об арбитражных возможностях. Запустите бота и подождите некоторое время.")
         if st.button("Принудительно запустить сканирование"):
             find_all_arbitrage_opportunities(record=True)
             st.rerun()
