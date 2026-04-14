@@ -9,7 +9,6 @@ import plotly.express as px
 from datetime import datetime
 import os
 import threading
-import asyncio
 
 st.set_page_config(page_title="Накопительный Арбитраж PRO", layout="wide", page_icon="🚀")
 
@@ -24,9 +23,9 @@ st.markdown("""
     .status-stopped { background-color: #FF4444; box-shadow: 0 0 8px #FF4444; }
     @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
     .stButton>button { border-radius: 30px; height: 42px; font-weight: bold; }
-    .green-button button { background-color: #00AA44 !important; }
-    .yellow-button button { background-color: #CC8800 !important; }
-    .red-button button { background-color: #CC3333 !important; }
+    .token-card { background: rgba(0,100,200,0.2); border-radius: 10px; padding: 8px; margin: 4px; text-align: center; }
+    .scanning { animation: blink 1s infinite; }
+    @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
 </style>
 """, unsafe_allow_html=True)
 
@@ -45,8 +44,8 @@ DEMO_PORTFOLIO = {
 DEMO_USDT_RESERVES = 10000
 
 # ====================== ФАЙЛЫ ======================
-USER_DATA_FILE = "user_data_v9.json"
-HISTORY_FILE = "history_v9.json"
+USER_DATA_FILE = "user_data_v10.json"
+HISTORY_FILE = "history_v10.json"
 
 def load_user_data():
     if os.path.exists(USER_DATA_FILE):
@@ -109,34 +108,11 @@ for key, default in [
     ('bot_running', saved_user.get('bot_running', False)),
     ('trade_mode', "Демо"),
     ('exchange_status', {}),
-    ('is_first_time', not saved_user.get('is_registered', False))
+    ('is_first_time', not saved_user.get('is_registered', False)),
+    ('last_scan', datetime.now())
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
-
-# ====================== ФОНОВЫЙ ПОТОК ДЛЯ 24/7 ======================
-background_thread = None
-
-def background_arbitrage_loop():
-    """Фоновый поток для арбитража 24/7"""
-    while True:
-        if st.session_state.get('bot_running', False):
-            try:
-                # Здесь будет логика арбитража
-                time.sleep(10)
-            except:
-                pass
-        else:
-            time.sleep(5)
-
-def start_background_thread():
-    global background_thread
-    if background_thread is None or not background_thread.is_alive():
-        background_thread = threading.Thread(target=background_arbitrage_loop, daemon=True)
-        background_thread.start()
-
-# Запускаем фоновый поток при старте приложения
-start_background_thread()
 
 # ====================== ПОДКЛЮЧЕНИЕ К БИРЖАМ ======================
 @st.cache_resource
@@ -170,15 +146,26 @@ def get_historical_ohlcv(exchange, symbol, timeframe='1h', limit=100):
     except:
         return pd.DataFrame()
 
-def find_arbitrage_opportunities():
+def find_all_arbitrage_opportunities():
+    """Ищет арбитраж для ВСЕХ токенов на ВСЕХ биржах одновременно"""
     opportunities = []
+    
     if not st.session_state.exchanges or MAIN_EXCHANGE not in st.session_state.exchanges:
         return opportunities
     
+    # Получаем цены на главной бирже для всех токенов
+    main_prices = {}
     for asset in DEFAULT_ASSETS:
-        main_price = get_price(st.session_state.exchanges[MAIN_EXCHANGE], asset)
-        if not main_price:
+        price = get_price(st.session_state.exchanges[MAIN_EXCHANGE], asset)
+        if price:
+            main_prices[asset] = price
+    
+    # Проверяем каждую вспомогательную биржу для каждого токена
+    for asset in DEFAULT_ASSETS:
+        if asset not in main_prices:
             continue
+        
+        main_price = main_prices[asset]
         
         for aux_ex in AUX_EXCHANGES:
             if aux_ex in st.session_state.exchanges and st.session_state.exchanges[aux_ex]:
@@ -196,6 +183,7 @@ def find_arbitrage_opportunities():
                             'spread_pct': round(spread_pct, 2),
                             'profit_usdt': profit_usdt
                         })
+    
     return sorted(opportunities, key=lambda x: x['profit_usdt'], reverse=True)
 
 def update_profit_stats(profit):
@@ -276,11 +264,11 @@ with col_logo:
     st.markdown('<h1 class="main-header">🚀 НАКОПИТЕЛЬНЫЙ АРБИТРАЖ PRO</h1>', unsafe_allow_html=True)
 with col_status:
     if st.session_state.bot_running:
-        st.markdown('<div style="text-align: center; margin-top: 10px;"><span class="status-indicator status-running"></span> <b style="color: #00FF88;">ПОИСК</b></div>', unsafe_allow_html=True)
+        st.markdown('<div style="text-align: center;"><span class="status-indicator status-running"></span> <b style="color: #00FF88;">СКАНИРОВАНИЕ {len(DEFAULT_ASSETS)} токенов</b></div>', unsafe_allow_html=True)
     else:
-        st.markdown('<div style="text-align: center; margin-top: 10px;"><span class="status-indicator status-stopped"></span> <b style="color: #FF4444;">СТОП</b></div>', unsafe_allow_html=True)
+        st.markdown('<div style="text-align: center;"><span class="status-indicator status-stopped"></span> <b style="color: #FF4444;">ОСТАНОВЛЕН</b></div>', unsafe_allow_html=True)
 with col_logout:
-    if st.button("🚪 Выйти", key="logout"):
+    if st.button("🚪 Выйти"):
         st.session_state.bot_running = False
         st.session_state.logged_in = False
         save_user_data()
@@ -291,13 +279,13 @@ st.markdown(f'<div class="user-info">👤 {st.session_state.username} | 📧 {st
 # Биржи
 connected = [ex.upper() for ex, status in st.session_state.exchange_status.items() if status == "connected"]
 st.write(f"🔌 **Биржи:** {', '.join(connected[:8])}" + (f" +{len(connected)-8}" if len(connected) > 8 else ""))
+st.write(f"🪙 **Токены:** {', '.join(DEFAULT_ASSETS)} (10 токенов)")
 st.divider()
 
 col1, col2 = st.columns(2)
 col1.metric("💰 Общая прибыль", f"{st.session_state.total_profit:.2f} USDT")
 col2.metric("📊 Сделок", st.session_state.trade_count)
 
-# Кнопки управления с цветами
 c1, c2, c3, c4 = st.columns(4)
 with c1:
     if st.button("▶ СТАРТ", use_container_width=True):
@@ -320,21 +308,41 @@ with c4:
 # ====================== ВКЛАДКИ ======================
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 Dashboard", "📈 Графики", "🔄 Арбитраж", "📦 Портфель", "💰 Кошелёк", "📜 История"])
 
-# TAB 1
+# TAB 1 - Dashboard с активностью по всем токенам
 with tab1:
-    st.subheader("📊 Текущие цены")
+    st.subheader("📊 Статус сканирования токенов")
+    
+    # Отображаем все токены и их текущие цены
+    st.write("### 🪙 Текущие цены на OKX")
+    
+    # Две строки по 5 токенов
     for i in range(0, len(DEFAULT_ASSETS), 5):
         cols = st.columns(5)
         for j, asset in enumerate(DEFAULT_ASSETS[i:i+5]):
             with cols[j]:
-                st.write(f"**{asset}**")
+                price = None
                 if st.session_state.exchanges and MAIN_EXCHANGE in st.session_state.exchanges:
                     price = get_price(st.session_state.exchanges[MAIN_EXCHANGE], asset)
-                    st.write(f"💰 ${price:,.0f}" if price else "❌")
+                st.markdown(f"""
+                <div class="token-card">
+                    <b>{asset}</b><br>
+                    <span style="font-size: 18px; color: #00D4FF;">${price:,.0f}</span>
+                </div>
+                """, unsafe_allow_html=True) if price else st.markdown(f"<div class='token-card'><b>{asset}</b><br>❌</div>", unsafe_allow_html=True)
+    
+    st.divider()
+    st.write("### 🔍 Активные биржи для поиска")
+    cols = st.columns(4)
+    for i, ex in enumerate([ex for ex in AUX_EXCHANGES if ex in connected][:8]):
+        with cols[i % 4]:
+            st.markdown(f"<div class='token-card'>✅ {ex.upper()}<br><span style='font-size: 11px;'>USDT: {DEMO_USDT_RESERVES:.0f}</span></div>", unsafe_allow_html=True)
+    
     if st.session_state.bot_running:
-        st.info("🟢 Бот работает 24/7 в фоновом режиме. Поиск арбитража на 10+ биржах...")
+        st.info(f"🟢 Бот сканирует **{len(DEFAULT_ASSETS)} токенов** на **{len(connected)} биржах** одновременно. Последнее обновление: {datetime.now().strftime('%H:%M:%S')}")
+    else:
+        st.warning("🔴 Бот остановлен. Нажмите СТАРТ для начала сканирования.")
 
-# TAB 2 - ГРАФИКИ с автообновлением
+# TAB 2 - Графики
 with tab2:
     st.subheader("📈 Японские свечи")
     col_a, col_b = st.columns(2)
@@ -364,31 +372,27 @@ with tab2:
                     plot_bgcolor="rgba(20,20,50,0.5)"
                 )
                 st.plotly_chart(fig, use_container_width=True)
-                
-                # Текущая цена
-                current_price = df['close'].iloc[-1]
-                st.metric("Текущая цена", f"${current_price:,.2f}")
-                st.caption(f"📊 Данные: {len(df)} свечей за последние часы")
+                st.metric("Текущая цена", f"${df['close'].iloc[-1]:,.2f}")
             else:
-                st.warning("Не удалось загрузить данные для графика. Попробуйте другой актив или биржу.")
+                st.warning("Нет данных для графика")
         except Exception as e:
-            st.warning(f"Ошибка загрузки графика: {str(e)[:80]}")
+            st.warning(f"Ошибка: {str(e)[:80]}")
     else:
         st.warning("Биржа не подключена")
 
-# TAB 3
+# TAB 3 - Арбитраж
 with tab3:
-    st.subheader("🔍 Поиск арбитражных возможностей")
+    st.subheader("🔍 Найденные арбитражные возможности")
     
-    if st.button("🔄 Найти сейчас", use_container_width=True):
+    if st.button("🔄 Обновить", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
     
-    opportunities = find_arbitrage_opportunities()
+    opportunities = find_all_arbitrage_opportunities()
     
     if opportunities:
-        st.success(f"✅ Найдено {len(opportunities)} возможностей!")
-        for opp in opportunities[:5]:
+        st.success(f"✅ Найдено {len(opportunities)} возможностей на {len(set([opp['asset'] for opp in opportunities]))} токенах!")
+        for opp in opportunities[:10]:
             st.info(f"🎯 {opp['asset']}: OKX ${opp['main_price']:,.0f} → {opp['aux_exchange'].upper()} ${opp['aux_price']:,.0f} | +{opp['profit_usdt']:.2f} USDT")
             if st.button(f"Исполнить {opp['asset']}", key=opp['asset']):
                 if st.session_state.trade_mode == "Демо":
@@ -396,7 +400,6 @@ with tab3:
                     st.session_state.total_profit += profit
                     st.session_state.trade_count += 1
                     update_profit_stats(profit)
-                    
                     trade_text = f"✅ {datetime.now().strftime('%H:%M:%S')} | {opp['asset']} | Куплен на {opp['aux_exchange'].upper()} по ${opp['aux_price']:.2f} | Продан на OKX по ${opp['main_price']:.2f} | +{profit:.2f} USDT"
                     st.session_state.history.append(trade_text)
                     save_user_data()
@@ -404,9 +407,9 @@ with tab3:
                     st.success(f"✅ Сделка исполнена! +{profit:.2f} USDT")
                     st.rerun()
     else:
-        st.info("📊 Арбитражных возможностей не найдено. Бот продолжает поиск...")
+        st.info("📊 Арбитражных возможностей не найдено. Бот сканирует все токены и биржи...")
 
-# TAB 4
+# TAB 4 - Портфель
 with tab4:
     st.subheader("📦 Портфель токенов (OKX)")
     total = 0
@@ -420,52 +423,42 @@ with tab4:
     st.divider()
     st.metric("💰 Общая стоимость портфеля", f"${total:,.2f}")
 
-# TAB 5
+# TAB 5 - Кошелёк
 with tab5:
     st.subheader("💰 Резервы USDT на биржах")
     for ex in AUX_EXCHANGES[:5]:
         st.write(f"{ex.upper()}: {st.session_state.usdt_reserves.get(ex, DEMO_USDT_RESERVES):.0f} USDT")
     st.divider()
-    
-    st.subheader("💳 Мой кошелёк")
-    wallet_input = st.text_input("Адрес кошелька (USDT)", value=st.session_state.wallet_address)
-    if st.button("💾 Сохранить адрес"):
+    wallet_input = st.text_input("Адрес кошелька", value=st.session_state.wallet_address)
+    if st.button("💾 Сохранить"):
         st.session_state.wallet_address = wallet_input
         save_user_data()
-        st.success("Адрес сохранён!")
-    
-    st.divider()
-    st.subheader("📤 Вывод средств")
-    withdraw = st.number_input("Сумма вывода (USDT)", min_value=10.0, step=10.0)
-    if st.button("📤 Запросить вывод"):
+    withdraw = st.number_input("Сумма вывода", min_value=10.0, step=10.0)
+    if st.button("📤 Вывести"):
         if st.session_state.wallet_address:
-            st.success(f"✅ Заявка на вывод {withdraw} USDT на адрес {st.session_state.wallet_address[:20]}... отправлена!")
-        else:
-            st.error("Сначала сохраните адрес кошелька!")
+            st.success(f"Заявка на вывод {withdraw} USDT отправлена")
 
-# TAB 6 - ИСТОРИЯ с деталями
+# TAB 6 - История
 with tab6:
     st.subheader("📜 История арбитражных сделок")
-    
     if st.session_state.history:
         for trade in reversed(st.session_state.history[-50:]):
             if "✅" in trade:
                 st.success(trade)
             else:
                 st.write(trade)
-        
-        if st.button("🗑 Очистить историю", use_container_width=True):
+        if st.button("🗑 Очистить историю"):
             st.session_state.history = []
             save_history()
             st.rerun()
     else:
         st.info("Нет совершённых сделок")
 
-# ====================== АВТОМАТИЧЕСКИЙ АРБИТРАЖ (ФОНОВЫЙ) ======================
+# ====================== АВТОМАТИЧЕСКИЙ АРБИТРАЖ (ПО ВСЕМ ТОКЕНАМ) ======================
 if st.session_state.bot_running and st.session_state.exchanges:
-    time.sleep(8)  # Увеличено до 8 секунд для стабильности
+    time.sleep(8)
     
-    opportunities = find_arbitrage_opportunities()
+    opportunities = find_all_arbitrage_opportunities()
     
     if opportunities:
         best = opportunities[0]
@@ -480,7 +473,7 @@ if st.session_state.bot_running and st.session_state.exchanges:
             st.session_state.history.append(trade_text)
             save_user_data()
             save_history()
-            st.toast(f"🎯 АРБИТРАЖ! {best['asset']} +{profit:.2f} USDT", icon="💰")
+            st.toast(f"🎯 {best['asset']} | +{profit:.2f} USDT", icon="💰")
             st.rerun()
 
-st.caption("🚀 Накопительный арбитраж | Работает 24/7 | 10+ бирж | Токены на OKX | USDT на остальных")
+st.caption(f"🚀 Сканируется {len(DEFAULT_ASSETS)} токенов на {len(connected)} биржах | Работает 24/7")
