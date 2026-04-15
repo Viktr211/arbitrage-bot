@@ -46,12 +46,12 @@ DEMO_PORTFOLIO = {
 }
 DEMO_USDT_RESERVES = 10000
 
-# ====================== ФАЙЛЫ ======================
-USER_DATA_FILE = "user_data_v12.json"
+# ====================== ФАЙЛЫ ДАННЫХ ======================
+USER_DATA_FILE = "users.json"
 HISTORY_FILE = "history_v12.json"
 OPPORTUNITIES_FILE = "opportunities_history.json"
 
-def load_user_data():
+def load_users():
     if os.path.exists(USER_DATA_FILE):
         try:
             with open(USER_DATA_FILE, 'r', encoding='utf-8') as f:
@@ -60,23 +60,31 @@ def load_user_data():
             return {}
     return {}
 
-def save_user_data():
-    data = {
-        'username': st.session_state.get('username'),
-        'email': st.session_state.get('email'),
-        'wallet_address': st.session_state.get('wallet_address', ''),
-        'total_profit': st.session_state.get('total_profit', 0.0),
-        'trade_count': st.session_state.get('trade_count', 0),
-        'portfolio': st.session_state.get('portfolio', {}),
-        'usdt_reserves': st.session_state.get('usdt_reserves', {}),
-        'daily_profits': st.session_state.get('daily_profits', {}),
-        'weekly_profits': st.session_state.get('weekly_profits', {}),
-        'monthly_profits': st.session_state.get('monthly_profits', {}),
-        'bot_running': st.session_state.get('bot_running', False),
-        'is_registered': True
-    }
+def save_users(users):
     with open(USER_DATA_FILE, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
+        json.dump(users, f, ensure_ascii=False, indent=4)
+
+def load_user_data():
+    return load_users()
+
+def save_user_data():
+    # Сохраняем текущего пользователя в общий файл users.json
+    users = load_users()
+    if st.session_state.get('email'):
+        users[st.session_state.email] = {
+            'username': st.session_state.get('username'),
+            'email': st.session_state.get('email'),
+            'wallet_address': st.session_state.get('wallet_address', ''),
+            'total_profit': st.session_state.get('total_profit', 0.0),
+            'trade_count': st.session_state.get('trade_count', 0),
+            'portfolio': st.session_state.get('portfolio', {}),
+            'usdt_reserves': st.session_state.get('usdt_reserves', {}),
+            'daily_profits': st.session_state.get('daily_profits', {}),
+            'weekly_profits': st.session_state.get('weekly_profits', {}),
+            'monthly_profits': st.session_state.get('monthly_profits', {}),
+            'last_update': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        save_users(users)
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
@@ -107,29 +115,30 @@ def save_opportunities(opps):
         json.dump(opps, f, ensure_ascii=False, indent=4)
 
 # ====================== СЕССИЯ ======================
-saved_user = load_user_data()
+# Загружаем историю и возможности (общие для всех)
 saved_history = load_history()
 saved_opportunities = load_opportunities()
 
+# Данные текущего пользователя загружаются после входа
 for key, default in [
-    ('logged_in', saved_user.get('logged_in', False)),
-    ('username', saved_user.get('username', None)),
-    ('email', saved_user.get('email', None)),
-    ('wallet_address', saved_user.get('wallet_address', '')),
-    ('total_profit', saved_user.get('total_profit', 0.0)),
-    ('trade_count', saved_user.get('trade_count', 0)),
-    ('portfolio', saved_user.get('portfolio', {asset: DEMO_PORTFOLIO.get(asset, 0.0) for asset in DEFAULT_ASSETS})),
-    ('usdt_reserves', saved_user.get('usdt_reserves', {ex: DEMO_USDT_RESERVES for ex in AUX_EXCHANGES})),
-    ('daily_profits', saved_user.get('daily_profits', {})),
-    ('weekly_profits', saved_user.get('weekly_profits', {})),
-    ('monthly_profits', saved_user.get('monthly_profits', {})),
+    ('logged_in', False),
+    ('username', None),
+    ('email', None),
+    ('wallet_address', ''),
+    ('total_profit', 0.0),
+    ('trade_count', 0),
+    ('portfolio', {asset: DEMO_PORTFOLIO.get(asset, 0.0) for asset in DEFAULT_ASSETS}),
+    ('usdt_reserves', {ex: DEMO_USDT_RESERVES for ex in AUX_EXCHANGES}),
+    ('daily_profits', {}),
+    ('weekly_profits', {}),
+    ('monthly_profits', {}),
     ('history', saved_history),
     ('opportunities_history', saved_opportunities),
     ('exchanges', None),
-    ('bot_running', saved_user.get('bot_running', False)),
+    ('bot_running', False),
     ('trade_mode', "Демо"),
     ('exchange_status', {}),
-    ('is_first_time', not saved_user.get('is_registered', False))
+    ('last_arbitrage_check', datetime.now())
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -241,62 +250,87 @@ if st.session_state.exchanges is None:
     with st.spinner("Подключение к биржам..."):
         st.session_state.exchanges, st.session_state.exchange_status = init_exchanges()
 
-# ====================== РЕГИСТРАЦИЯ / ВХОД ======================
+# ====================== РЕГИСТРАЦИЯ / ВХОД (ВСЕГДА ПОКАЗЫВАЕТ ОБЕ ВКЛАДКИ) ======================
 if not st.session_state.logged_in:
     st.markdown('<h1 class="main-header">🚀 НАКОПИТЕЛЬНЫЙ АРБИТРАЖ PRO</h1>', unsafe_allow_html=True)
-    if not st.session_state.is_first_time:
-        with st.form("login_form"):
-            st.subheader("🔑 Вход в аккаунт")
+    
+    tab_reg, tab_login = st.tabs(["📝 Регистрация", "🔑 Вход"])
+    
+    with tab_reg:
+        with st.form("register_form"):
+            username = st.text_input("Имя пользователя")
             email = st.text_input("Email")
+            wallet = st.text_input("Адрес кошелька")
             password = st.text_input("Пароль", type="password")
-            if st.form_submit_button("Войти", use_container_width=True):
-                saved = load_user_data()
-                if saved.get('email') == email:
-                    for k in ['username', 'email', 'wallet_address', 'total_profit', 'trade_count', 'portfolio', 'usdt_reserves', 'daily_profits', 'weekly_profits', 'monthly_profits', 'history', 'bot_running']:
-                        if k in saved:
-                            st.session_state[k] = saved[k]
-                    st.session_state.logged_in = True
-                    st.session_state.is_first_time = False
-                    st.success(f"Добро пожаловать, {st.session_state.username}!")
-                    st.rerun()
-                else:
-                    st.error("Неверный email или пароль")
-    else:
-        tab_reg, tab_login = st.tabs(["📝 Регистрация", "🔑 Вход"])
-        with tab_reg:
-            with st.form("register_form"):
-                username = st.text_input("Имя пользователя")
-                email = st.text_input("Email")
-                wallet = st.text_input("Адрес кошелька")
-                password = st.text_input("Пароль", type="password")
-                confirm = st.text_input("Подтвердите пароль", type="password")
-                if st.form_submit_button("Зарегистрироваться"):
-                    if username and email and wallet and password and password == confirm:
+            confirm = st.text_input("Подтвердите пароль", type="password")
+            submitted = st.form_submit_button("Зарегистрироваться", use_container_width=True)
+            
+            if submitted:
+                if username and email and wallet and password and password == confirm:
+                    users = load_users()
+                    if email in users:
+                        st.error("❌ Пользователь с таким email уже существует!")
+                    else:
+                        # Сохраняем нового пользователя
+                        users[email] = {
+                            'username': username,
+                            'email': email,
+                            'wallet_address': wallet,
+                            'password': password,
+                            'registered_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                            'total_profit': 0.0,
+                            'trade_count': 0,
+                            'portfolio': DEMO_PORTFOLIO,
+                            'usdt_reserves': {ex: DEMO_USDT_RESERVES for ex in AUX_EXCHANGES},
+                            'daily_profits': {},
+                            'weekly_profits': {},
+                            'monthly_profits': {}
+                        }
+                        save_users(users)
+                        
                         st.session_state.logged_in = True
                         st.session_state.username = username
                         st.session_state.email = email
                         st.session_state.wallet_address = wallet
-                        st.session_state.is_first_time = False
-                        save_user_data()
-                        st.success("Регистрация успешна!")
+                        st.session_state.total_profit = 0.0
+                        st.session_state.trade_count = 0
+                        st.session_state.portfolio = DEMO_PORTFOLIO.copy()
+                        st.session_state.usdt_reserves = {ex: DEMO_USDT_RESERVES for ex in AUX_EXCHANGES}
+                        st.session_state.daily_profits = {}
+                        st.session_state.weekly_profits = {}
+                        st.session_state.monthly_profits = {}
+                        
+                        st.success("✅ Регистрация успешна!")
                         st.rerun()
-                    else:
-                        st.error("Заполните все поля")
-        with tab_login:
-            with st.form("login_form"):
-                email = st.text_input("Email")
-                password = st.text_input("Пароль", type="password")
-                if st.form_submit_button("Войти"):
-                    saved = load_user_data()
-                    if saved.get('email') == email:
-                        for k in ['username', 'email', 'wallet_address']:
-                            if k in saved:
-                                st.session_state[k] = saved[k]
-                        st.session_state.logged_in = True
-                        st.session_state.is_first_time = False
-                        st.rerun()
-                    else:
-                        st.error("Неверный email")
+                else:
+                    st.error("❌ Заполните все поля или пароли не совпадают")
+    
+    with tab_login:
+        with st.form("login_form"):
+            email = st.text_input("Email")
+            password = st.text_input("Пароль", type="password")
+            submitted = st.form_submit_button("Войти", use_container_width=True)
+            
+            if submitted:
+                users = load_users()
+                if email in users and users[email].get('password') == password:
+                    user_data = users[email]
+                    st.session_state.logged_in = True
+                    st.session_state.username = user_data.get('username', email.split('@')[0])
+                    st.session_state.email = email
+                    st.session_state.wallet_address = user_data.get('wallet_address', '')
+                    st.session_state.total_profit = user_data.get('total_profit', 0.0)
+                    st.session_state.trade_count = user_data.get('trade_count', 0)
+                    st.session_state.portfolio = user_data.get('portfolio', DEMO_PORTFOLIO.copy())
+                    st.session_state.usdt_reserves = user_data.get('usdt_reserves', {ex: DEMO_USDT_RESERVES for ex in AUX_EXCHANGES})
+                    st.session_state.daily_profits = user_data.get('daily_profits', {})
+                    st.session_state.weekly_profits = user_data.get('weekly_profits', {})
+                    st.session_state.monthly_profits = user_data.get('monthly_profits', {})
+                    st.success(f"✅ Добро пожаловать, {st.session_state.username}!")
+                    st.rerun()
+                else:
+                    st.error("❌ Неверный email или пароль")
+    
     st.stop()
 
 # ====================== ОСНОВНОЙ ИНТЕРФЕЙС ======================
@@ -310,9 +344,13 @@ with col_status:
         st.markdown('<div style="text-align: center;"><span class="status-indicator status-stopped"></span> <b style="color: #FF4444;">ОСТАНОВЛЕН</b></div>', unsafe_allow_html=True)
 with col_logout:
     if st.button("🚪 Выйти", key="logout"):
-        st.session_state.bot_running = False
-        st.session_state.logged_in = False
+        # Сохраняем данные пользователя перед выходом
         save_user_data()
+        st.session_state.logged_in = False
+        st.session_state.bot_running = False
+        for key in ['username', 'email', 'wallet_address', 'total_profit', 'trade_count', 'portfolio', 'usdt_reserves', 'daily_profits', 'weekly_profits', 'monthly_profits']:
+            if key in st.session_state:
+                del st.session_state[key]
         st.rerun()
 
 st.markdown(f'<div class="user-info">👤 {st.session_state.username} | 📧 {st.session_state.email}</div>', unsafe_allow_html=True)
@@ -331,21 +369,18 @@ with c1:
     st.markdown('<div class="green-button">', unsafe_allow_html=True)
     if st.button("▶ СТАРТ", use_container_width=True):
         st.session_state.bot_running = True
-        save_user_data()
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 with c2:
     st.markdown('<div class="yellow-button">', unsafe_allow_html=True)
     if st.button("⏸ ПАУЗА", use_container_width=True):
         st.session_state.bot_running = False
-        save_user_data()
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 with c3:
     st.markdown('<div class="red-button">', unsafe_allow_html=True)
     if st.button("⏹ СТОП", use_container_width=True):
         st.session_state.bot_running = False
-        save_user_data()
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 with c4:
@@ -404,7 +439,7 @@ with tab2:
     else:
         st.warning("Биржа не подключена")
 
-# TAB 3 - Арбитраж (ИСПРАВЛЕНА ОШИБКА DUPLICATE KEY)
+# TAB 3 - Арбитраж
 with tab3:
     st.subheader("🔍 Найденные арбитражные возможности")
     if st.button("🔄 Обновить", use_container_width=True):
@@ -414,7 +449,6 @@ with tab3:
     if opportunities:
         st.success(f"✅ Найдено {len(opportunities)} возможностей на {len(set([opp['asset'] for opp in opportunities]))} токенах!")
         for idx, opp in enumerate(opportunities[:10]):
-            # Уникальный ключ: asset + биржа + индекс
             unique_key = f"{opp['asset']}_{opp['aux_exchange']}_{idx}"
             st.info(f"🎯 {opp['asset']}: OKX ${opp['main_price']:,.0f} → {opp['aux_exchange'].upper()} ${opp['aux_price']:,.0f} | +{opp['profit_usdt']:.2f} USDT")
             if st.button(f"Исполнить {opp['asset']} на {opp['aux_exchange'].upper()}", key=unique_key):
@@ -425,7 +459,6 @@ with tab3:
                     update_profit_stats(profit)
                     trade_text = f"✅ {datetime.now().strftime('%H:%M:%S')} | {opp['asset']} | Куплен на {opp['aux_exchange'].upper()} по ${opp['aux_price']:.2f} | Продан на OKX по ${opp['main_price']:.2f} | +{profit:.2f} USDT"
                     st.session_state.history.append(trade_text)
-                    save_user_data()
                     save_history()
                     st.success(f"✅ Сделка исполнена! +{profit:.2f} USDT")
                     st.rerun()
@@ -506,7 +539,6 @@ with tab6:
     wallet_input = st.text_input("Адрес кошелька", value=st.session_state.wallet_address)
     if st.button("💾 Сохранить"):
         st.session_state.wallet_address = wallet_input
-        save_user_data()
         st.success("Адрес сохранён!")
     withdraw = st.number_input("Сумма вывода", min_value=10.0, step=10.0)
     if st.button("📤 Вывести"):
@@ -542,7 +574,6 @@ if st.session_state.bot_running and st.session_state.exchanges:
             update_profit_stats(profit)
             trade_text = f"✅ {datetime.now().strftime('%H:%M:%S')} | {best['asset']} | Куплен на {best['aux_exchange'].upper()} по ${best['aux_price']:.2f} | Продан на OKX по ${best['main_price']:.2f} | +{profit:.2f} USDT"
             st.session_state.history.append(trade_text)
-            save_user_data()
             save_history()
             st.toast(f"🎯 {best['asset']} | +{profit:.2f} USDT", icon="💰")
             st.rerun()
