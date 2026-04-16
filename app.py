@@ -1,3 +1,4 @@
+python
 import streamlit as st
 import time
 import random
@@ -366,7 +367,7 @@ def update_profit_stats(profit):
     st.session_state.monthly_profits[month] = st.session_state.monthly_profits.get(month, 0) + profit
 
 def compute_expected_return(capital_usdt, lookback_days=7):
-    return capital_usdt * 0.008, 0.8, 10  # Упрощённый расчёт
+    return capital_usdt * 0.008, 0.8, 10
 
 # ====================== СЕССИЯ ======================
 if 'logged_in' not in st.session_state:
@@ -698,12 +699,10 @@ if show_admin_panel:
                     user_data = next((u for u in all_users if u['id'] == selected_user_id), None)
                     if user_data:
                         st.write(f"**{user_data['email']}** — {user_data['full_name']}")
+                        
                         col1_admin, col2_admin, col3_admin, col4_admin = st.columns(4)
                         col1_admin.metric("💰 Баланс", f"${user_data['balance']:.2f}")
-                        col2_admin.metric("📊 Прибыль", f"${user_data['
-This response is AI-generated, for reference only.
-
-                        col2_admin.metric("📊 Прибыль", f"${user_data['total_profit']:.2f}")
+                        col2_admin.metric("📊 Прибыль", f"${user_data['total_profit']                         col2_admin.metric("📊 Прибыль", f"${user_data['total_profit']:.2f}")
                         col3_admin.metric("🔄 Сделок", user_data['trade_count'])
                         status_color = "🟢" if user_data['registration_status'] == 'approved' else "🟡" if user_data['registration_status'] == 'pending' else "🔴"
                         col4_admin.metric("📝 Статус", f"{status_color} {user_data['registration_status']}")
