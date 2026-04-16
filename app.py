@@ -1,4 +1,3 @@
-python
 import streamlit as st
 import time
 import random
@@ -153,25 +152,6 @@ def create_user(email, password_hash, full_name, country, city, phone, wallet_ad
         ''', (email, password_hash, full_name, country, city, phone, wallet_address, 'pending'))
         return cursor.lastrowid
 
-def approve_user(user_id, admin_email):
-    with get_db() as conn:
-        conn.execute('''
-            UPDATE users SET registration_status = 'approved', approved_at = CURRENT_TIMESTAMP, approved_by = ?
-            WHERE id = ?
-        ''', (admin_email, user_id))
-
-def reject_user(user_id):
-    with get_db() as conn:
-        conn.execute("UPDATE users SET registration_status = 'rejected' WHERE id = ?", (user_id,))
-
-def get_pending_users():
-    with get_db() as conn:
-        return conn.execute("SELECT * FROM users WHERE registration_status = 'pending'").fetchall()
-
-def get_all_users():
-    with get_db() as conn:
-        return conn.execute("SELECT id, email, full_name, country, city, registration_status, balance, total_profit, trade_count, created_at FROM users").fetchall()
-
 def add_trade(user_id, asset, amount, profit, buy_exchange, sell_exchange):
     with get_db() as conn:
         conn.execute('''
@@ -210,12 +190,6 @@ def get_pending_withdrawals():
             WHERE w.status = 'pending'
             ORDER BY w.requested_at ASC
         ''').fetchall()
-
-def get_user_withdrawals(user_id):
-    with get_db() as conn:
-        return conn.execute('''
-            SELECT * FROM withdrawals WHERE user_id = ? ORDER BY requested_at DESC
-        ''', (user_id,)).fetchall()
 
 def update_withdrawal_status(withdrawal_id, status, admin_email):
     with get_db() as conn:
@@ -316,7 +290,7 @@ def get_historical_ohlcv(exchange, symbol, timeframe='1h', limit=100):
     except:
         return pd.DataFrame()
 
-def find_all_arbitrage_opportunities(record=True):
+def find_all_arbitrage_opportunities():
     opportunities = []
     if not st.session_state.exchanges or MAIN_EXCHANGE not in st.session_state.exchanges:
         return opportunities
@@ -327,7 +301,6 @@ def find_all_arbitrage_opportunities(record=True):
         if price:
             main_prices[asset] = price
     
-    now = datetime.now().isoformat()
     for asset in DEFAULT_ASSETS:
         if asset not in main_prices:
             continue
@@ -340,16 +313,14 @@ def find_all_arbitrage_opportunities(record=True):
                     net_spread = spread_pct - FEE_PERCENT
                     profit_usdt = round((main_price - aux_price) - (main_price * 0.0008) - (aux_price * 0.0008), 2)
                     if net_spread > MIN_SPREAD_PERCENT and profit_usdt >= 0.20:
-                        opp = {
+                        opportunities.append({
                             'asset': asset,
                             'aux_exchange': aux_ex,
                             'main_price': main_price,
                             'aux_price': aux_price,
                             'spread_pct': round(spread_pct, 2),
-                            'profit_usdt': profit_usdt,
-                            'timestamp': now
-                        }
-                        opportunities.append(opp)
+                            'profit_usdt': profit_usdt
+                        })
     return sorted(opportunities, key=lambda x: x['profit_usdt'], reverse=True)
 
 def update_profit_stats(profit):
@@ -365,9 +336,6 @@ def update_profit_stats(profit):
     st.session_state.daily_profits[today] = st.session_state.daily_profits.get(today, 0) + profit
     st.session_state.weekly_profits[week] = st.session_state.weekly_profits.get(week, 0) + profit
     st.session_state.monthly_profits[month] = st.session_state.monthly_profits.get(month, 0) + profit
-
-def compute_expected_return(capital_usdt, lookback_days=7):
-    return capital_usdt * 0.008, 0.8, 10
 
 # ====================== СЕССИЯ ======================
 if 'logged_in' not in st.session_state:
@@ -434,7 +402,6 @@ if not st.session_state.logged_in:
                     else:
                         create_user(email, password, username, country, city, phone, wallet)
                         st.success("✅ Регистрация успешна! Ваша заявка отправлена администратору.")
-                        st.info("📧 Вы получите уведомление, когда аккаунт будет активирован.")
                 else:
                     st.error("❌ Заполните все поля или пароли не совпадают")
     
@@ -514,19 +481,16 @@ if show_admin_panel:
     tabs_list.append("👑 Админ-панель")
 
 tabs = st.tabs(tabs_list)
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = tabs[:7]
-if show_admin_panel:
-    tab8 = tabs[7]
 
 # TAB 1 - Dashboard
-with tab1:
+with tabs[0]:
     st.subheader("📊 Статус сканирования токенов")
     st.write("### 🪙 Текущие цены на OKX")
     for i in range(0, len(DEFAULT_ASSETS), 5):
         cols = st.columns(5)
         for j, asset in enumerate(DEFAULT_ASSETS[i:i+5]):
             with cols[j]:
-                price = get_price(st.session_state.exchanges[MAIN_EXCHANGE], asset) if st.session_state.exchanges and MAIN_EXCHANGE in st.session_state.exchanges else None
+                price = get_price(st.session_state.exchanges[MAIN_EXCHANGE], asset) if st.session_state.exchanges else None
                 if price:
                     st.markdown(f"<div class='token-card'><b>{asset}</b><br><span style='font-size: 18px; color: #00D4FF;'>${price:,.0f}</span></div>", unsafe_allow_html=True)
                 else:
@@ -535,7 +499,7 @@ with tab1:
         st.info(f"🟢 Бот сканирует **{len(DEFAULT_ASSETS)} токенов** на **{len(connected)} биржах** одновременно.")
 
 # TAB 2 - Графики
-with tab2:
+with tabs[1]:
     st.subheader("📈 Японские свечи")
     col_a, col_b = st.columns(2)
     selected_asset = col_a.selectbox("Актив", DEFAULT_ASSETS)
@@ -559,7 +523,7 @@ with tab2:
         st.warning("Биржа не подключена")
 
 # TAB 3 - Арбитраж
-with tab3:
+with tabs[2]:
     st.subheader("🔍 Найденные арбитражные возможности")
     if st.button("🔄 Обновить", use_container_width=True):
         st.cache_data.clear()
@@ -588,11 +552,12 @@ with tab3:
         st.info("📊 Арбитражных возможностей не найдено.")
 
 # TAB 4 - Доходность
-with tab4:
+with tabs[3]:
     st.subheader("📊 Калькулятор ожидаемой доходности")
     capital = st.number_input("💵 Капитал для арбитража (USDT)", min_value=100.0, value=10000.0, step=1000.0)
     if st.button("Рассчитать", use_container_width=True):
-        exp_profit, exp_return, avg_opps = compute_expected_return(capital)
+        exp_profit = capital * 0.008
+        exp_return = 0.8
         st.markdown(f"""
         <div class="profit-card">
             <b>📊 Ожидаемая дневная доходность:</b><br>
@@ -602,12 +567,12 @@ with tab4:
         """, unsafe_allow_html=True)
 
 # TAB 5 - Портфель
-with tab5:
+with tabs[4]:
     st.subheader("📦 Портфель токенов (OKX)")
     total = 0
     for asset in DEFAULT_ASSETS:
         amount = st.session_state.portfolio.get(asset, 0)
-        price = get_price(st.session_state.exchanges[MAIN_EXCHANGE], asset) if st.session_state.exchanges and MAIN_EXCHANGE in st.session_state.exchanges else None
+        price = get_price(st.session_state.exchanges[MAIN_EXCHANGE], asset) if st.session_state.exchanges else None
         value = amount * price if price else 0
         total += value
         st.write(f"{asset}: {amount:.6f} ≈ ${value:,.2f}")
@@ -615,7 +580,7 @@ with tab5:
     st.metric("💰 Общая стоимость портфеля", f"${total:,.2f}")
 
 # TAB 6 - Кошелёк
-with tab6:
+with tabs[5]:
     st.subheader("💰 Резервы USDT на биржах")
     for ex in AUX_EXCHANGES[:5]:
         st.write(f"{ex.upper()}: {st.session_state.usdt_reserves.get(ex, DEMO_USDT_RESERVES):.0f} USDT")
@@ -646,7 +611,7 @@ with tab6:
             st.error("❌ Сначала сохраните адрес кошелька!")
 
 # TAB 7 - История
-with tab7:
+with tabs[6]:
     st.subheader("📜 История сделок")
     if st.session_state.history:
         for trade in reversed(st.session_state.history[-50:]):
@@ -657,9 +622,9 @@ with tab7:
     else:
         st.info("Нет сделок")
 
-# ====================== TAB 8: АДМИН-ПАНЕЛЬ ======================
+# ====================== АДМИН-ПАНЕЛЬ (если есть) ======================
 if show_admin_panel:
-    with tab8:
+    with tabs[7]:
         st.subheader("👑 Админ-панель управления")
         
         admin_tab1, admin_tab2, admin_tab3, admin_tab4 = st.tabs(["👥 Участники", "📜 Все сделки", "💰 Заявки на вывод", "⚙ Настройки"])
@@ -702,7 +667,7 @@ if show_admin_panel:
                         
                         col1_admin, col2_admin, col3_admin, col4_admin = st.columns(4)
                         col1_admin.metric("💰 Баланс", f"${user_data['balance']:.2f}")
-                        col2_admin.metric("📊 Прибыль", f"${user_data['total_profit']                         col2_admin.metric("📊 Прибыль", f"${user_data['total_profit']:.2f}")
+                        col2_admin.metric("📊 Прибыль", f"${user_data['total_profit']:.2f}")
                         col3_admin.metric("🔄 Сделок", user_data['trade_count'])
                         status_color = "🟢" if user_data['registration_status'] == 'approved' else "🟡" if user_data['registration_status'] == 'pending' else "🔴"
                         col4_admin.metric("📝 Статус", f"{status_color} {user_data['registration_status']}")
@@ -723,7 +688,7 @@ if show_admin_panel:
                             if user_data['registration_status'] == 'pending':
                                 if st.button("❌ Отклонить", key=f"reject_{selected_user_id}", use_container_width=True):
                                     update_user_status(selected_user_id, 'rejected', st.session_state.email)
-                                    st.warning(f"Пользователь {user_data['email']} отклонён!")
+                                    st.warning(f"Пользователь {user_data['email'] st.warning(f"Пользователь {user_data['email']} отклонён!")
                                     st.rerun()
                             else:
                                 st.button("❌ Отклонить", disabled=True, use_container_width=True)
