@@ -124,16 +124,24 @@ def init_db():
                 FOREIGN KEY (user_id) REFERENCES users(id)
             )
         ''')
-        
-        admin_email = "admin@arbitrage.com"
-        admin_exists = conn.execute("SELECT id FROM users WHERE email = ?", (admin_email,)).fetchone()
-        if not admin_exists:
-            conn.execute('''
-                INSERT INTO users (email, password_hash, full_name, registration_status, balance)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (admin_email, "admin_hash", "Administrator", "approved", 0))
 
 init_db()
+
+# ====================== АВТОМАТИЧЕСКОЕ ОДОБРЕНИЕ АДМИНИСТРАТОРА ======================
+def auto_approve_admin():
+    admin_email = "cb777899@gmail.com"
+    with get_db() as conn:
+        user = conn.execute("SELECT * FROM users WHERE email = ?", (admin_email,)).fetchone()
+        if user and user['registration_status'] == 'pending':
+            conn.execute("UPDATE users SET registration_status = 'approved', approved_at = CURRENT_TIMESTAMP, approved_by = 'system' WHERE id = ?", (user['id'],))
+        elif not user:
+            # Создаём администратора, если его нет
+            conn.execute('''
+                INSERT INTO users (email, password_hash, full_name, registration_status, balance, approved_at, approved_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (admin_email, "admin123", "Администратор", "approved", 0, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "system"))
+
+auto_approve_admin()
 
 # ====================== ФУНКЦИИ БАЗЫ ДАННЫХ ======================
 def get_user_by_email(email):
