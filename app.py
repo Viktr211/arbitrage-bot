@@ -620,7 +620,9 @@ with tabs[6]:
             st.session_state.history = []
             st.rerun()
     else:
-        st.info("Нет сделок")# ====================== АДМИН-ПАНЕЛЬ ======================
+        st.info("Нет сделок")
+
+# ====================== АДМИН-ПАНЕЛЬ ======================
 if show_admin_panel:
     with tabs[7]:
         st.subheader("👑 Админ-панель управления")
@@ -685,11 +687,6 @@ if show_admin_panel:
                         with action_col2:
                             if user_data['registration_status'] == 'pending':
                                 if st.button("❌ Отклонить", key=f"reject_{selected_user_id}", use_container_width=True):
-                                    update_user_status(selected_user_id, 're
-This response is AI-generated, for reference only.
-напиши вторую часть с нова.
-📄 ЧАСТЬ 2 (скопируй и вставь ПОСЛЕ ЧАСТИ 1)
-python
                                     update_user_status(selected_user_id, 'rejected', st.session_state.email)
                                     st.warning(f"Пользователь {user_data['email']} отклонён!")
                                     st.rerun()
