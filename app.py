@@ -11,9 +11,7 @@ import os
 import threading
 import numpy as np
 import sqlite3
-
-print("✅ Готово! Теперь можно входить с паролем: Viktr211@")
-# ===================================================================
+from contextlib import contextmanager
 
 st.set_page_config(page_title="Накопительный Арбитраж PRO", layout="wide", page_icon="🚀")
 
@@ -28,13 +26,7 @@ st.markdown("""
     .status-stopped { background-color: #FF4444; box-shadow: 0 0 8px #FF4444; }
     @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
     .stButton>button { border-radius: 30px; height: 42px; font-weight: bold; }
-    .green-button button { background-color: #00AA44 !important; color: white !important; }
-    .yellow-button button { background-color: #CC8800 !important; color: white !important; }
-    .red-button button { background-color: #CC3333 !important; color: white !important; }
-    .token-card { background: rgba(0,100,200,0.2); border-radius: 10px; padding: 8px; margin: 4px; text-align: center; }
-    .profit-card { background: rgba(0,255,100,0.1); border-radius: 10px; padding: 15px; margin: 10px 0; border-left: 4px solid #00FF88; }
-</style>
-""", unsafe_allow_html=True)
+
 
 # ====================== КОНФИГУРАЦИЯ ======================
 DEFAULT_ASSETS = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "SUI", "HYPE"]
