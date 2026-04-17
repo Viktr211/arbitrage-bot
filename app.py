@@ -26,7 +26,13 @@ st.markdown("""
     .status-stopped { background-color: #FF4444; box-shadow: 0 0 8px #FF4444; }
     @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
     .stButton>button { border-radius: 30px; height: 42px; font-weight: bold; }
-
+    .green-button button { background-color: #00AA44 !important; color: white !important; }
+    .yellow-button button { background-color: #CC8800 !important; color: white !important; }
+    .red-button button { background-color: #CC3333 !important; color: white !important; }
+    .token-card { background: rgba(0,100,200,0.2); border-radius: 10px; padding: 8px; margin: 4px; text-align: center; }
+    .profit-card { background: rgba(0,255,100,0.1); border-radius: 10px; padding: 15px; margin: 10px 0; border-left: 4px solid #00FF88; }
+</style>
+""", unsafe_allow_html=True)
 
 # ====================== КОНФИГУРАЦИЯ ======================
 DEFAULT_ASSETS = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "SUI", "HYPE"]
@@ -120,22 +126,6 @@ def init_db():
         ''')
 
 init_db()
-
-# ====================== АВТОМАТИЧЕСКОЕ ОДОБРЕНИЕ АДМИНИСТРАТОРА ======================
-def auto_approve_admin():
-    admin_email = "cb777899@gmail.com"
-    with get_db() as conn:
-        user = conn.execute("SELECT * FROM users WHERE email = ?", (admin_email,)).fetchone()
-        if user and user['registration_status'] == 'pending':
-            conn.execute("UPDATE users SET registration_status = 'approved', approved_at = CURRENT_TIMESTAMP, approved_by = 'system' WHERE id = ?", (user['id'],))
-        elif not user:
-            # Создаём администратора, если его нет
-            conn.execute('''
-                INSERT INTO users (email, password_hash, full_name, registration_status, balance, approved_at, approved_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (admin_email, "admin123", "Администратор", "approved", 0, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "system"))
-
-auto_approve_admin()
 
 # ====================== ФУНКЦИИ БАЗЫ ДАННЫХ ======================
 def get_user_by_email(email):
@@ -400,12 +390,12 @@ if not st.session_state.logged_in:
                 if username and email and wallet and password and password == confirm:
                     existing_user = get_user_by_email(email)
                     if existing_user:
-                        st.error("❌ Пользователь с таким email уже существует!")
+                        st.error("Пользователь с таким email уже существует!")
                     else:
                         create_user(email, password, username, country, city, phone, wallet)
-                        st.success("✅ Регистрация успешна! Ваша заявка отправлена администратору.")
+                        st.success("Регистрация успешна! Ваша заявка отправлена администратору.")
                 else:
-                    st.error("❌ Заполните все поля или пароли не совпадают")
+                    st.error("Заполните все поля или пароли не совпадают")
     
     with tab_login:
         with st.form("login_form"):
@@ -423,14 +413,14 @@ if not st.session_state.logged_in:
                         st.session_state.wallet_address = user['wallet_address'] or ''
                         st.session_state.total_profit = user['total_profit']
                         st.session_state.trade_count = user['trade_count']
-                        st.success(f"✅ Добро пожаловать, {st.session_state.username}!")
+                        st.success(f"Добро пожаловать, {st.session_state.username}!")
                         st.rerun()
                     elif user['registration_status'] == 'pending':
-                        st.warning("⏳ Ваша заявка на одобрение ещё не рассмотрена.")
+                        st.warning("Ваша заявка на одобрение ещё не рассмотрена.")
                     else:
-                        st.error("❌ Ваша заявка отклонена. Свяжитесь с администратором.")
+                        st.error("Ваша заявка отклонена. Свяжитесь с администратором.")
                 else:
-                    st.error("❌ Неверный email или пароль")
+                    st.error("Неверный email или пароль")
     
     st.stop()
 
@@ -532,7 +522,7 @@ with tabs[2]:
         st.rerun()
     opportunities = find_all_arbitrage_opportunities()
     if opportunities:
-        st.success(f"✅ Найдено {len(opportunities)} возможностей!")
+        st.success(f"Найдено {len(opportunities)} возможностей!")
         for idx, opp in enumerate(opportunities[:10]):
             unique_key = f"{opp['asset']}_{opp['aux_exchange']}_{idx}"
             st.info(f"🎯 {opp['asset']}: OKX ${opp['main_price']:,.0f} → {opp['aux_exchange'].upper()} ${opp['aux_price']:,.0f} | +{opp['profit_usdt']:.2f} USDT")
@@ -548,23 +538,23 @@ with tabs[2]:
                             add_trade(user['id'], opp['asset'], 1000, profit, opp['aux_exchange'], MAIN_EXCHANGE)
                     trade_text = f"✅ {datetime.now().strftime('%H:%M:%S')} | {opp['asset']} | +{profit:.2f} USDT"
                     st.session_state.history.append(trade_text)
-                    st.success(f"✅ Сделка исполнена! +{profit:.2f} USDT")
+                    st.success(f"Сделка исполнена! +{profit:.2f} USDT")
                     st.rerun()
     else:
-        st.info("📊 Арбитражных возможностей не найдено.")
+        st.info("Арбитражных возможностей не найдено.")
 
 # TAB 4 - Доходность
 with tabs[3]:
-    st.subheader("📊 Калькулятор ожидаемой доходности")
-    capital = st.number_input("💵 Капитал для арбитража (USDT)", min_value=100.0, value=10000.0, step=1000.0)
+    st.subheader("Калькулятор ожидаемой доходности")
+    capital = st.number_input("Капитал для арбитража (USDT)", min_value=100.0, value=10000.0, step=1000.0)
     if st.button("Рассчитать", use_container_width=True):
         exp_profit = capital * 0.008
         exp_return = 0.8
         st.markdown(f"""
         <div class="profit-card">
-            <b>📊 Ожидаемая дневная доходность:</b><br>
-            💰 Прибыль в день: <b style="color: #00FF88;">${exp_profit:.2f}</b><br>
-            📈 Доходность: <b style="color: #00FF88;">{exp_return:.2f}%</b> от капитала
+            <b>Ожидаемая дневная доходность:</b><br>
+            Прибыль в день: <b style="color: #00FF88;">${exp_profit:.2f}</b><br>
+            Доходность: <b style="color: #00FF88;">{exp_return:.2f}%</b> от капитала
         </div>
         """, unsafe_allow_html=True)
 
@@ -603,14 +593,14 @@ with tabs[5]:
                 user = get_user_by_email(st.session_state.email)
                 if user and user['balance'] >= withdraw:
                     create_withdrawal_request(user['id'], withdraw, st.session_state.wallet_address)
-                    st.success(f"✅ Заявка на вывод {withdraw} USDT отправлена!")
+                    st.success(f"Заявка на вывод {withdraw} USDT отправлена!")
                     st.rerun()
                 else:
-                    st.error("❌ Недостаточно средств!")
+                    st.error("Недостаточно средств!")
             else:
-                st.error("❌ Ошибка: пользователь не найден")
+                st.error("Ошибка: пользователь не найден")
         else:
-            st.error("❌ Сначала сохраните адрес кошелька!")
+            st.error("Сначала сохраните адрес кошелька!")
 
 # TAB 7 - История
 with tabs[6]:
@@ -705,8 +695,7 @@ if show_admin_panel:
                         with action_col4:
                             if st.button("🗑 Удалить", key=f"delete_{selected_user_id}", use_container_width=True):
                                 if delete_user(selected_user_id, st.session_state.email):
-                                    st.success(f"Пользователь {user_data['email']} удалён!")
-                                    st.rerun()
+                                    st.success(f                                   st.rerun()
                                 else:
                                     st.error("Нельзя удалить пользователя с историей сделок!")
             else:
@@ -809,4 +798,4 @@ if st.session_state.bot_running and st.session_state.exchanges:
             st.toast(f"🎯 {best['asset']} | +{profit:.2f} USDT", icon="💰")
             st.rerun()
 
-st.caption(f"🚀 Сканируется {len(DEFAULT_ASSETS)} токенов на {len(connected)} биржах | Работает 24/7 | v2.0 с админ-панелью")
+st.caption(f"🚀 Сканируется {len(DEFAULT_ASSETS)} токенов на {len(connected)} биржах | Работает 24/7 | v2.0 с админ-панелью")"
