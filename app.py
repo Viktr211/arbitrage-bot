@@ -11,7 +11,44 @@ import os
 import threading
 import numpy as np
 import sqlite3
-from contextlib import contextmanager
+from contextlib import contextmanager# ====================== ВРЕМЕННЫЙ СБРОС ПАРОЛЯ (УДАЛИТЬ ПОСЛЕ) ======================
+import sqlite3
+import os
+
+DB_PATH = "arbitrage.db"
+
+def force_reset_password():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Проверяем, есть ли таблица users
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
+    if cursor.fetchone():
+        # Обновляем пароль для администратора
+        admin_email = "cb777899@gmail.com"
+        new_password = "Viktr211@"
+        cursor.execute("UPDATE users SET password_hash = ? WHERE email = ?", (new_password, admin_email))
+        
+        if cursor.rowcount > 0:
+            print(f"✅ Пароль для {admin_email} обновлён")
+        else:
+            # Если пользователя нет, создаём
+            cursor.execute('''
+                INSERT INTO users (email, password_hash, full_name, registration_status, balance)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (admin_email, new_password, "Администратор", "approved", 0))
+            print(f"✅ Создан новый администратор {admin_email}")
+        
+        conn.commit()
+    else:
+        print("❌ Таблица users не найдена")
+    
+    conn.close()
+
+# Вызываем сброс
+force_reset_password()
+print("✅ Готово! Теперь можно входить с паролем: Viktr211@")
+# ===================================================================
 
 st.set_page_config(page_title="Накопительный Арбитраж PRO", layout="wide", page_icon="🚀")
 
