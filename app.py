@@ -612,9 +612,7 @@ with tabs[6]:
             st.session_state.history = []
             st.rerun()
     else:
-        st.info("Нет сделок")
-
-# ====================== АДМИН-ПАНЕЛЬ ======================
+        st.info("Нет сделок")# ====================== АДМИН-ПАНЕЛЬ ======================
 if show_admin_panel:
     with tabs[7]:
         st.subheader("👑 Админ-панель управления")
@@ -690,7 +688,9 @@ if show_admin_panel:
                             if st.button("💾 Сохранить баланс", key=f"save_balance_{selected_user_id}", use_container_width=True):
                                 update_user_balance(selected_user_id, new_balance, st.session_state.email)
                                 st.success(f"Баланс пользователя {user_data['email']} обновлён!")
-                                st.rerun() with action_col4:
+                                st.rerun()
+                        
+                        with action_col4:
                             if st.button("🗑 Удалить", key=f"delete_{selected_user_id}", use_container_width=True):
                                 if delete_user(selected_user_id, st.session_state.email):
                                     st.success(f"Пользователь {user_data['email']} удалён!")
