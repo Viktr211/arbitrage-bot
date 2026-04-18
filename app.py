@@ -12,18 +12,6 @@ import threading
 import numpy as np
 import sqlite3
 from contextlib import contextmanager
-# ====================== ВРЕМЕННОЕ АВТО-ОДОБРЕНИЕ (УДАЛИТЬ ПОСЛЕ) ======================
-import sqlite3
-DB_PATH = "arbitrage.db"
-try:
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("UPDATE users SET registration_status = 'approved' WHERE email = 'cb777899@gmail.com'")
-    conn.commit()
-    conn.close()
-    print("✅ Администратор одобрен")
-except Exception as e:
-    print(f"Ошибка: {e}")
-# ====================================================================================
 
 st.set_page_config(page_title="Накопительный Арбитраж PRO", layout="wide", page_icon="🚀")
 
@@ -138,6 +126,24 @@ def init_db():
         ''')
 
 init_db()
+
+# Создаём администратора при первом запуске
+try:
+    with get_db() as conn:
+        admin_email = "cb777899@gmail.com"
+        existing = conn.execute("SELECT * FROM users WHERE email = ?", (admin_email,)).fetchone()
+        if not existing:
+            conn.execute('''
+                INSERT INTO users (email, password_hash, full_name, registration_status, balance, approved_at, approved_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (admin_email, "Viktr211@", "Администратор", "approved", 10000, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "system"))
+            print("✅ Администратор создан")
+        else:
+            # Обновляем пароль на всякий случай
+            conn.execute("UPDATE users SET password_hash = ? WHERE email = ?", ("Viktr211@", admin_email))
+            print("✅ Пароль администратора обновлён")
+except Exception as e:
+    print(f"Ошибка при создании администратора: {e}")
 
 # ====================== ФУНКЦИИ БАЗЫ ДАННЫХ ======================
 def get_user_by_email(email):
@@ -624,7 +630,9 @@ with tabs[6]:
             st.session_state.history = []
             st.rerun()
     else:
-        st.info("Нет сделок")# ====================== АДМИН-ПАНЕЛЬ ======================
+        st.info("Нет сделок")
+
+# ====================== АДМИН-ПАНЕЛЬ ======================
 if show_admin_panel:
     with tabs[7]:
         st.subheader("👑 Админ-панель управления")
@@ -685,8 +693,7 @@ if show_admin_panel:
                                     st.rerun()
                             else:
                                 st.button("✅ Одобрено", disabled=True, use_container_width=True)
-                        
-                        with action_col2:
+                                                        with action_col2:
                             if user_data['registration_status'] == 'pending':
                                 if st.button("❌ Отклонить", key=f"reject_{selected_user_id}", use_container_width=True):
                                     update_user_status(selected_user_id, 'rejected', st.session_state.email)
@@ -810,3 +817,5 @@ if st.session_state.bot_running and st.session_state.exchanges:
             st.rerun()
 
 st.caption(f"🚀 Сканируется {len(DEFAULT_ASSETS)} токенов на {len(connected)} биржах | Работает 24/7 | v2.0 с админ-панелью")
+                        
+                       
