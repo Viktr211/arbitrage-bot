@@ -137,13 +137,10 @@ try:
                 INSERT INTO users (email, password_hash, full_name, registration_status, balance, approved_at, approved_by)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             ''', (admin_email, "Viktr211@", "Администратор", "approved", 10000, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "system"))
-            print("✅ Администратор создан")
         else:
-            # Обновляем пароль на всякий случай
             conn.execute("UPDATE users SET password_hash = ? WHERE email = ?", ("Viktr211@", admin_email))
-            print("✅ Пароль администратора обновлён")
 except Exception as e:
-    print(f"Ошибка при создании администратора: {e}")
+    print(f"Ошибка: {e}")
 
 # ====================== ФУНКЦИИ БАЗЫ ДАННЫХ ======================
 def get_user_by_email(email):
@@ -693,7 +690,8 @@ if show_admin_panel:
                                     st.rerun()
                             else:
                                 st.button("✅ Одобрено", disabled=True, use_container_width=True)
-                                                        with action_col2:
+                        
+                        with action_col2:
                             if user_data['registration_status'] == 'pending':
                                 if st.button("❌ Отклонить", key=f"reject_{selected_user_id}", use_container_width=True):
                                     update_user_status(selected_user_id, 'rejected', st.session_state.email)
@@ -817,5 +815,3 @@ if st.session_state.bot_running and st.session_state.exchanges:
             st.rerun()
 
 st.caption(f"🚀 Сканируется {len(DEFAULT_ASSETS)} токенов на {len(connected)} биржах | Работает 24/7 | v2.0 с админ-панелью")
-                        
-                       
