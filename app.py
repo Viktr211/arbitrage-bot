@@ -12,6 +12,18 @@ import threading
 import numpy as np
 import sqlite3
 from contextlib import contextmanager
+# ====================== ВРЕМЕННОЕ АВТО-ОДОБРЕНИЕ (УДАЛИТЬ ПОСЛЕ) ======================
+import sqlite3
+DB_PATH = "arbitrage.db"
+try:
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("UPDATE users SET registration_status = 'approved' WHERE email = 'cb777899@gmail.com'")
+    conn.commit()
+    conn.close()
+    print("✅ Администратор одобрен")
+except Exception as e:
+    print(f"Ошибка: {e}")
+# ====================================================================================
 
 st.set_page_config(page_title="Накопительный Арбитраж PRO", layout="wide", page_icon="🚀")
 
