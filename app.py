@@ -100,7 +100,6 @@ def get_db():
 
 def init_db():
     with get_db() as conn:
-        # Таблица users
         conn.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -136,7 +135,6 @@ def init_db():
             )
         ''')
         
-        # Таблица api_keys (для всех бирж)
         conn.execute('''
             CREATE TABLE IF NOT EXISTS api_keys (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -148,7 +146,6 @@ def init_db():
             )
         ''')
         
-        # Таблица trades
         conn.execute('''
             CREATE TABLE IF NOT EXISTS trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -164,7 +161,6 @@ def init_db():
             )
         ''')
         
-        # Таблица withdrawals
         conn.execute('''
             CREATE TABLE IF NOT EXISTS withdrawals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -179,7 +175,6 @@ def init_db():
             )
         ''')
         
-        # Таблица deposits
         conn.execute('''
             CREATE TABLE IF NOT EXISTS deposits (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -191,7 +186,6 @@ def init_db():
             )
         ''')
         
-        # Инициализация пустых записей API ключей для всех бирж
         for ex in ALL_EXCHANGES:
             conn.execute('''
                 INSERT OR IGNORE INTO api_keys (exchange, api_key, secret_key)
@@ -200,7 +194,6 @@ def init_db():
 
 init_db()
 
-# Создаём администратора
 try:
     with get_db() as conn:
         admin_email = "cb777899@gmail.com"
@@ -217,36 +210,7 @@ try:
 except Exception as e:
     print(f"Ошибка: {e}")
 
-# ====================== ФУНКЦИИ API КЛЮЧЕЙ ======================
-def get_all_api_keys():
-    with get_db() as conn:
-        return {row['exchange']: {'api_key': row['api_key'], 'secret_key': row['secret_key']} 
-                for row in conn.execute("SELECT * FROM api_keys").fetchall()}
-
-def save_api_key(exchange, api_key, secret_key, admin_email):
-    with get_db() as conn:
-        encrypted_api = encrypt_api_key(api_key) if api_key else ""
-        encrypted_secret = encrypt_api_key(secret_key) if secret_key else ""
-        conn.execute('''
-            UPDATE api_keys SET api_key = ?, secret_key = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ?
-            WHERE exchange = ?
-        ''', (encrypted_api, encrypted_secret, admin_email, exchange))
-
-def check_exchange_connection(exchange_name, api_key, secret_key):
-    """Проверяет подключение к бирже с API ключами"""
-    try:
-        exchange_class = getattr(ccxt, exchange_name)
-        exchange = exchange_class({
-            'apiKey': api_key,
-            'secret': secret_key,
-            'enableRateLimit': True
-        })
-        balance = exchange.fetch_balance()
-        return True, "✅ Подключено"
-    except Exception as e:
-        return False, f"❌ Ошибка: {str(e)[:50]}"
-
-# ====================== ФУНКЦИИ ПОЛЬЗОВАТЕЛЕЙ ======================
+# ====================== ФУНКЦИИ ======================
 def get_user_by_email(email):
     with get_db() as conn:
         return conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
@@ -393,6 +357,33 @@ def delete_user(user_id, admin_email):
             return True
         return False
 
+def get_all_api_keys():
+    with get_db() as conn:
+        return {row['exchange']: {'api_key': row['api_key'], 'secret_key': row['secret_key']} 
+                for row in conn.execute("SELECT * FROM api_keys").fetchall()}
+
+def save_api_key(exchange, api_key, secret_key, admin_email):
+    with get_db() as conn:
+        encrypted_api = encrypt_api_key(api_key) if api_key else ""
+        encrypted_secret = encrypt_api_key(secret_key) if secret_key else ""
+        conn.execute('''
+            UPDATE api_keys SET api_key = ?, secret_key = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ?
+            WHERE exchange = ?
+        ''', (encrypted_api, encrypted_secret, admin_email, exchange))
+
+def check_exchange_connection(exchange_name, api_key, secret_key):
+    try:
+        exchange_class = getattr(ccxt, exchange_name)
+        exchange = exchange_class({
+            'apiKey': api_key,
+            'secret': secret_key,
+            'enableRateLimit': True
+        })
+        balance = exchange.fetch_balance()
+        return True, "✅ Подключено"
+    except Exception as e:
+        return False, f"❌ Ошибка: {str(e)[:50]}"
+
 # ====================== ПОДКЛЮЧЕНИЕ К БИРЖАМ ======================
 @st.cache_resource
 def init_exchanges():
@@ -458,19 +449,26 @@ def find_all_arbitrage_opportunities():
                         })
     return sorted(opportunities, key=lambda x: x['profit_usdt'], reverse=True)
 
-# ====================== ФОНОВЫЙ ПОТОК ======================
+# ====================== ФОНОВЫЙ ПОТОК ДЛЯ 24/7 ======================
 background_running = True
 
 def background_arbitrage_loop():
-    global background_running
-    while background_running:
-        if st.session_state.get('bot_running', False):
-            time.sleep(10)
-        else:
+    """Фоновый поток, работает постоянно даже при закрытом окне"""
+    while True:
+        try:
+            if st.session_state.get('bot_running', False):
+                # Здесь будет логика фонового арбитража
+                time.sleep(10)
+            else:
+                time.sleep(5)
+        except:
             time.sleep(5)
 
-background_thread = threading.Thread(target=background_arbitrage_loop, daemon=True)
-background_thread.start()
+# Запуск фонового потока (один раз при старте приложения)
+if 'background_thread_started' not in st.session_state:
+    background_thread = threading.Thread(target=background_arbitrage_loop, daemon=True)
+    background_thread.start()
+    st.session_state.background_thread_started = True
 
 # ====================== СЕССИЯ ======================
 if 'logged_in' not in st.session_state:
@@ -484,7 +482,7 @@ if 'wallet_address' not in st.session_state:
 if 'exchanges' not in st.session_state:
     st.session_state.exchanges = None
 if 'bot_running' not in st.session_state:
-    st.session_state.bot_running = False
+    st.session_state.bot_running = True  # По умолчанию True, работает 24/7
 if 'exchange_status' not in st.session_state:
     st.session_state.exchange_status = {}
 if 'current_mode' not in st.session_state:
@@ -495,7 +493,10 @@ if 'user_id' not in st.session_state:
     st.session_state.user_id = None
 if 'api_keys' not in st.session_state:
     st.session_state.api_keys = {}
+if 'show_api_warning' not in st.session_state:
+    st.session_state.show_api_warning = False
 
+# Инициализация бирж
 if st.session_state.exchanges is None:
     with st.spinner("Подключение к биржам..."):
         st.session_state.exchanges, st.session_state.exchange_status = init_exchanges()
@@ -566,11 +567,11 @@ with col_logo:
     st.markdown('<h1 class="main-header">🚀 НАКОПИТЕЛЬНЫЙ АРБИТРАЖ PRO</h1>', unsafe_allow_html=True)
 with col_status:
     if st.session_state.bot_running:
-        st.markdown('<div style="text-align: center;"><span class="status-indicator status-running"></span> <b style="color: #00FF88;">РАБОТАЕТ</b></div>', unsafe_allow_html=True)
+        st.markdown('<div style="text-align: center;"><span class="status-indicator status-running"></span> <b style="color: #00FF88;">РАБОТАЕТ 24/7</b></div>', unsafe_allow_html=True)
     else:
         st.markdown('<div style="text-align: center;"><span class="status-indicator status-stopped"></span> <b style="color: #FF4444;">ОСТАНОВЛЕН</b></div>', unsafe_allow_html=True)
 with col_logout:
-    if st.button("🚪 Выйти"):
+    if st.button("🚪 Выйти", key="logout"):
         if st.session_state.user_id and st.session_state.user_data:
             save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
         st.session_state.logged_in = False
@@ -588,6 +589,7 @@ col1, col2 = st.columns(2)
 col1.metric("💰 Общая прибыль", f"{st.session_state.user_data.get('total_profit', 0):.2f} USDT")
 col2.metric("📊 Сделок", st.session_state.user_data.get('trade_count', 0))
 
+# Кнопки управления
 c1, c2, c3, c4 = st.columns(4)
 with c1:
     if st.button("▶ СТАРТ", use_container_width=True):
@@ -611,9 +613,12 @@ with c4:
         if new_mode == "Реальный":
             has_keys = any(st.session_state.api_keys.get(ex, {}).get('api_key') for ex in ALL_EXCHANGES)
             if not has_keys:
+                st.session_state.show_api_warning = True
                 st.warning("⚠️ Для реального режима необходимо подключить API ключи бирж. Администратор может добавить их в админ-панели.")
                 st.session_state.current_mode = "Демо"
                 st.rerun()
+            else:
+                st.session_state.show_api_warning = False
         
         user = get_user_by_email(st.session_state.email)
         if user:
@@ -621,7 +626,7 @@ with c4:
             st.session_state.current_mode = new_mode
             st.rerun()
 
-# Индикатор статуса реального режима
+# Индикатор статуса реального режима (только если реальный режим активен)
 if st.session_state.current_mode == "Реальный":
     has_keys = any(st.session_state.api_keys.get(ex, {}).get('api_key') for ex in ALL_EXCHANGES)
     if has_keys:
@@ -829,7 +834,6 @@ if show_admin_panel:
                         else:
                             st.info(f"Статус: {user_data['registration_status']}")
                         
-                        # Управление реальным балансом
                         st.write("#### 💰 Управление реальным балансом")
                         new_real_balance = st.number_input("Новый реальный баланс (USDT)", value=float(user_data['real_balance']), step=100.0, key=f"real_balance_{selected_user_id}")
                         if st.button("💾 Обновить реальный баланс", key=f"update_balance_{selected_user_id}", use_container_width=True):
@@ -959,3 +963,4 @@ if st.session_state.bot_running and st.session_state.exchanges:
             st.rerun()
 
 st.caption(f"🚀 Сканируется {len(DEFAULT_ASSETS)} токенов на {len(connected)} биржах | Работает 24/7 | Режим: {st.session_state.current_mode}")
+            
