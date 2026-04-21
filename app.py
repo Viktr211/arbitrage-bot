@@ -134,7 +134,6 @@ def init_db():
                 real_history TEXT
             )
         ''')
-        
         conn.execute('''
             CREATE TABLE IF NOT EXISTS api_keys (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -145,7 +144,6 @@ def init_db():
                 updated_by TEXT
             )
         ''')
-        
         conn.execute('''
             CREATE TABLE IF NOT EXISTS trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -160,7 +158,6 @@ def init_db():
                 FOREIGN KEY (user_id) REFERENCES users(id)
             )
         ''')
-        
         conn.execute('''
             CREATE TABLE IF NOT EXISTS withdrawals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -174,7 +171,6 @@ def init_db():
                 FOREIGN KEY (user_id) REFERENCES users(id)
             )
         ''')
-        
         conn.execute('''
             CREATE TABLE IF NOT EXISTS deposits (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -185,7 +181,6 @@ def init_db():
                 FOREIGN KEY (user_id) REFERENCES users(id)
             )
         ''')
-        
         for ex in ALL_EXCHANGES:
             conn.execute('''
                 INSERT OR IGNORE INTO api_keys (exchange, api_key, secret_key)
@@ -449,7 +444,7 @@ def find_all_arbitrage_opportunities():
                         })
     return sorted(opportunities, key=lambda x: x['profit_usdt'], reverse=True)
 
-# ====================== ФОНОВЫЙ ПОТОК ДЛЯ 24/7 ======================
+# ====================== ФОНОВЫЙ ПОТОК ======================
 background_running = True
 
 def background_arbitrage_loop():
@@ -854,7 +849,8 @@ if show_admin_panel:
                             st.rerun()
             else:
                 st.info("Нет зарегистрированных пользователей")
-                 with admin_tab2:
+        
+        with admin_tab2:
             st.write("### 🔐 API ключи для реального режима")
             st.info("Здесь можно добавить API ключи для всех бирж. Ключи хранятся в зашифрованном виде.")
             st.warning("⚠️ ВНИМАНИЕ: API ключи должны иметь права ТОЛЬКО на торговлю (без вывода средств)!")
