@@ -1,4 +1,3 @@
-import streamlit as st
 import time
 import random
 import json
@@ -453,22 +452,37 @@ def find_all_arbitrage_opportunities():
 background_running = True
 
 def background_arbitrage_loop():
-    """Фоновый поток, работает постоянно даже при закрытом окне"""
     while True:
         try:
             if st.session_state.get('bot_running', False):
-                # Здесь будет логика фонового арбитража
                 time.sleep(10)
             else:
                 time.sleep(5)
         except:
             time.sleep(5)
 
-# Запуск фонового потока (один раз при старте приложения)
 if 'background_thread_started' not in st.session_state:
     background_thread = threading.Thread(target=background_arbitrage_loop, daemon=True)
     background_thread.start()
     st.session_state.background_thread_started = True
+
+# ====================== АВТОМАТИЧЕСКОЕ ВОССТАНОВЛЕНИЕ СТАТУСА ======================
+BOT_STATUS_FILE = "bot_status.json"
+
+def save_bot_status(status):
+    try:
+        with open(BOT_STATUS_FILE, 'w') as f:
+            json.dump({'bot_running': status}, f)
+    except:
+        pass
+
+def load_bot_status():
+    try:
+        with open(BOT_STATUS_FILE, 'r') as f:
+            data = json.load(f)
+            return data.get('bot_running', False)
+    except:
+        return False
 
 # ====================== СЕССИЯ ======================
 if 'logged_in' not in st.session_state:
@@ -482,7 +496,7 @@ if 'wallet_address' not in st.session_state:
 if 'exchanges' not in st.session_state:
     st.session_state.exchanges = None
 if 'bot_running' not in st.session_state:
-    st.session_state.bot_running = True  # По умолчанию True, работает 24/7
+    st.session_state.bot_running = load_bot_status()
 if 'exchange_status' not in st.session_state:
     st.session_state.exchange_status = {}
 if 'current_mode' not in st.session_state:
@@ -496,7 +510,6 @@ if 'api_keys' not in st.session_state:
 if 'show_api_warning' not in st.session_state:
     st.session_state.show_api_warning = False
 
-# Инициализация бирж
 if st.session_state.exchanges is None:
     with st.spinner("Подключение к биржам..."):
         st.session_state.exchanges, st.session_state.exchange_status = init_exchanges()
@@ -576,6 +589,7 @@ with col_logout:
             save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
         st.session_state.logged_in = False
         st.session_state.bot_running = False
+        save_bot_status(False)
         st.rerun()
 
 st.markdown(f'<div class="user-info">👤 {st.session_state.username} | 📧 {st.session_state.email}</div>', unsafe_allow_html=True)
@@ -589,19 +603,21 @@ col1, col2 = st.columns(2)
 col1.metric("💰 Общая прибыль", f"{st.session_state.user_data.get('total_profit', 0):.2f} USDT")
 col2.metric("📊 Сделок", st.session_state.user_data.get('trade_count', 0))
 
-# Кнопки управления
 c1, c2, c3, c4 = st.columns(4)
 with c1:
     if st.button("▶ СТАРТ", use_container_width=True):
         st.session_state.bot_running = True
+        save_bot_status(True)
         st.rerun()
 with c2:
     if st.button("⏸ ПАУЗА", use_container_width=True):
         st.session_state.bot_running = False
+        save_bot_status(False)
         st.rerun()
 with c3:
     if st.button("⏹ СТОП", use_container_width=True):
         st.session_state.bot_running = False
+        save_bot_status(False)
         st.rerun()
 with c4:
     new_mode = st.selectbox("Режим", ["Демо", "Реальный"], index=0 if st.session_state.current_mode == "Демо" else 1)
@@ -609,16 +625,12 @@ with c4:
         if st.session_state.user_id and st.session_state.user_data:
             save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
         
-        # Проверяем, есть ли API ключи для реального режима
         if new_mode == "Реальный":
             has_keys = any(st.session_state.api_keys.get(ex, {}).get('api_key') for ex in ALL_EXCHANGES)
             if not has_keys:
-                st.session_state.show_api_warning = True
                 st.warning("⚠️ Для реального режима необходимо подключить API ключи бирж. Администратор может добавить их в админ-панели.")
                 st.session_state.current_mode = "Демо"
                 st.rerun()
-            else:
-                st.session_state.show_api_warning = False
         
         user = get_user_by_email(st.session_state.email)
         if user:
@@ -626,7 +638,6 @@ with c4:
             st.session_state.current_mode = new_mode
             st.rerun()
 
-# Индикатор статуса реального режима (только если реальный режим активен)
 if st.session_state.current_mode == "Реальный":
     has_keys = any(st.session_state.api_keys.get(ex, {}).get('api_key') for ex in ALL_EXCHANGES)
     if has_keys:
@@ -697,7 +708,7 @@ with tabs[2]:
         st.success(f"Найдено {len(opportunities)} возможностей!")
         for idx, opp in enumerate(opportunities[:10]):
             unique_key = f"{opp['asset']}_{opp['aux_exchange']}_{idx}"
-            st.info(f"🎯 {opp['asset']}: OKX ${opp['main_price']:,.0f} → {opp['aux_exchange'].upper()} ${opp['aux_price']:,.0f} | +{opp['profit_usdt']:.2f} USDT")
+             st.info(f"🎯 {opp['asset']}: OKX ${opp['main_price']:,.0f} → {opp['aux_exchange'].upper()} ${opp['aux_price']:,.0f} | +{opp['profit_usdt']:.2f} USDT")
             if st.button(f"Исполнить {opp['asset']} на {opp['aux_exchange'].upper()}", key=unique_key):
                 profit = opp['profit_usdt']
                 st.session_state.user_data['total_profit'] += profit
@@ -963,4 +974,3 @@ if st.session_state.bot_running and st.session_state.exchanges:
             st.rerun()
 
 st.caption(f"🚀 Сканируется {len(DEFAULT_ASSETS)} токенов на {len(connected)} биржах | Работает 24/7 | Режим: {st.session_state.current_mode}")
-            
