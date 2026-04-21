@@ -69,7 +69,6 @@ def get_db():
 
 def init_db():
     with get_db() as conn:
-        # Таблица users (расширена для хранения демо и реальных данных)
         conn.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -84,8 +83,6 @@ def init_db():
                 approved_at DATETIME,
                 approved_by TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                
-                -- Демо-режим данные
                 demo_balance REAL DEFAULT 1000,
                 demo_total_profit REAL DEFAULT 0,
                 demo_trade_count INTEGER DEFAULT 0,
@@ -95,8 +92,6 @@ def init_db():
                 demo_weekly_profits TEXT,
                 demo_monthly_profits TEXT,
                 demo_history TEXT,
-                
-                -- Реальный режим данные
                 real_balance REAL DEFAULT 0,
                 real_total_profit REAL DEFAULT 0,
                 real_trade_count INTEGER DEFAULT 0,
@@ -108,8 +103,6 @@ def init_db():
                 real_history TEXT
             )
         ''')
-        
-        # Таблица trades (все сделки всех режимов)
         conn.execute('''
             CREATE TABLE IF NOT EXISTS trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,8 +117,6 @@ def init_db():
                 FOREIGN KEY (user_id) REFERENCES users(id)
             )
         ''')
-        
-        # Таблица withdrawals
         conn.execute('''
             CREATE TABLE IF NOT EXISTS withdrawals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -139,8 +130,6 @@ def init_db():
                 FOREIGN KEY (user_id) REFERENCES users(id)
             )
         ''')
-        
-        # Таблица deposits
         conn.execute('''
             CREATE TABLE IF NOT EXISTS deposits (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -154,7 +143,7 @@ def init_db():
 
 init_db()
 
-# Создаём администратора при первом запуске
+# Создаём администратора
 try:
     with get_db() as conn:
         admin_email = "cb777899@gmail.com"
@@ -162,10 +151,10 @@ try:
         if not existing:
             conn.execute('''
                 INSERT INTO users (email, password_hash, full_name, registration_status, approved_at, approved_by,
-                                   demo_balance, demo_total_profit, demo_portfolio, demo_usdt_reserves)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                   demo_balance, demo_portfolio, demo_usdt_reserves)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (admin_email, "Viktr211@", "Администратор", "approved", datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "system",
-                  1000, 0, json.dumps(DEMO_PORTFOLIO), json.dumps({ex: DEMO_USDT_RESERVES for ex in AUX_EXCHANGES})))
+                  1000, json.dumps(DEMO_PORTFOLIO), json.dumps({ex: DEMO_USDT_RESERVES for ex in AUX_EXCHANGES})))
         else:
             conn.execute("UPDATE users SET password_hash = ? WHERE email = ?", ("Viktr211@", admin_email))
 except Exception as e:
@@ -187,7 +176,6 @@ def create_user(email, password_hash, full_name, country, city, phone, wallet_ad
         return cursor.lastrowid
 
 def load_user_mode_data(user, mode):
-    """Загружает данные пользователя для указанного режима (demo/real)"""
     if mode == "Демо":
         return {
             'balance': user['demo_balance'],
@@ -214,7 +202,6 @@ def load_user_mode_data(user, mode):
         }
 
 def save_user_mode_data(user_id, mode, data):
-    """Сохраняет данные пользователя для указанного режима"""
     with get_db() as conn:
         if mode == "Демо":
             conn.execute('''
@@ -224,13 +211,10 @@ def save_user_mode_data(user_id, mode, data):
                     demo_daily_profits = ?, demo_weekly_profits = ?, demo_monthly_profits = ?,
                     demo_history = ?
                 WHERE id = ?
-            ''', (
-                data['balance'], data['total_profit'], data['trade_count'],
-                json.dumps(data['portfolio']), json.dumps(data['usdt_reserves']),
-                json.dumps(data['daily_profits']), json.dumps(data['weekly_profits']), json.dumps(data['monthly_profits']),
-                json.dumps(data['history'][-500:]),
-                user_id
-            ))
+            ''', (data['balance'], data['total_profit'], data['trade_count'],
+                  json.dumps(data['portfolio']), json.dumps(data['usdt_reserves']),
+                  json.dumps(data['daily_profits']), json.dumps(data['weekly_profits']), json.dumps(data['monthly_profits']),
+                  json.dumps(data['history'][-500:]), user_id))
         else:
             conn.execute('''
                 UPDATE users SET 
@@ -239,13 +223,10 @@ def save_user_mode_data(user_id, mode, data):
                     real_daily_profits = ?, real_weekly_profits = ?, real_monthly_profits = ?,
                     real_history = ?
                 WHERE id = ?
-            ''', (
-                data['balance'], data['total_profit'], data['trade_count'],
-                json.dumps(data['portfolio']), json.dumps(data['usdt_reserves']),
-                json.dumps(data['daily_profits']), json.dumps(data['weekly_profits']), json.dumps(data['monthly_profits']),
-                json.dumps(data['history'][-500:]),
-                user_id
-            ))
+            ''', (data['balance'], data['total_profit'], data['trade_count'],
+                  json.dumps(data['portfolio']), json.dumps(data['usdt_reserves']),
+                  json.dumps(data['daily_profits']), json.dumps(data['weekly_profits']), json.dumps(data['monthly_profits']),
+                  json.dumps(data['history'][-500:]), user_id))
 
 def add_trade(user_id, mode, asset, amount, profit, buy_exchange, sell_exchange):
     with get_db() as conn:
@@ -387,35 +368,19 @@ def find_all_arbitrage_opportunities():
                         })
     return sorted(opportunities, key=lambda x: x['profit_usdt'], reverse=True)
 
-# ====================== ФОНОВЫЙ ПОТОК ДЛЯ 24/7 ======================
-background_thread = None
-background_running = False
+# ====================== ФОНОВЫЙ ПОТОК ======================
+background_running = True
 
 def background_arbitrage_loop():
-    """Фоновый поток для арбитража 24/7"""
     global background_running
     while background_running:
         if st.session_state.get('bot_running', False):
-            try:
-                # Здесь будет логика фонового арбитража
-                time.sleep(10)
-            except:
-                pass
+            time.sleep(10)
         else:
             time.sleep(5)
 
-def start_background_thread():
-    global background_thread, background_running
-    if background_thread is None or not background_thread.is_alive():
-        background_running = True
-        background_thread = threading.Thread(target=background_arbitrage_loop, daemon=True)
-        background_thread.start()
-
-def stop_background_thread():
-    global background_running
-    background_running = False
-
-start_background_thread()
+background_thread = threading.Thread(target=background_arbitrage_loop, daemon=True)
+background_thread.start()
 
 # ====================== СЕССИЯ ======================
 if 'logged_in' not in st.session_state:
@@ -439,7 +404,6 @@ if 'user_data' not in st.session_state:
 if 'user_id' not in st.session_state:
     st.session_state.user_id = None
 
-# Инициализация бирж
 if st.session_state.exchanges is None:
     with st.spinner("Подключение к биржам..."):
         st.session_state.exchanges, st.session_state.exchange_status = init_exchanges()
@@ -501,7 +465,6 @@ if not st.session_state.logged_in:
     st.stop()
 
 # ====================== ОСНОВНОЙ ИНТЕРФЕЙС ======================
-# Сохраняем текущие данные пользователя при каждом обновлении
 if st.session_state.user_id and st.session_state.user_data:
     save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
 
@@ -532,7 +495,6 @@ col1, col2 = st.columns(2)
 col1.metric("💰 Общая прибыль", f"{st.session_state.user_data.get('total_profit', 0):.2f} USDT")
 col2.metric("📊 Сделок", st.session_state.user_data.get('trade_count', 0))
 
-# Кнопки управления
 c1, c2, c3, c4 = st.columns(4)
 with c1:
     if st.button("▶ СТАРТ", use_container_width=True):
@@ -549,10 +511,8 @@ with c3:
 with c4:
     new_mode = st.selectbox("Режим", ["Демо", "Реальный"], index=0 if st.session_state.current_mode == "Демо" else 1)
     if new_mode != st.session_state.current_mode:
-        # Сохраняем текущий режим
         if st.session_state.user_id and st.session_state.user_data:
             save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
-        # Загружаем данные нового режима
         user = get_user_by_email(st.session_state.email)
         if user:
             st.session_state.user_data = load_user_mode_data(user, new_mode)
@@ -683,7 +643,7 @@ with tabs[5]:
             if st.session_state.user_data.get('balance', 0) >= withdraw:
                 create_withdrawal_request(st.session_state.user_id, withdraw, st.session_state.wallet_address)
                 st.success(f"Заявка на вывод {withdraw} USDT отправлена!")
-                  st.rerun()
+                st.rerun()
             else:
                 st.error("Недостаточно средств!")
         else:
@@ -720,7 +680,7 @@ if show_admin_panel:
                         "ID": user['id'],
                         "Email": user['email'],
                         "Имя": user['full_name'],
-                        "Страна": user['country'],
+                         "Страна": user['country'],
                         "Город": user['city'],
                         "Статус": user['registration_status'],
                         "Демо-прибыль": f"${user['demo_total_profit']:.2f}",
@@ -801,7 +761,7 @@ if show_admin_panel:
             else:
                 st.info("Нет заявок на вывод")
 
-# ====================== АВТОМАТИЧЕСКИЙ АРБИТРАЖ (ФОНОВЫЙ) ======================
+# ====================== АВТОМАТИЧЕСКИЙ АРБИТРАЖ ======================
 if st.session_state.bot_running and st.session_state.exchanges:
     time.sleep(8)
     opportunities = find_all_arbitrage_opportunities()
