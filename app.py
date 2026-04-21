@@ -12,6 +12,8 @@ import threading
 import numpy as np
 import sqlite3
 from contextlib import contextmanager
+import hashlib
+import base64
 
 st.set_page_config(page_title="Накопительный Арбитраж PRO", layout="wide", page_icon="🚀")
 
@@ -31,6 +33,8 @@ st.markdown("""
     .red-button button { background-color: #CC3333 !important; color: white !important; }
     .token-card { background: rgba(0,100,200,0.2); border-radius: 10px; padding: 8px; margin: 4px; text-align: center; }
     .profit-card { background: rgba(0,255,100,0.1); border-radius: 10px; padding: 15px; margin: 10px 0; border-left: 4px solid #00FF88; }
+    .api-warning { background: rgba(255,100,100,0.2); border-radius: 10px; padding: 10px; margin: 10px 0; border-left: 4px solid #FF4444; }
+    .api-success { background: rgba(0,255,100,0.2); border-radius: 10px; padding: 10px; margin: 10px 0; border-left: 4px solid #00FF88; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -38,6 +42,7 @@ st.markdown("""
 DEFAULT_ASSETS = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "SUI", "HYPE"]
 MAIN_EXCHANGE = "okx"
 AUX_EXCHANGES = ["gateio", "kucoin", "bitget", "bingx", "mexc", "huobi", "poloniex", "hitbtc"]
+ALL_EXCHANGES = [MAIN_EXCHANGE] + AUX_EXCHANGES
 
 MIN_SPREAD_PERCENT = 0.005
 FEE_PERCENT = 0.10
@@ -54,6 +59,32 @@ ADMIN_EMAILS = ["cb777899@gmail.com", "admin@arbitrage.com"]
 def is_admin(email):
     return email in ADMIN_EMAILS
 
+# ====================== ШИФРОВАНИЕ ======================
+ENCRYPTION_KEY = hashlib.sha256("arbitrage_secret_key_2024".encode()).digest()
+
+def encrypt_api_key(key):
+    if not key:
+        return ""
+    try:
+        from cryptography.fernet import Fernet
+        fernet = Fernet(base64.urlsafe_b64encode(ENCRYPTION_KEY[:32]))
+        return fernet.encrypt(key.encode()).decode()
+    except:
+        return base64.b64encode(key.encode()).decode()
+
+def decrypt_api_key(encrypted):
+    if not encrypted:
+        return ""
+    try:
+        from cryptography.fernet import Fernet
+        fernet = Fernet(base64.urlsafe_b64encode(ENCRYPTION_KEY[:32]))
+        return fernet.decrypt(encrypted.encode()).decode()
+    except:
+        try:
+            return base64.b64decode(encrypted).decode()
+        except:
+            return ""
+
 # ====================== БАЗА ДАННЫХ ======================
 DB_PATH = "arbitrage.db"
 
@@ -69,6 +100,7 @@ def get_db():
 
 def init_db():
     with get_db() as conn:
+        # Таблица users
         conn.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -103,6 +135,20 @@ def init_db():
                 real_history TEXT
             )
         ''')
+        
+        # Таблица api_keys (для всех бирж)
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS api_keys (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                exchange TEXT UNIQUE NOT NULL,
+                api_key TEXT,
+                secret_key TEXT,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_by TEXT
+            )
+        ''')
+        
+        # Таблица trades
         conn.execute('''
             CREATE TABLE IF NOT EXISTS trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -117,6 +163,8 @@ def init_db():
                 FOREIGN KEY (user_id) REFERENCES users(id)
             )
         ''')
+        
+        # Таблица withdrawals
         conn.execute('''
             CREATE TABLE IF NOT EXISTS withdrawals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -130,6 +178,8 @@ def init_db():
                 FOREIGN KEY (user_id) REFERENCES users(id)
             )
         ''')
+        
+        # Таблица deposits
         conn.execute('''
             CREATE TABLE IF NOT EXISTS deposits (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -140,6 +190,13 @@ def init_db():
                 FOREIGN KEY (user_id) REFERENCES users(id)
             )
         ''')
+        
+        # Инициализация пустых записей API ключей для всех бирж
+        for ex in ALL_EXCHANGES:
+            conn.execute('''
+                INSERT OR IGNORE INTO api_keys (exchange, api_key, secret_key)
+                VALUES (?, ?, ?)
+            ''', (ex, "", ""))
 
 init_db()
 
@@ -160,7 +217,36 @@ try:
 except Exception as e:
     print(f"Ошибка: {e}")
 
-# ====================== ФУНКЦИИ БАЗЫ ДАННЫХ ======================
+# ====================== ФУНКЦИИ API КЛЮЧЕЙ ======================
+def get_all_api_keys():
+    with get_db() as conn:
+        return {row['exchange']: {'api_key': row['api_key'], 'secret_key': row['secret_key']} 
+                for row in conn.execute("SELECT * FROM api_keys").fetchall()}
+
+def save_api_key(exchange, api_key, secret_key, admin_email):
+    with get_db() as conn:
+        encrypted_api = encrypt_api_key(api_key) if api_key else ""
+        encrypted_secret = encrypt_api_key(secret_key) if secret_key else ""
+        conn.execute('''
+            UPDATE api_keys SET api_key = ?, secret_key = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ?
+            WHERE exchange = ?
+        ''', (encrypted_api, encrypted_secret, admin_email, exchange))
+
+def check_exchange_connection(exchange_name, api_key, secret_key):
+    """Проверяет подключение к бирже с API ключами"""
+    try:
+        exchange_class = getattr(ccxt, exchange_name)
+        exchange = exchange_class({
+            'apiKey': api_key,
+            'secret': secret_key,
+            'enableRateLimit': True
+        })
+        balance = exchange.fetch_balance()
+        return True, "✅ Подключено"
+    except Exception as e:
+        return False, f"❌ Ошибка: {str(e)[:50]}"
+
+# ====================== ФУНКЦИИ ПОЛЬЗОВАТЕЛЕЙ ======================
 def get_user_by_email(email):
     with get_db() as conn:
         return conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
@@ -295,6 +381,10 @@ def update_user_status(user_id, status, admin_email):
                 UPDATE users SET registration_status = ? WHERE id = ?
             ''', (status, user_id))
 
+def update_user_real_balance(user_id, new_balance, admin_email):
+    with get_db() as conn:
+        conn.execute("UPDATE users SET real_balance = ? WHERE id = ?", (new_balance, user_id))
+
 def delete_user(user_id, admin_email):
     with get_db() as conn:
         trades = conn.execute("SELECT COUNT(*) as count FROM trades WHERE user_id = ?", (user_id,)).fetchone()
@@ -308,7 +398,7 @@ def delete_user(user_id, admin_email):
 def init_exchanges():
     exchanges = {}
     status = {}
-    for ex_name in [MAIN_EXCHANGE] + AUX_EXCHANGES:
+    for ex_name in ALL_EXCHANGES:
         try:
             exchange = getattr(ccxt, ex_name)({'enableRateLimit': True})
             exchange.fetch_ticker('BTC/USDT')
@@ -403,10 +493,13 @@ if 'user_data' not in st.session_state:
     st.session_state.user_data = {}
 if 'user_id' not in st.session_state:
     st.session_state.user_id = None
+if 'api_keys' not in st.session_state:
+    st.session_state.api_keys = {}
 
 if st.session_state.exchanges is None:
     with st.spinner("Подключение к биржам..."):
         st.session_state.exchanges, st.session_state.exchange_status = init_exchanges()
+        st.session_state.api_keys = get_all_api_keys()
 
 # ====================== РЕГИСТРАЦИЯ / ВХОД ======================
 if not st.session_state.logged_in:
@@ -513,11 +606,31 @@ with c4:
     if new_mode != st.session_state.current_mode:
         if st.session_state.user_id and st.session_state.user_data:
             save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
+        
+        # Проверяем, есть ли API ключи для реального режима
+        if new_mode == "Реальный":
+            has_keys = any(st.session_state.api_keys.get(ex, {}).get('api_key') for ex in ALL_EXCHANGES)
+            if not has_keys:
+                st.warning("⚠️ Для реального режима необходимо подключить API ключи бирж. Администратор может добавить их в админ-панели.")
+                st.session_state.current_mode = "Демо"
+                st.rerun()
+        
         user = get_user_by_email(st.session_state.email)
         if user:
             st.session_state.user_data = load_user_mode_data(user, new_mode)
             st.session_state.current_mode = new_mode
             st.rerun()
+
+# Индикатор статуса реального режима
+if st.session_state.current_mode == "Реальный":
+    has_keys = any(st.session_state.api_keys.get(ex, {}).get('api_key') for ex in ALL_EXCHANGES)
+    if has_keys:
+        st.markdown('<div class="api-success">✅ Реальный режим активен. API ключи подключены. Совершаются реальные сделки.</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="api-warning">⚠️ РЕАЛЬНЫЙ РЕЖИМ: API ключи не подключены. Администратору необходимо добавить ключи в админ-панели.</div>', unsafe_allow_html=True)
+        st.session_state.user_data['balance'] = 0
+        st.session_state.user_data['portfolio'] = {a: 0 for a in DEFAULT_ASSETS}
+        st.session_state.user_data['usdt_reserves'] = {ex: 0 for ex in AUX_EXCHANGES}
 
 # ====================== ВКЛАДКИ ======================
 show_admin_panel = st.session_state.get('logged_in') and is_admin(st.session_state.get('email', ''))
@@ -549,7 +662,7 @@ with tabs[1]:
     st.subheader("📈 Японские свечи")
     col_a, col_b = st.columns(2)
     selected_asset = col_a.selectbox("Актив", DEFAULT_ASSETS)
-    selected_exchange = col_b.selectbox("Биржа", [MAIN_EXCHANGE] + AUX_EXCHANGES[:5])
+    selected_exchange = col_b.selectbox("Биржа", ALL_EXCHANGES[:5])
     if st.button("🔄 Обновить график", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
@@ -627,7 +740,7 @@ with tabs[4]:
 with tabs[5]:
     st.subheader("💰 Резервы USDT на биржах")
     for ex in AUX_EXCHANGES[:5]:
-        reserve = st.session_state.user_data.get('usdt_reserves', {}).get(ex, DEMO_USDT_RESERVES)
+        reserve = st.session_state.user_data.get('usdt_reserves', {}).get(ex, 0)
         st.write(f"{ex.upper()}: {reserve:.0f} USDT")
     st.divider()
     wallet_input = st.text_input("Адрес кошелька", value=st.session_state.wallet_address)
@@ -668,7 +781,7 @@ if show_admin_panel:
     with tabs[7]:
         st.subheader("👑 Админ-панель управления")
         
-        admin_tab1, admin_tab2, admin_tab3 = st.tabs(["👥 Участники", "📜 Все сделки", "💰 Заявки на вывод"])
+        admin_tab1, admin_tab2, admin_tab3, admin_tab4 = st.tabs(["👥 Участники", "🔐 API ключи", "📜 Все сделки", "💰 Заявки на вывод"])
         
         with admin_tab1:
             st.write("### 👥 Все участники платформы")
@@ -680,10 +793,12 @@ if show_admin_panel:
                         "ID": user['id'],
                         "Email": user['email'],
                         "Имя": user['full_name'],
-                         "Страна": user['country'],
+                        "Страна": user['country'],
                         "Город": user['city'],
                         "Статус": user['registration_status'],
+                        "Демо-баланс": f"${user['demo_balance']:.2f}",
                         "Демо-прибыль": f"${user['demo_total_profit']:.2f}",
+                        "Реал-баланс": f"${user['real_balance']:.2f}",
                         "Реал-прибыль": f"${user['real_total_profit']:.2f}",
                         "Регистрация": user['created_at'][:10] if user['created_at'] else "",
                         "Одобрен": user['approved_at'][:10] if user['approved_at'] else ""
@@ -701,9 +816,10 @@ if show_admin_panel:
                     if user_data:
                         st.write(f"**{user_data['email']}** — {user_data['full_name']} | Статус: {user_data['registration_status']}")
                         
-                        col1_admin, col2_admin = st.columns(2)
-                        col1_admin.metric("💰 Демо-прибыль", f"${user_data['demo_total_profit']:.2f}")
-                        col2_admin.metric("💰 Реал-прибыль", f"${user_data['real_total_profit']:.2f}")
+                        col1_admin, col2_admin, col3_admin = st.columns(3)
+                        col1_admin.metric("💰 Демо-баланс", f"${user_data['demo_balance']:.2f}")
+                        col2_admin.metric("💰 Реал-баланс", f"${user_data['real_balance']:.2f}")
+                        col3_admin.metric("📊 Реал-прибыль", f"${user_data['real_total_profit']:.2f}")
                         
                         if user_data['registration_status'] == 'pending':
                             if st.button("✅ Одобрить", key=f"approve_{selected_user_id}", use_container_width=True):
@@ -712,10 +828,69 @@ if show_admin_panel:
                                 st.rerun()
                         else:
                             st.info(f"Статус: {user_data['registration_status']}")
+                        
+                        # Управление реальным балансом
+                        st.write("#### 💰 Управление реальным балансом")
+                        new_real_balance = st.number_input("Новый реальный баланс (USDT)", value=float(user_data['real_balance']), step=100.0, key=f"real_balance_{selected_user_id}")
+                        if st.button("💾 Обновить реальный баланс", key=f"update_balance_{selected_user_id}", use_container_width=True):
+                            update_user_real_balance(selected_user_id, new_real_balance, st.session_state.email)
+                            st.success(f"Реальный баланс пользователя {user_data['email']} обновлён!")
+                            st.rerun()
             else:
                 st.info("Нет зарегистрированных пользователей")
         
         with admin_tab2:
+            st.write("### 🔐 API ключи для реального режима")
+            st.info("Здесь можно добавить API ключи для всех бирж. Ключи хранятся в зашифрованном виде.")
+            st.warning("⚠️ ВНИМАНИЕ: API ключи должны иметь права ТОЛЬКО на торговлю (без вывода средств)!")
+            
+            api_keys = get_all_api_keys()
+            
+            for ex in ALL_EXCHANGES:
+                with st.expander(f"🔑 {ex.upper()}", expanded=False):
+                    current = api_keys.get(ex, {})
+                    current_api = decrypt_api_key(current.get('api_key', ''))
+                    current_secret = decrypt_api_key(current.get('secret_key', ''))
+                    
+                    new_api_key = st.text_input(f"API Key ({ex.upper()})", value=current_api, type="password", key=f"api_{ex}")
+                    new_secret = st.text_input(f"Secret Key ({ex.upper()})", value=current_secret, type="password", key=f"secret_{ex}")
+                    
+                    col_test, col_save = st.columns(2)
+                    with col_test:
+                        if st.button(f"🔍 Проверить {ex.upper()}", key=f"test_{ex}", use_container_width=True):
+                            if new_api_key and new_secret:
+                                success, msg = check_exchange_connection(ex, new_api_key, new_secret)
+                                if success:
+                                    st.success(f"✅ {ex.upper()}: подключение успешно!")
+                                else:
+                                    st.error(f"❌ {ex.upper()}: {msg}")
+                            else:
+                                st.warning("Введите API ключи для проверки")
+                    
+                    with col_save:
+                        if st.button(f"💾 Сохранить {ex.upper()}", key=f"save_{ex}", use_container_width=True):
+                            save_api_key(ex, new_api_key, new_secret, st.session_state.email)
+                            st.session_state.api_keys = get_all_api_keys()
+                            st.success(f"Ключи для {ex.upper()} сохранены!")
+                            st.rerun()
+            
+            st.divider()
+            if st.button("🔄 Проверить все подключения", use_container_width=True):
+                st.write("### Результаты проверки:")
+                for ex in ALL_EXCHANGES:
+                    key_data = st.session_state.api_keys.get(ex, {})
+                    api_key = decrypt_api_key(key_data.get('api_key', ''))
+                    secret_key = decrypt_api_key(key_data.get('secret_key', ''))
+                    if api_key and secret_key:
+                        success, msg = check_exchange_connection(ex, api_key, secret_key)
+                        if success:
+                            st.success(f"✅ {ex.upper()}: {msg}")
+                        else:
+                            st.error(f"❌ {ex.upper()}: {msg}")
+                    else:
+                        st.warning(f"⚠️ {ex.upper()}: ключи не добавлены")
+        
+        with admin_tab3:
             st.write("### 📜 Все сделки всех участников")
             all_trades = get_all_trades(limit=200)
             if all_trades:
@@ -733,7 +908,7 @@ if show_admin_panel:
             else:
                 st.info("Нет совершённых сделок")
         
-        with admin_tab3:
+        with admin_tab4:
             st.write("### 💰 Заявки на вывод средств")
             st.info("📅 Вывод средств осуществляется по вторникам и пятницам.")
             
