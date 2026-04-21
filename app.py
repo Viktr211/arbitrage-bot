@@ -707,7 +707,7 @@ with tabs[2]:
     if opportunities:
         st.success(f"Найдено {len(opportunities)} возможностей!")
         for idx, opp in enumerate(opportunities[:10]):
-            unique_key = f"{opp['asset']}_{opp['aux_exchange']}_{idx}"
+            unique_key = f"{opp['asset']}_{opp['aux_exchange']}_{idx}"st.info(f"🎯 {opp['asset']}: OKX ${opp['main_price']:,.0f} → {opp['aux_exchange'].upper()} ${opp['aux_price']:,.0f} | +{o
         st.info(f"🎯 {opp['asset']}: OKX ${opp['main_price']:,.0f} → {opp['aux_exchange'].upper()} ${opp['aux_price']:,.0f} | +{opp['profit_usdt']:.2f} USDT")
             if st.button(f"Исполнить {opp['asset']} на {opp['aux_exchange'].upper()}", key=unique_key):
                 profit = opp['profit_usdt']
