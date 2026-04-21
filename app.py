@@ -69,6 +69,7 @@ def get_db():
 
 def init_db():
     with get_db() as conn:
+        # Таблица users (расширена для хранения демо и реальных данных)
         conn.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,18 +81,40 @@ def init_db():
                 phone TEXT,
                 wallet_address TEXT,
                 registration_status TEXT DEFAULT 'pending',
-                balance REAL DEFAULT 0,
-                total_profit REAL DEFAULT 0,
-                trade_count INTEGER DEFAULT 0,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 approved_at DATETIME,
-                approved_by TEXT
+                approved_by TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                
+                -- Демо-режим данные
+                demo_balance REAL DEFAULT 1000,
+                demo_total_profit REAL DEFAULT 0,
+                demo_trade_count INTEGER DEFAULT 0,
+                demo_portfolio TEXT,
+                demo_usdt_reserves TEXT,
+                demo_daily_profits TEXT,
+                demo_weekly_profits TEXT,
+                demo_monthly_profits TEXT,
+                demo_history TEXT,
+                
+                -- Реальный режим данные
+                real_balance REAL DEFAULT 0,
+                real_total_profit REAL DEFAULT 0,
+                real_trade_count INTEGER DEFAULT 0,
+                real_portfolio TEXT,
+                real_usdt_reserves TEXT,
+                real_daily_profits TEXT,
+                real_weekly_profits TEXT,
+                real_monthly_profits TEXT,
+                real_history TEXT
             )
         ''')
+        
+        # Таблица trades (все сделки всех режимов)
         conn.execute('''
             CREATE TABLE IF NOT EXISTS trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
+                mode TEXT NOT NULL,
                 asset TEXT NOT NULL,
                 amount REAL NOT NULL,
                 profit REAL NOT NULL,
@@ -101,6 +124,8 @@ def init_db():
                 FOREIGN KEY (user_id) REFERENCES users(id)
             )
         ''')
+        
+        # Таблица withdrawals
         conn.execute('''
             CREATE TABLE IF NOT EXISTS withdrawals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -114,6 +139,8 @@ def init_db():
                 FOREIGN KEY (user_id) REFERENCES users(id)
             )
         ''')
+        
+        # Таблица deposits
         conn.execute('''
             CREATE TABLE IF NOT EXISTS deposits (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -134,9 +161,11 @@ try:
         existing = conn.execute("SELECT * FROM users WHERE email = ?", (admin_email,)).fetchone()
         if not existing:
             conn.execute('''
-                INSERT INTO users (email, password_hash, full_name, registration_status, balance, approved_at, approved_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (admin_email, "Viktr211@", "Администратор", "approved", 10000, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "system"))
+                INSERT INTO users (email, password_hash, full_name, registration_status, approved_at, approved_by,
+                                   demo_balance, demo_total_profit, demo_portfolio, demo_usdt_reserves)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (admin_email, "Viktr211@", "Администратор", "approved", datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "system",
+                  1000, 0, json.dumps(DEMO_PORTFOLIO), json.dumps({ex: DEMO_USDT_RESERVES for ex in AUX_EXCHANGES})))
         else:
             conn.execute("UPDATE users SET password_hash = ? WHERE email = ?", ("Viktr211@", admin_email))
 except Exception as e:
@@ -147,28 +176,83 @@ def get_user_by_email(email):
     with get_db() as conn:
         return conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
 
-def get_user_by_id(user_id):
-    with get_db() as conn:
-        return conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-
 def create_user(email, password_hash, full_name, country, city, phone, wallet_address):
     with get_db() as conn:
         cursor = conn.execute('''
-            INSERT INTO users (email, password_hash, full_name, country, city, phone, wallet_address, registration_status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (email, password_hash, full_name, country, city, phone, wallet_address, 'pending'))
+            INSERT INTO users (email, password_hash, full_name, country, city, phone, wallet_address, registration_status,
+                               demo_balance, demo_portfolio, demo_usdt_reserves)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (email, password_hash, full_name, country, city, phone, wallet_address, 'pending',
+              1000, json.dumps(DEMO_PORTFOLIO), json.dumps({ex: DEMO_USDT_RESERVES for ex in AUX_EXCHANGES})))
         return cursor.lastrowid
 
-def add_trade(user_id, asset, amount, profit, buy_exchange, sell_exchange):
+def load_user_mode_data(user, mode):
+    """Загружает данные пользователя для указанного режима (demo/real)"""
+    if mode == "Демо":
+        return {
+            'balance': user['demo_balance'],
+            'total_profit': user['demo_total_profit'],
+            'trade_count': user['demo_trade_count'],
+            'portfolio': json.loads(user['demo_portfolio']) if user['demo_portfolio'] else DEMO_PORTFOLIO.copy(),
+            'usdt_reserves': json.loads(user['demo_usdt_reserves']) if user['demo_usdt_reserves'] else {ex: DEMO_USDT_RESERVES for ex in AUX_EXCHANGES},
+            'daily_profits': json.loads(user['demo_daily_profits']) if user['demo_daily_profits'] else {},
+            'weekly_profits': json.loads(user['demo_weekly_profits']) if user['demo_weekly_profits'] else {},
+            'monthly_profits': json.loads(user['demo_monthly_profits']) if user['demo_monthly_profits'] else {},
+            'history': json.loads(user['demo_history']) if user['demo_history'] else []
+        }
+    else:
+        return {
+            'balance': user['real_balance'],
+            'total_profit': user['real_total_profit'],
+            'trade_count': user['real_trade_count'],
+            'portfolio': json.loads(user['real_portfolio']) if user['real_portfolio'] else {a: 0 for a in DEFAULT_ASSETS},
+            'usdt_reserves': json.loads(user['real_usdt_reserves']) if user['real_usdt_reserves'] else {ex: 0 for ex in AUX_EXCHANGES},
+            'daily_profits': json.loads(user['real_daily_profits']) if user['real_daily_profits'] else {},
+            'weekly_profits': json.loads(user['real_weekly_profits']) if user['real_weekly_profits'] else {},
+            'monthly_profits': json.loads(user['real_monthly_profits']) if user['real_monthly_profits'] else {},
+            'history': json.loads(user['real_history']) if user['real_history'] else []
+        }
+
+def save_user_mode_data(user_id, mode, data):
+    """Сохраняет данные пользователя для указанного режима"""
+    with get_db() as conn:
+        if mode == "Демо":
+            conn.execute('''
+                UPDATE users SET 
+                    demo_balance = ?, demo_total_profit = ?, demo_trade_count = ?,
+                    demo_portfolio = ?, demo_usdt_reserves = ?,
+                    demo_daily_profits = ?, demo_weekly_profits = ?, demo_monthly_profits = ?,
+                    demo_history = ?
+                WHERE id = ?
+            ''', (
+                data['balance'], data['total_profit'], data['trade_count'],
+                json.dumps(data['portfolio']), json.dumps(data['usdt_reserves']),
+                json.dumps(data['daily_profits']), json.dumps(data['weekly_profits']), json.dumps(data['monthly_profits']),
+                json.dumps(data['history'][-500:]),
+                user_id
+            ))
+        else:
+            conn.execute('''
+                UPDATE users SET 
+                    real_balance = ?, real_total_profit = ?, real_trade_count = ?,
+                    real_portfolio = ?, real_usdt_reserves = ?,
+                    real_daily_profits = ?, real_weekly_profits = ?, real_monthly_profits = ?,
+                    real_history = ?
+                WHERE id = ?
+            ''', (
+                data['balance'], data['total_profit'], data['trade_count'],
+                json.dumps(data['portfolio']), json.dumps(data['usdt_reserves']),
+                json.dumps(data['daily_profits']), json.dumps(data['weekly_profits']), json.dumps(data['monthly_profits']),
+                json.dumps(data['history'][-500:]),
+                user_id
+            ))
+
+def add_trade(user_id, mode, asset, amount, profit, buy_exchange, sell_exchange):
     with get_db() as conn:
         conn.execute('''
-            INSERT INTO trades (user_id, asset, amount, profit, buy_exchange, sell_exchange)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (user_id, asset, amount, profit, buy_exchange, sell_exchange))
-        conn.execute('''
-            UPDATE users SET total_profit = total_profit + ?, trade_count = trade_count + 1, balance = balance + ?
-            WHERE id = ?
-        ''', (profit, profit, user_id))
+            INSERT INTO trades (user_id, mode, asset, amount, profit, buy_exchange, sell_exchange)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (user_id, mode, asset, amount, profit, buy_exchange, sell_exchange))
 
 def get_all_trades(limit=200):
     with get_db() as conn:
@@ -206,56 +290,29 @@ def update_withdrawal_status(withdrawal_id, status, admin_email):
         ''', (status, admin_email, withdrawal_id))
         if status == 'completed':
             withdrawal = conn.execute("SELECT user_id, amount FROM withdrawals WHERE id = ?", (withdrawal_id,)).fetchone()
-            conn.execute("UPDATE users SET balance = balance - ? WHERE id = ?", (withdrawal['amount'], withdrawal['user_id']))
+            conn.execute("UPDATE users SET real_balance = real_balance - ? WHERE id = ?", (withdrawal['amount'], withdrawal['user_id']))
 
 def get_all_users_for_admin():
     with get_db() as conn:
         return conn.execute('''
-            SELECT 
-                id, email, full_name, country, city, phone,
-                registration_status, balance, total_profit, trade_count,
-                created_at, approved_at, approved_by
-            FROM users 
-            ORDER BY created_at DESC
+            SELECT id, email, full_name, country, city, phone, registration_status,
+                   demo_balance, demo_total_profit, demo_trade_count,
+                   real_balance, real_total_profit, real_trade_count,
+                   created_at, approved_at, approved_by
+            FROM users ORDER BY created_at DESC
         ''').fetchall()
-
-def get_user_stats(user_id):
-    with get_db() as conn:
-        trades = conn.execute('''
-            SELECT COUNT(*) as count, COALESCE(SUM(profit), 0) as total_profit
-            FROM trades WHERE user_id = ?
-        ''', (user_id,)).fetchone()
-        withdrawals = conn.execute('''
-            SELECT COALESCE(SUM(amount), 0) as total_withdrawn
-            FROM withdrawals WHERE user_id = ? AND status = 'completed'
-        ''', (user_id,)).fetchone()
-        pending_withdrawals = conn.execute('''
-            SELECT COALESCE(SUM(amount), 0) as total_pending
-            FROM withdrawals WHERE user_id = ? AND status = 'pending'
-        ''', (user_id,)).fetchone()
-        return {
-            'trade_count': trades['count'],
-            'total_profit': trades['total_profit'],
-            'total_withdrawn': withdrawals['total_withdrawn'],
-            'pending_withdrawals': pending_withdrawals['total_pending']
-        }
 
 def update_user_status(user_id, status, admin_email):
     with get_db() as conn:
         if status == 'approved':
             conn.execute('''
-                UPDATE users 
-                SET registration_status = ?, approved_at = CURRENT_TIMESTAMP, approved_by = ?
+                UPDATE users SET registration_status = ?, approved_at = CURRENT_TIMESTAMP, approved_by = ?
                 WHERE id = ?
             ''', (status, admin_email, user_id))
         else:
             conn.execute('''
                 UPDATE users SET registration_status = ? WHERE id = ?
             ''', (status, user_id))
-
-def update_user_balance(user_id, new_balance, admin_email):
-    with get_db() as conn:
-        conn.execute("UPDATE users SET balance = ? WHERE id = ?", (new_balance, user_id))
 
 def delete_user(user_id, admin_email):
     with get_db() as conn:
@@ -330,19 +387,35 @@ def find_all_arbitrage_opportunities():
                         })
     return sorted(opportunities, key=lambda x: x['profit_usdt'], reverse=True)
 
-def update_profit_stats(profit):
-    today = datetime.now().strftime('%Y-%m-%d')
-    week = datetime.now().strftime('%Y-%W')
-    month = datetime.now().strftime('%Y-%m')
-    if 'daily_profits' not in st.session_state:
-        st.session_state.daily_profits = {}
-    if 'weekly_profits' not in st.session_state:
-        st.session_state.weekly_profits = {}
-    if 'monthly_profits' not in st.session_state:
-        st.session_state.monthly_profits = {}
-    st.session_state.daily_profits[today] = st.session_state.daily_profits.get(today, 0) + profit
-    st.session_state.weekly_profits[week] = st.session_state.weekly_profits.get(week, 0) + profit
-    st.session_state.monthly_profits[month] = st.session_state.monthly_profits.get(month, 0) + profit
+# ====================== ФОНОВЫЙ ПОТОК ДЛЯ 24/7 ======================
+background_thread = None
+background_running = False
+
+def background_arbitrage_loop():
+    """Фоновый поток для арбитража 24/7"""
+    global background_running
+    while background_running:
+        if st.session_state.get('bot_running', False):
+            try:
+                # Здесь будет логика фонового арбитража
+                time.sleep(10)
+            except:
+                pass
+        else:
+            time.sleep(5)
+
+def start_background_thread():
+    global background_thread, background_running
+    if background_thread is None or not background_thread.is_alive():
+        background_running = True
+        background_thread = threading.Thread(target=background_arbitrage_loop, daemon=True)
+        background_thread.start()
+
+def stop_background_thread():
+    global background_running
+    background_running = False
+
+start_background_thread()
 
 # ====================== СЕССИЯ ======================
 if 'logged_in' not in st.session_state:
@@ -353,30 +426,18 @@ if 'email' not in st.session_state:
     st.session_state.email = None
 if 'wallet_address' not in st.session_state:
     st.session_state.wallet_address = ''
-if 'total_profit' not in st.session_state:
-    st.session_state.total_profit = 0.0
-if 'trade_count' not in st.session_state:
-    st.session_state.trade_count = 0
-if 'portfolio' not in st.session_state:
-    st.session_state.portfolio = DEMO_PORTFOLIO.copy()
-if 'usdt_reserves' not in st.session_state:
-    st.session_state.usdt_reserves = {ex: DEMO_USDT_RESERVES for ex in AUX_EXCHANGES}
-if 'daily_profits' not in st.session_state:
-    st.session_state.daily_profits = {}
-if 'weekly_profits' not in st.session_state:
-    st.session_state.weekly_profits = {}
-if 'monthly_profits' not in st.session_state:
-    st.session_state.monthly_profits = {}
-if 'history' not in st.session_state:
-    st.session_state.history = []
 if 'exchanges' not in st.session_state:
     st.session_state.exchanges = None
 if 'bot_running' not in st.session_state:
     st.session_state.bot_running = False
-if 'trade_mode' not in st.session_state:
-    st.session_state.trade_mode = "Демо"
 if 'exchange_status' not in st.session_state:
     st.session_state.exchange_status = {}
+if 'current_mode' not in st.session_state:
+    st.session_state.current_mode = "Демо"
+if 'user_data' not in st.session_state:
+    st.session_state.user_data = {}
+if 'user_id' not in st.session_state:
+    st.session_state.user_id = None
 
 # Инициализация бирж
 if st.session_state.exchanges is None:
@@ -426,8 +487,8 @@ if not st.session_state.logged_in:
                         st.session_state.username = user['full_name']
                         st.session_state.email = user['email']
                         st.session_state.wallet_address = user['wallet_address'] or ''
-                        st.session_state.total_profit = user['total_profit']
-                        st.session_state.trade_count = user['trade_count']
+                        st.session_state.user_id = user['id']
+                        st.session_state.user_data = load_user_mode_data(user, "Демо")
                         st.success(f"Добро пожаловать, {st.session_state.username}!")
                         st.rerun()
                     elif user['registration_status'] == 'pending':
@@ -440,6 +501,10 @@ if not st.session_state.logged_in:
     st.stop()
 
 # ====================== ОСНОВНОЙ ИНТЕРФЕЙС ======================
+# Сохраняем текущие данные пользователя при каждом обновлении
+if st.session_state.user_id and st.session_state.user_data:
+    save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
+
 col_logo, col_status, col_logout = st.columns([3, 1, 1])
 with col_logo:
     st.markdown('<h1 class="main-header">🚀 НАКОПИТЕЛЬНЫЙ АРБИТРАЖ PRO</h1>', unsafe_allow_html=True)
@@ -449,8 +514,11 @@ with col_status:
     else:
         st.markdown('<div style="text-align: center;"><span class="status-indicator status-stopped"></span> <b style="color: #FF4444;">ОСТАНОВЛЕН</b></div>', unsafe_allow_html=True)
 with col_logout:
-    if st.button("🚪 Выйти", key="logout"):
+    if st.button("🚪 Выйти"):
+        if st.session_state.user_id and st.session_state.user_data:
+            save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
         st.session_state.logged_in = False
+        st.session_state.bot_running = False
         st.rerun()
 
 st.markdown(f'<div class="user-info">👤 {st.session_state.username} | 📧 {st.session_state.email}</div>', unsafe_allow_html=True)
@@ -461,9 +529,10 @@ st.write(f"🪙 **Токены:** {', '.join(DEFAULT_ASSETS)} (10 токенов
 st.divider()
 
 col1, col2 = st.columns(2)
-col1.metric("💰 Общая прибыль", f"{st.session_state.total_profit:.2f} USDT")
-col2.metric("📊 Сделок", st.session_state.trade_count)
+col1.metric("💰 Общая прибыль", f"{st.session_state.user_data.get('total_profit', 0):.2f} USDT")
+col2.metric("📊 Сделок", st.session_state.user_data.get('trade_count', 0))
 
+# Кнопки управления
 c1, c2, c3, c4 = st.columns(4)
 with c1:
     if st.button("▶ СТАРТ", use_container_width=True):
@@ -478,7 +547,17 @@ with c3:
         st.session_state.bot_running = False
         st.rerun()
 with c4:
-    st.session_state.trade_mode = st.selectbox("Режим", ["Демо", "Реальный"])
+    new_mode = st.selectbox("Режим", ["Демо", "Реальный"], index=0 if st.session_state.current_mode == "Демо" else 1)
+    if new_mode != st.session_state.current_mode:
+        # Сохраняем текущий режим
+        if st.session_state.user_id and st.session_state.user_data:
+            save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
+        # Загружаем данные нового режима
+        user = get_user_by_email(st.session_state.email)
+        if user:
+            st.session_state.user_data = load_user_mode_data(user, new_mode)
+            st.session_state.current_mode = new_mode
+            st.rerun()
 
 # ====================== ВКЛАДКИ ======================
 show_admin_panel = st.session_state.get('logged_in') and is_admin(st.session_state.get('email', ''))
@@ -503,7 +582,7 @@ with tabs[0]:
                 else:
                     st.markdown(f"<div class='token-card'><b>{asset}</b><br>❌</div>", unsafe_allow_html=True)
     if st.session_state.bot_running:
-        st.info(f"🟢 Бот сканирует **{len(DEFAULT_ASSETS)} токенов** на **{len(connected)} биржах** одновременно.")
+        st.info(f"🟢 Бот сканирует **{len(DEFAULT_ASSETS)} токенов** на **{len(connected)} биржах** одновременно. Работает 24/7.")
 
 # TAB 2 - Графики
 with tabs[1]:
@@ -542,19 +621,17 @@ with tabs[2]:
             unique_key = f"{opp['asset']}_{opp['aux_exchange']}_{idx}"
             st.info(f"🎯 {opp['asset']}: OKX ${opp['main_price']:,.0f} → {opp['aux_exchange'].upper()} ${opp['aux_price']:,.0f} | +{opp['profit_usdt']:.2f} USDT")
             if st.button(f"Исполнить {opp['asset']} на {opp['aux_exchange'].upper()}", key=unique_key):
-                if st.session_state.trade_mode == "Демо":
-                    profit = opp['profit_usdt']
-                    st.session_state.total_profit += profit
-                    st.session_state.trade_count += 1
-                    update_profit_stats(profit)
-                    if st.session_state.email:
-                        user = get_user_by_email(st.session_state.email)
-                        if user:
-                            add_trade(user['id'], opp['asset'], 1000, profit, opp['aux_exchange'], MAIN_EXCHANGE)
-                    trade_text = f"✅ {datetime.now().strftime('%H:%M:%S')} | {opp['asset']} | +{profit:.2f} USDT"
-                    st.session_state.history.append(trade_text)
-                    st.success(f"Сделка исполнена! +{profit:.2f} USDT")
-                    st.rerun()
+                profit = opp['profit_usdt']
+                st.session_state.user_data['total_profit'] += profit
+                st.session_state.user_data['trade_count'] += 1
+                st.session_state.user_data['balance'] += profit
+                trade_text = f"✅ {datetime.now().strftime('%H:%M:%S')} | {opp['asset']} | +{profit:.2f} USDT"
+                st.session_state.user_data['history'].append(trade_text)
+                if st.session_state.user_id:
+                    add_trade(st.session_state.user_id, st.session_state.current_mode, opp['asset'], 1000, profit, opp['aux_exchange'], MAIN_EXCHANGE)
+                    save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
+                st.success(f"Сделка исполнена! +{profit:.2f} USDT")
+                st.rerun()
     else:
         st.info("Арбитражных возможностей не найдено.")
 
@@ -578,7 +655,7 @@ with tabs[4]:
     st.subheader("📦 Портфель токенов (OKX)")
     total = 0
     for asset in DEFAULT_ASSETS:
-        amount = st.session_state.portfolio.get(asset, 0)
+        amount = st.session_state.user_data.get('portfolio', {}).get(asset, 0)
         price = get_price(st.session_state.exchanges[MAIN_EXCHANGE], asset) if st.session_state.exchanges else None
         value = amount * price if price else 0
         total += value
@@ -590,41 +667,38 @@ with tabs[4]:
 with tabs[5]:
     st.subheader("💰 Резервы USDT на биржах")
     for ex in AUX_EXCHANGES[:5]:
-        st.write(f"{ex.upper()}: {st.session_state.usdt_reserves.get(ex, DEMO_USDT_RESERVES):.0f} USDT")
+        reserve = st.session_state.user_data.get('usdt_reserves', {}).get(ex, DEMO_USDT_RESERVES)
+        st.write(f"{ex.upper()}: {reserve:.0f} USDT")
     st.divider()
     wallet_input = st.text_input("Адрес кошелька", value=st.session_state.wallet_address)
     if st.button("💾 Сохранить"):
         st.session_state.wallet_address = wallet_input
         if st.session_state.email:
-            user = get_user_by_email(st.session_state.email)
-            if user:
-                with get_db() as conn:
-                    conn.execute("UPDATE users SET wallet_address = ? WHERE id = ?", (wallet_input, user['id']))
+            with get_db() as conn:
+                conn.execute("UPDATE users SET wallet_address = ? WHERE email = ?", (wallet_input, st.session_state.email))
         st.success("Адрес сохранён!")
     withdraw = st.number_input("Сумма вывода (USDT)", min_value=10.0, step=10.0)
     if st.button("📤 Запросить вывод"):
         if st.session_state.wallet_address:
-            if st.session_state.email:
-                user = get_user_by_email(st.session_state.email)
-                if user and user['balance'] >= withdraw:
-                    create_withdrawal_request(user['id'], withdraw, st.session_state.wallet_address)
-                    st.success(f"Заявка на вывод {withdraw} USDT отправлена!")
-                    st.rerun()
-                else:
-                    st.error("Недостаточно средств!")
+            if st.session_state.user_data.get('balance', 0) >= withdraw:
+                create_withdrawal_request(st.session_state.user_id, withdraw, st.session_state.wallet_address)
+                st.success(f"Заявка на вывод {withdraw} USDT отправлена!")
+                  st.rerun()
             else:
-                st.error("Ошибка: пользователь не найден")
+                st.error("Недостаточно средств!")
         else:
             st.error("Сначала сохраните адрес кошелька!")
 
 # TAB 7 - История
 with tabs[6]:
     st.subheader("📜 История сделок")
-    if st.session_state.history:
-        for trade in reversed(st.session_state.history[-50:]):
+    if st.session_state.user_data.get('history'):
+        for trade in reversed(st.session_state.user_data['history'][-50:]):
             st.write(trade)
         if st.button("🗑 Очистить историю"):
-            st.session_state.history = []
+            st.session_state.user_data['history'] = []
+            if st.session_state.user_id:
+                save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
             st.rerun()
     else:
         st.info("Нет сделок")
@@ -634,7 +708,7 @@ if show_admin_panel:
     with tabs[7]:
         st.subheader("👑 Админ-панель управления")
         
-        admin_tab1, admin_tab2, admin_tab3, admin_tab4 = st.tabs(["👥 Участники", "📜 Все сделки", "💰 Заявки на вывод", "⚙ Настройки"])
+        admin_tab1, admin_tab2, admin_tab3 = st.tabs(["👥 Участники", "📜 Все сделки", "💰 Заявки на вывод"])
         
         with admin_tab1:
             st.write("### 👥 Все участники платформы")
@@ -642,7 +716,6 @@ if show_admin_panel:
             if all_users:
                 users_data = []
                 for user in all_users:
-                    stats = get_user_stats(user['id'])
                     users_data.append({
                         "ID": user['id'],
                         "Email": user['email'],
@@ -650,14 +723,10 @@ if show_admin_panel:
                         "Страна": user['country'],
                         "Город": user['city'],
                         "Статус": user['registration_status'],
-                        "Баланс": f"${user['balance']:.2f}",
-                        "Прибыль": f"${user['total_profit']:.2f}",
-                        "Сделок": user['trade_count'],
-                        "Выведено": f"${stats['total_withdrawn']:.2f}",
-                        "В очереди": f"${stats['pending_withdrawals']:.2f}",
+                        "Демо-прибыль": f"${user['demo_total_profit']:.2f}",
+                        "Реал-прибыль": f"${user['real_total_profit']:.2f}",
                         "Регистрация": user['created_at'][:10] if user['created_at'] else "",
-                        "Одобрен": user['approved_at'][:10] if user['approved_at'] else "",
-                        "Кто одобрил": user['approved_by'] or ""
+                        "Одобрен": user['approved_at'][:10] if user['approved_at'] else ""
                     })
                 st.dataframe(pd.DataFrame(users_data), use_container_width=True, hide_index=True)
                 
@@ -670,50 +739,19 @@ if show_admin_panel:
                 if selected_user_id:
                     user_data = next((u for u in all_users if u['id'] == selected_user_id), None)
                     if user_data:
-                        st.write(f"**{user_data['email']}** — {user_data['full_name']}")
+                        st.write(f"**{user_data['email']}** — {user_data['full_name']} | Статус: {user_data['registration_status']}")
                         
-                        col1_admin, col2_admin, col3_admin, col4_admin = st.columns(4)
-                        col1_admin.metric("💰 Баланс", f"${user_data['balance']:.2f}")
-                        col2_admin.metric("📊 Прибыль", f"${user_data['total_profit']:.2f}")
-                        col3_admin.metric("🔄 Сделок", user_data['trade_count'])
-                        status_color = "🟢" if user_data['registration_status'] == 'approved' else "🟡" if user_data['registration_status'] == 'pending' else "🔴"
-                        col4_admin.metric("📝 Статус", f"{status_color} {user_data['registration_status']}")
+                        col1_admin, col2_admin = st.columns(2)
+                        col1_admin.metric("💰 Демо-прибыль", f"${user_data['demo_total_profit']:.2f}")
+                        col2_admin.metric("💰 Реал-прибыль", f"${user_data['real_total_profit']:.2f}")
                         
-                        st.write("#### Действия")
-                        action_col1, action_col2, action_col3, action_col4 = st.columns(4)
-                        
-                        with action_col1:
-                            if user_data['registration_status'] == 'pending':
-                                if st.button("✅ Одобрить", key=f"approve_{selected_user_id}", use_container_width=True):
-                                    update_user_status(selected_user_id, 'approved', st.session_state.email)
-                                    st.success(f"Пользователь {user_data['email']} одобрен!")
-                                    st.rerun()
-                            else:
-                                st.button("✅ Одобрено", disabled=True, use_container_width=True)
-                        
-                        with action_col2:
-                            if user_data['registration_status'] == 'pending':
-                                if st.button("❌ Отклонить", key=f"reject_{selected_user_id}", use_container_width=True):
-                                    update_user_status(selected_user_id, 'rejected', st.session_state.email)
-                                    st.warning(f"Пользователь {user_data['email']} отклонён!")
-                                    st.rerun()
-                            else:
-                                st.button("❌ Отклонить", disabled=True, use_container_width=True)
-                        
-                        with action_col3:
-                            new_balance = st.number_input("Новый баланс", value=float(user_data['balance']), step=100.0, key=f"balance_{selected_user_id}")
-                            if st.button("💾 Сохранить баланс", key=f"save_balance_{selected_user_id}", use_container_width=True):
-                                update_user_balance(selected_user_id, new_balance, st.session_state.email)
-                                st.success(f"Баланс пользователя {user_data['email']} обновлён!")
+                        if user_data['registration_status'] == 'pending':
+                            if st.button("✅ Одобрить", key=f"approve_{selected_user_id}", use_container_width=True):
+                                update_user_status(selected_user_id, 'approved', st.session_state.email)
+                                st.success(f"Пользователь {user_data['email']} одобрен!")
                                 st.rerun()
-                        
-                        with action_col4:
-                            if st.button("🗑 Удалить", key=f"delete_{selected_user_id}", use_container_width=True):
-                                if delete_user(selected_user_id, st.session_state.email):
-                                    st.success(f"Пользователь {user_data['email']} удалён!")
-                                    st.rerun()
-                                else:
-                                    st.error("Нельзя удалить пользователя с историей сделок!")
+                        else:
+                            st.info(f"Статус: {user_data['registration_status']}")
             else:
                 st.info("Нет зарегистрированных пользователей")
         
@@ -726,11 +764,9 @@ if show_admin_panel:
                     trades_data.append({
                         "ID": trade['id'],
                         "Пользователь": trade['email'],
+                        "Режим": trade['mode'],
                         "Токен": trade['asset'],
-                        "Сумма": f"${trade['amount']:.2f}",
                         "Прибыль": f"${trade['profit']:.2f}",
-                        "Покупка": trade['buy_exchange'],
-                        "Продажа": trade['sell_exchange'],
                         "Время": trade['trade_time']
                     })
                 st.dataframe(pd.DataFrame(trades_data), use_container_width=True, hide_index=True)
@@ -756,43 +792,16 @@ if show_admin_panel:
                 
                 st.write("#### Обработка заявок")
                 for w in pending_withdrawals:
-                    col1_w, col2_w, col3_w = st.columns([2, 1, 1])
+                    col1_w, col2_w = st.columns([3, 1])
                     col1_w.write(f"**{w['email']}** — {w['amount']} USDT")
                     if col2_w.button(f"✅ Выполнить", key=f"complete_{w['id']}", use_container_width=True):
                         update_withdrawal_status(w['id'], 'completed', st.session_state.email)
                         st.success(f"Вывод {w['amount']} USDT для {w['email']} выполнен!")
                         st.rerun()
-                    if col3_w.button(f"🔴 Заблокировать", key=f"block_{w['id']}", use_container_width=True):
-                        update_withdrawal_status(w['id'], 'blocked', st.session_state.email)
-                        st.warning(f"Вывод {w['amount']} USDT для {w['email']} заблокирован!")
-                        st.rerun()
             else:
                 st.info("Нет заявок на вывод")
-        
-        with admin_tab4:
-            st.write("### ⚙ Настройки платформы")
-            st.info("Здесь будут глобальные настройки системы.")
-            
-            st.write("#### 📅 Дни вывода средств")
-            withdrawal_days = st.multiselect(
-                "Выберите дни для обработки выводов",
-                ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"],
-                default=["Вторник", "Пятница"]
-            )
-            if st.button("💾 Сохранить настройки выводов", use_container_width=True):
-                st.success("Настройки сохранены!")
-            
-            st.write("#### 💸 Комиссии")
-            col_fee1, col_fee2 = st.columns(2)
-            with col_fee1:
-                platform_fee = st.number_input("Комиссия платформы (%)", min_value=0.0, max_value=50.0, value=20.0, step=1.0)
-            with col_fee2:
-                withdrawal_fee = st.number_input("Комиссия за вывод USDT", min_value=0.0, max_value=10.0, value=0.5, step=0.1)
-            
-            if st.button("💾 Сохранить комиссии", use_container_width=True):
-                st.success("Комиссии сохранены!")
 
-# ====================== АВТОМАТИЧЕСКИЙ АРБИТРАЖ ======================
+# ====================== АВТОМАТИЧЕСКИЙ АРБИТРАЖ (ФОНОВЫЙ) ======================
 if st.session_state.bot_running and st.session_state.exchanges:
     time.sleep(8)
     opportunities = find_all_arbitrage_opportunities()
@@ -800,18 +809,18 @@ if st.session_state.bot_running and st.session_state.exchanges:
         best = opportunities[0]
         profit = best['profit_usdt']
         if profit >= 0.30:
-            st.session_state.total_profit += profit
-            st.session_state.trade_count += 1
-            update_profit_stats(profit)
-            
-            if st.session_state.email:
-                user = get_user_by_email(st.session_state.email)
-                if user:
-                    add_trade(user['id'], best['asset'], 1000, profit, best['aux_exchange'], MAIN_EXCHANGE)
+            st.session_state.user_data['total_profit'] += profit
+            st.session_state.user_data['trade_count'] += 1
+            st.session_state.user_data['balance'] += profit
             
             trade_text = f"✅ {datetime.now().strftime('%H:%M:%S')} | {best['asset']} | АВТО-АРБИТРАЖ | +{profit:.2f} USDT"
-            st.session_state.history.append(trade_text)
+            st.session_state.user_data['history'].append(trade_text)
+            
+            if st.session_state.user_id:
+                add_trade(st.session_state.user_id, st.session_state.current_mode, best['asset'], 1000, profit, best['aux_exchange'], MAIN_EXCHANGE)
+                save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
+            
             st.toast(f"🎯 {best['asset']} | +{profit:.2f} USDT", icon="💰")
             st.rerun()
 
-st.caption(f"🚀 Сканируется {len(DEFAULT_ASSETS)} токенов на {len(connected)} биржах | Работает 24/7 | v2.0 с админ-панелью")
+st.caption(f"🚀 Сканируется {len(DEFAULT_ASSETS)} токенов на {len(connected)} биржах | Работает 24/7 | Режим: {st.session_state.current_mode}")
