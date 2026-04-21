@@ -1,3 +1,4 @@
+import streamlit as st
 import time
 import random
 import json
@@ -707,8 +708,9 @@ with tabs[2]:
     if opportunities:
         st.success(f"Найдено {len(opportunities)} возможностей!")
         for idx, opp in enumerate(opportunities[:10]):
-            unique_key = f"{opp['asset']}_{opp['aux_exchange']}_{idx}"st.info(f"🎯 {opp['asset']}: OKX ${opp['main_price']:,.0f} → {opp['aux_exchange'].upper()} ${opp['aux_price']:,.0f} | +{o
-        st.info(f"🎯 {opp['asset']}: OKX ${opp['main_price']:,.0f} → {opp['aux_exchange'].upper()} ${opp['aux_price']:,.0f} | +{opp['profit_usdt']:.2f} USDT")
+            unique_key = f"{opp['asset']}_{opp['aux_exchange
+                                          unique_key = f"{opp['asset']}_{opp['aux_exchange']}_{idx}"
+            st.info(f"🎯 {opp['asset']}: OKX ${opp['main_price']:,.0f} → {opp['aux_exchange'].upper()} ${opp['aux_price']:,.0f} | +{opp['profit_usdt']:.2f} USDT")
             if st.button(f"Исполнить {opp['asset']} на {opp['aux_exchange'].upper()}", key=unique_key):
                 profit = opp['profit_usdt']
                 st.session_state.user_data['total_profit'] += profit
@@ -973,4 +975,4 @@ if st.session_state.bot_running and st.session_state.exchanges:
             st.toast(f"🎯 {best['asset']} | +{profit:.2f} USDT", icon="💰")
             st.rerun()
 
-st.caption(f"🚀 Сканируется {len(DEFAULT_ASSETS)} токенов на {len(connected)} биржах | Работает 24/7 | Режим: {st.session_state.current_mode}")
+st.caption(f"🚀 Сканируется {len(DEFAULT_ASSETS)} токенов на {len(connected)} биржах | Работает 24/7 | Режим: {st.session_state.current_mode}") 
