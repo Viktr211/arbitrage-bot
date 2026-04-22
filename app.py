@@ -17,12 +17,6 @@ import base64
 
 st.set_page_config(page_title="Накопительный Арбитраж PRO", layout="wide", page_icon="🚀")
 
-# ====================== ПИНГ-ЭНДПОИНТ ДЛЯ ПОДДЕРЖАНИЯ АКТИВНОСТИ ======================
-query_params = st.query_params
-if query_params.get("ping") == "true":
-    st.write("ok")
-    st.stop()
-
 # ====================== СТИЛЬ ======================
 st.markdown("""
 <style>
@@ -653,7 +647,7 @@ if st.session_state.current_mode == "Реальный":
 # ====================== ВКЛАДКИ ======================
 show_admin_panel = st.session_state.get('logged_in') and is_admin(st.session_state.get('email', ''))
 
-tabs_list = ["📊 Dashboard", "📈 Графики", "🔄 Арбитраж", "📊 Доходность", "📦 Портфель", "💰 Кошелёк", "📜 История"]
+tabs_list = ["📊 Dashboard", "📈 Графики", "🔄 Арбитраж", "📊 Доходность", "📊 Статистика по токенам", "📦 Портфель", "💰 Кошелёк", "📜 История"]
 if show_admin_panel:
     tabs_list.append("👑 Админ-панель")
 
@@ -741,8 +735,76 @@ with tabs[3]:
         </div>
         """, unsafe_allow_html=True)
 
-# TAB 5 - Портфель
+# TAB 5 - Статистика по токенам (НОВАЯ ВКЛАДКА)
 with tabs[4]:
+    st.subheader("📊 Статистика арбитражных сделок по токенам")
+    
+    # Собираем статистику из истории сделок
+    token_stats = {}
+    total_profit_all = 0
+    total_trades_all = 0
+    
+    for trade in st.session_state.user_data.get('history', []):
+        if "✅" in trade and "+" in trade:
+            try:
+                # Парсим строку: "✅ 12:34:56 | BTC | +1.23 USDT"
+                parts = trade.split("|")
+                if len(parts) >= 3:
+                    token = parts[1].strip()
+                    profit_part = parts[2].split("+")[1].split()[0]
+                    profit = float(profit_part)
+                    
+                    if token not in token_stats:
+                        token_stats[token] = {'trades': 0, 'profit': 0}
+                    token_stats[token]['trades'] += 1
+                    token_stats[token]['profit'] += profit
+                    total_profit_all += profit
+                    total_trades_all += 1
+            except:
+                pass
+    
+    if token_stats:
+        # Подготовка данных для таблицы
+        stats_data = []
+        for token, data in sorted(token_stats.items(), key=lambda x: x[1]['profit'], reverse=True):
+            profit_pct = (data['profit'] / total_profit_all * 100) if total_profit_all > 0 else 0
+            stats_data.append({
+                "Токен": token,
+                "Сделок": data['trades'],
+                "Прибыль (USDT)": f"{data['profit']:.2f}",
+                "% от общей прибыли": f"{profit_pct:.1f}%"
+            })
+        
+        st.dataframe(pd.DataFrame(stats_data), use_container_width=True, hide_index=True)
+        
+        # График распределения прибыли
+        st.subheader("📊 Распределение прибыли по токенам")
+        fig_data = []
+        for token, data in token_stats.items():
+            fig_data.append({"Токен": token, "Прибыль": data['profit']})
+        
+        df_fig = pd.DataFrame(fig_data)
+        if not df_fig.empty:
+            fig = px.pie(df_fig, values='Прибыль', names='Токен', title="Доля прибыли по токенам")
+            fig.update_layout(template="plotly_dark", height=450)
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # График количества сделок
+        st.subheader("📊 Прибыль по токенам (USDT)")
+        fig2 = px.bar(df_fig, x='Токен', y='Прибыль', title="Прибыль по токенам (USDT)", color='Токен')
+        fig2.update_layout(template="plotly_dark", height=450)
+        st.plotly_chart(fig2, use_container_width=True)
+        
+        st.caption(f"📊 Всего сделок: {total_trades_all} | Общая прибыль: ${total_profit_all:.2f}")
+        
+        # Если HYPE доминирует, покажем объяснение
+        if 'HYPE' in token_stats and token_stats['HYPE']['profit'] > total_profit_all * 0.5:
+            st.info("💡 На токене HYPE сейчас самые большие спреды. Это нормально для арбитражного бота — он находит лучшие возможности там, где они есть. Если хотите больше сделок по другим токенам, уменьшите порог спреда в настройках.")
+    else:
+        st.info("Нет данных о сделках. Запустите бота и совершите несколько сделок.")
+
+# TAB 6 - Портфель
+with tabs[5]:
     st.subheader("📦 Портфель токенов (OKX)")
     total = 0
     for asset in DEFAULT_ASSETS:
@@ -754,8 +816,8 @@ with tabs[4]:
     st.divider()
     st.metric("💰 Общая стоимость портфеля", f"${total:,.2f}")
 
-# TAB 6 - Кошелёк
-with tabs[5]:
+# TAB 7 - Кошелёк
+with tabs[6]:
     st.subheader("💰 Резервы USDT на биржах")
     for ex in AUX_EXCHANGES[:5]:
         reserve = st.session_state.user_data.get('usdt_reserves', {}).get(ex, 0)
@@ -780,8 +842,8 @@ with tabs[5]:
         else:
             st.error("Сначала сохраните адрес кошелька!")
 
-# TAB 7 - История
-with tabs[6]:
+# TAB 8 - История
+with tabs[7]:
     st.subheader("📜 История сделок")
     if st.session_state.user_data.get('history'):
         for trade in reversed(st.session_state.user_data['history'][-50:]):
@@ -796,7 +858,7 @@ with tabs[6]:
 
 # ====================== АДМИН-ПАНЕЛЬ ======================
 if show_admin_panel:
-    with tabs[7]:
+    with tabs[8]:
         st.subheader("👑 Админ-панель управления")
         
         admin_tab1, admin_tab2, admin_tab3, admin_tab4 = st.tabs(["👥 Участники", "🔐 API ключи", "📜 Все сделки", "💰 Заявки на вывод"])
