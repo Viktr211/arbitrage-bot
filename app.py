@@ -17,6 +17,12 @@ import base64
 
 st.set_page_config(page_title="Накопительный Арбитраж PRO", layout="wide", page_icon="🚀")
 
+# ====================== ПИНГ-ЭНДПОИНТ ДЛЯ ПОДДЕРЖАНИЯ АКТИВНОСТИ ======================
+query_params = st.query_params
+if query_params.get("ping") == "true":
+    st.write("ok")
+    st.stop()
+
 # ====================== СТИЛЬ ======================
 st.markdown("""
 <style>
