@@ -1,0 +1,14 @@
+name: Keep Bot Alive
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Streamlit App
+        run: |
+          curl -s -o /dev/null -w "%{http_code}\n" "https://arbitrage-bot-35byvx9bqbfwxxvsxt6ayu.streamlit.app/?ping=true"
