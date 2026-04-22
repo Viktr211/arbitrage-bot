@@ -44,7 +44,8 @@ MAIN_EXCHANGE = "okx"
 AUX_EXCHANGES = ["gateio", "kucoin", "bitget", "bingx", "mexc", "huobi", "poloniex", "hitbtc"]
 ALL_EXCHANGES = [MAIN_EXCHANGE] + AUX_EXCHANGES
 
-MIN_SPREAD_PERCENT = 0.005
+# УМЕНЬШЕННЫЙ ПОРОГ СПРЕДА ДЛЯ БОЛЕЕ ЧАСТЫХ СДЕЛОК (было 0.005 = 0.5%, стало 0.002 = 0.2%)
+MIN_SPREAD_PERCENT = 0.002
 FEE_PERCENT = 0.10
 
 DEMO_PORTFOLIO = {
@@ -433,7 +434,7 @@ def find_all_arbitrage_opportunities():
                     spread_pct = (main_price - aux_price) / aux_price * 100
                     net_spread = spread_pct - FEE_PERCENT
                     profit_usdt = round((main_price - aux_price) - (main_price * 0.0008) - (aux_price * 0.0008), 2)
-                    if net_spread > MIN_SPREAD_PERCENT and profit_usdt >= 0.20:
+                    if net_spread > MIN_SPREAD_PERCENT and profit_usdt >= 0.10:  # уменьшил минимальную прибыль до 0.10 USDT
                         opportunities.append({
                             'asset': asset,
                             'aux_exchange': aux_ex,
@@ -479,6 +480,12 @@ def load_bot_status():
             return data.get('bot_running', False)
     except:
         return False
+
+# ====================== ПИНГ-ЭНДПОИНТ ДЛЯ ПОДДЕРЖАНИЯ АКТИВНОСТИ ======================
+query_params = st.query_params
+if query_params.get("ping") == "true":
+    st.write("ok")
+    st.stop()
 
 # ====================== СЕССИЯ ======================
 if 'logged_in' not in st.session_state:
@@ -735,36 +742,37 @@ with tabs[3]:
         </div>
         """, unsafe_allow_html=True)
 
-# TAB 5 - Статистика по токенам (НОВАЯ ВКЛАДКА)
+# TAB 5 - Статистика по токенам (УЛУЧШЕННЫЙ ПАРСЕР)
 with tabs[4]:
     st.subheader("📊 Статистика арбитражных сделок по токенам")
     
-    # Собираем статистику из истории сделок
     token_stats = {}
     total_profit_all = 0
     total_trades_all = 0
     
     for trade in st.session_state.user_data.get('history', []):
-        if "✅" in trade and "+" in trade:
+        if trade.startswith("✅"):
             try:
-                # Парсим строку: "✅ 12:34:56 | BTC | +1.23 USDT"
                 parts = trade.split("|")
                 if len(parts) >= 3:
                     token = parts[1].strip()
-                    profit_part = parts[2].split("+")[1].split()[0]
-                    profit = float(profit_part)
-                    
-                    if token not in token_stats:
-                        token_stats[token] = {'trades': 0, 'profit': 0}
-                    token_stats[token]['trades'] += 1
-                    token_stats[token]['profit'] += profit
-                    total_profit_all += profit
-                    total_trades_all += 1
+                    profit = None
+                    for part in parts:
+                        if "+" in part and "USDT" in part:
+                            profit_str = part.split("+")[1].split()[0]
+                            profit = float(profit_str)
+                            break
+                    if profit is not None:
+                        if token not in token_stats:
+                            token_stats[token] = {'trades': 0, 'profit': 0}
+                        token_stats[token]['trades'] += 1
+                        token_stats[token]['profit'] += profit
+                        total_profit_all += profit
+                        total_trades_all += 1
             except:
                 pass
     
     if token_stats:
-        # Подготовка данных для таблицы
         stats_data = []
         for token, data in sorted(token_stats.items(), key=lambda x: x[1]['profit'], reverse=True):
             profit_pct = (data['profit'] / total_profit_all * 100) if total_profit_all > 0 else 0
@@ -774,22 +782,16 @@ with tabs[4]:
                 "Прибыль (USDT)": f"{data['profit']:.2f}",
                 "% от общей прибыли": f"{profit_pct:.1f}%"
             })
-        
         st.dataframe(pd.DataFrame(stats_data), use_container_width=True, hide_index=True)
         
-        # График распределения прибыли
         st.subheader("📊 Распределение прибыли по токенам")
-        fig_data = []
-        for token, data in token_stats.items():
-            fig_data.append({"Токен": token, "Прибыль": data['profit']})
-        
+        fig_data = [{"Токен": t, "Прибыль": d['profit']} for t, d in token_stats.items()]
         df_fig = pd.DataFrame(fig_data)
         if not df_fig.empty:
             fig = px.pie(df_fig, values='Прибыль', names='Токен', title="Доля прибыли по токенам")
             fig.update_layout(template="plotly_dark", height=450)
             st.plotly_chart(fig, use_container_width=True)
         
-        # График количества сделок
         st.subheader("📊 Прибыль по токенам (USDT)")
         fig2 = px.bar(df_fig, x='Токен', y='Прибыль', title="Прибыль по токенам (USDT)", color='Токен')
         fig2.update_layout(template="plotly_dark", height=450)
@@ -797,7 +799,6 @@ with tabs[4]:
         
         st.caption(f"📊 Всего сделок: {total_trades_all} | Общая прибыль: ${total_profit_all:.2f}")
         
-        # Если HYPE доминирует, покажем объяснение
         if 'HYPE' in token_stats and token_stats['HYPE']['profit'] > total_profit_all * 0.5:
             st.info("💡 На токене HYPE сейчас самые большие спреды. Это нормально для арбитражного бота — он находит лучшие возможности там, где они есть. Если хотите больше сделок по другим токенам, уменьшите порог спреда в настройках.")
     else:
@@ -1022,7 +1023,7 @@ if st.session_state.bot_running and st.session_state.exchanges:
     if opportunities:
         best = opportunities[0]
         profit = best['profit_usdt']
-        if profit >= 0.30:
+        if profit >= 0.20:  # уменьшил порог авто-сделки до 0.20 USDT
             st.session_state.user_data['total_profit'] += profit
             st.session_state.user_data['trade_count'] += 1
             st.session_state.user_data['balance'] += profit
