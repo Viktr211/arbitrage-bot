@@ -14,6 +14,10 @@ import sqlite3
 from contextlib import contextmanager
 import hashlib
 import base64
+import os
+if os.path.exists("arbitrage.db"):
+    os.remove("arbitrage.db")
+    print("Старая база данных удалена. Перезапустите приложение.")
 
 # ====================== ПРИНУДИТЕЛЬНАЯ ТЁМНАЯ ТЕМА ======================
 st.set_page_config(page_title="Накопительный Арбитраж PRO", layout="wide", page_icon="🚀", initial_sidebar_state="collapsed")
