@@ -5,16 +5,13 @@ from datetime import datetime
 
 DB_PATH = "arbitrage.db"
 
-# 1. Удаляем старую базу, если она есть
 if os.path.exists(DB_PATH):
     os.remove(DB_PATH)
     print("Старая база удалена.")
 
-# 2. Создаём новую базу с полной структурой (как ожидает код)
 conn = sqlite3.connect(DB_PATH)
 cursor = conn.cursor()
 
-# Таблица пользователей (все поля, которые использует create_user)
 cursor.execute('''
     CREATE TABLE users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -55,22 +52,22 @@ cursor.execute('''
     )
 ''')
 
-# 3. Добавляем администратора
 admin_email = "cb777899@gmail.com"
 admin_password = "Viktr211@"
+
 cursor.execute('''
     INSERT INTO users (
         email, password_hash, full_name, registration_status, approved_at, approved_by,
-        trade_balance, portfolio, usdt_reserves
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        trade_balance, portfolio, usdt_reserves, country, city, phone, wallet_address
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ''', (
     admin_email, admin_password, "Администратор", "approved",
     datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "system",
-    1000, json.dumps({"BTC": 0.013, "ETH": 0.42}), json.dumps({})
+    1000, json.dumps({"BTC": 0.013, "ETH": 0.42}), json.dumps({}),
+    "", "", "", ""  # пустые поля
 ))
 
 conn.commit()
 conn.close()
-
-print("✅ Новая база данных создана с правильной структурой.")
-print(f"🔑 Администратор: {admin_email} / пароль: {admin_password}")
+print("✅ База данных пересоздана с полной структурой.")
+print("🔑 Администратор: cb777899@gmail.com / Viktr211@")
