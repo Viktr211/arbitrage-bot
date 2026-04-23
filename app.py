@@ -114,8 +114,8 @@ def ensure_db_structure():
         )
     ''')
     # Начальные данные
-    cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES ('tokens', ?)", (json.dumps(["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "SUI", "HYPE"]),))
-    cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES ('portfolio', ?)", (json.dumps({"BTC": 0.013, "ETH": 0.42, "SOL": 11.6, "BNB": 1.63, "XRP": 730, "ADA": 4166, "AVAX": 108, "LINK": 113, "SUI": 1098, "HYPE": 23.5}),))
+    cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES ('tokens', ?)", (json.dumps(["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "SUI", "HYPE", "TON"]),))
+    cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES ('portfolio', ?)", (json.dumps({"BTC": 0.013, "ETH": 0.42, "SOL": 11.6, "BNB": 1.63, "XRP": 730, "ADA": 4166, "AVAX": 108, "LINK": 113, "SUI": 1098, "HYPE": 23.5, "TON": 10.0}),))
     # Администратор
     admin_email = "cb777899@gmail.com"
     admin_password = "Viktr211@"
@@ -135,13 +135,13 @@ def ensure_db_structure():
 ensure_db_structure()
 
 # ====================== КОНФИГУРАЦИЯ ======================
-DEFAULT_ASSETS = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "SUI", "HYPE"]
+DEFAULT_ASSETS = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "SUI", "HYPE", "TON"]
 MAIN_EXCHANGE = "okx"
 AUX_EXCHANGES = ["gateio", "kucoin", "bitget", "bingx", "mexc", "huobi", "poloniex", "hitbtc"]
 ALL_EXCHANGES = [MAIN_EXCHANGE] + AUX_EXCHANGES
 MIN_SPREAD_PERCENT = 0.002
 FEE_PERCENT = 0.10
-DEMO_PORTFOLIO = {"BTC": 0.013, "ETH": 0.42, "SOL": 11.6, "BNB": 1.63, "XRP": 730, "ADA": 4166, "AVAX": 108, "LINK": 113, "SUI": 1098, "HYPE": 23.5}
+DEMO_PORTFOLIO = {"BTC": 0.013, "ETH": 0.42, "SOL": 11.6, "BNB": 1.63, "XRP": 730, "ADA": 4166, "AVAX": 108, "LINK": 113, "SUI": 1098, "HYPE": 23.5, "TON": 10.0}
 DEMO_USDT_RESERVES = 10000
 ADMIN_COMMISSION = 0.22
 REINVEST_SHARE = 0.50
@@ -169,14 +169,26 @@ def get_user_by_email(email):
         return conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
 
 def create_user(email, password_hash, full_name, country, city, phone, wallet_address):
+    target_portfolio = get_target_portfolio()
     with get_db() as conn:
         cur = conn.execute('''
             INSERT INTO users (email, password_hash, full_name, country, city, phone, wallet_address, registration_status,
                                trade_balance, portfolio, usdt_reserves)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (email, password_hash, full_name, country, city, phone, wallet_address, 'pending',
-              1000, json.dumps(get_config('portfolio') or DEMO_PORTFOLIO), json.dumps({ex: DEMO_USDT_RESERVES for ex in AUX_EXCHANGES})))
+              1000, json.dumps(target_portfolio), json.dumps({ex: DEMO_USDT_RESERVES for ex in AUX_EXCHANGES})))
         return cur.lastrowid
+
+def get_user_portfolio(user_id):
+    with get_db() as conn:
+        row = conn.execute("SELECT portfolio FROM users WHERE id = ?", (user_id,)).fetchone()
+        if row and row['portfolio']:
+            return json.loads(row['portfolio'])
+        return get_target_portfolio()
+
+def update_user_portfolio(user_id, portfolio):
+    with get_db() as conn:
+        conn.execute("UPDATE users SET portfolio = ? WHERE id = ?", (json.dumps(portfolio), user_id))
 
 def load_user_mode_data(user, mode):
     if mode == "Демо":
@@ -187,7 +199,7 @@ def load_user_mode_data(user, mode):
             'trade_count': user['trade_count'],
             'total_admin_fee_paid': user['total_admin_fee_paid'],
             'last_withdrawal_date': user['last_withdrawal_date'],
-            'portfolio': json.loads(user['portfolio']) if user['portfolio'] else DEMO_PORTFOLIO,
+            'portfolio': json.loads(user['portfolio']) if user['portfolio'] else get_target_portfolio(),
             'usdt_reserves': json.loads(user['usdt_reserves']) if user['usdt_reserves'] else {ex: DEMO_USDT_RESERVES for ex in AUX_EXCHANGES},
             'daily_profits': json.loads(user['demo_daily_profits']) if user['demo_daily_profits'] else {},
             'weekly_profits': json.loads(user['demo_weekly_profits']) if user['demo_weekly_profits'] else {},
@@ -758,7 +770,7 @@ with tabs[2]:
                     if st.session_state.user_id:
                         add_trade(st.session_state.user_id, st.session_state.current_mode, opp['asset'], 1000, profit, opp['aux_exchange'], MAIN_EXCHANGE)
                         save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
-                    st.success(f"Сделка исполнена! +{profit:.2f} USDT (админу {admin_fee:.2f}, реинвест {reinvest_amount:.2f}, на вывод {fixed_amount:.2f})")
+                    st.success(f"Сделка исполнена! +{profit:.2f} USDT (админу {admin_fee:.2f}, реинвест {reinvest_amount:.2f}, вывод {fixed_amount:.2f})")
                     st.rerun()
     else:
         st.info("Арбитражных возможностей не найдено.")
@@ -892,11 +904,12 @@ with tabs[7]:
     else:
         st.info("Нет сделок")
 
-# ---------- АДМИН-ПАНЕЛЬ (если есть) ----------
+# ---------- АДМИН-ПАНЕЛЬ ----------
 if show_admin_panel:
     with tabs[8]:
         st.subheader("👑 Админ-панель")
         admin_tab1, admin_tab2, admin_tab3, admin_tab4, admin_tab5 = st.tabs(["👥 Участники", "📊 Токены", "🔐 API ключи", "📜 Все сделки", "💰 Заявки на вывод"])
+        # ---------- Участники ----------
         with admin_tab1:
             st.write("### Все участники")
             all_users = get_all_users_for_admin()
@@ -913,8 +926,29 @@ if show_admin_panel:
                         "Регистрация": user['created_at'][:10] if user['created_at'] else ""
                     })
                 st.dataframe(pd.DataFrame(users_data), use_container_width=True, hide_index=True)
+                # Управление пользователем
+                st.write("### Управление статусами")
+                all_users_list = list(all_users)
+                user_emails = {u['email']: u['id'] for u in all_users_list}
+                selected_user_email = st.selectbox("Выберите пользователя", list(user_emails.keys()))
+                if selected_user_email:
+                    selected_id = user_emails[selected_user_email]
+                    user = get_user_by_email(selected_user_email)
+                    if user:
+                        st.write(f"**Текущий статус:** {user['registration_status']}")
+                        if user['registration_status'] == 'pending':
+                            if st.button("✅ Одобрить этого пользователя"):
+                                update_user_status(selected_id, 'approved', st.session_state.email)
+                                st.success(f"Пользователь {selected_user_email} одобрен!")
+                                st.rerun()
+                        elif user['registration_status'] == 'approved':
+                            if st.button("🔴 Заблокировать (установить статус rejected)"):
+                                update_user_status(selected_id, 'rejected', st.session_state.email)
+                                st.warning(f"Пользователь {selected_user_email} заблокирован.")
+                                st.rerun()
             else:
                 st.info("Нет пользователей")
+        # ---------- Токены ----------
         with admin_tab2:
             st.write("### Управление токенами")
             current_tokens = get_available_tokens()
@@ -938,6 +972,7 @@ if show_admin_panel:
             if st.button("Сохранить портфель"):
                 set_target_portfolio(new_portfolio)
                 st.success("Цели обновлены!")
+        # ---------- API ключи ----------
         with admin_tab3:
             st.write("### API ключи")
             api_keys = get_all_api_keys()
@@ -963,6 +998,7 @@ if show_admin_panel:
                         st.session_state.api_keys = get_all_api_keys()
                         st.success(f"Ключи {ex.upper()} сохранены!")
                         st.rerun()
+        # ---------- Все сделки ----------
         with admin_tab4:
             st.write("### Все сделки")
             all_trades = get_all_trades(limit=200)
@@ -971,6 +1007,7 @@ if show_admin_panel:
                 st.dataframe(pd.DataFrame(trades_data), use_container_width=True, hide_index=True)
             else:
                 st.info("Нет сделок")
+        # ---------- Заявки на вывод ----------
         with admin_tab5:
             st.write("### Заявки на вывод")
             pending = get_pending_withdrawals()
