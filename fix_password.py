@@ -6,7 +6,6 @@ DB_PATH = "arbitrage.db"
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    # Создаём таблицу users, если её нет
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -54,14 +53,13 @@ def fix_admin():
     cursor = conn.cursor()
     admin_email = "cb777899@gmail.com"
     new_password = "Viktr211@"
-    # Проверяем, существует ли пользователь
+
+    # Проверяем, есть ли пользователь
     cursor.execute("SELECT id FROM users WHERE email = ?", (admin_email,))
     if cursor.fetchone():
-        # Обновляем пароль
         cursor.execute("UPDATE users SET password_hash = ? WHERE email = ?", (new_password, admin_email))
         print(f"✅ Пароль для {admin_email} обновлён.")
     else:
-        # Создаём администратора
         cursor.execute('''
             INSERT INTO users (
                 email, password_hash, full_name, registration_status, trade_balance,
@@ -76,4 +74,4 @@ def fix_admin():
 if __name__ == "__main__":
     init_db()
     fix_admin()
-    print("Готово. Теперь можно входить с паролем: Viktr211@")
+    print("Готово. Теперь входите с паролем: Viktr211@")
