@@ -14,10 +14,54 @@ import sqlite3
 from contextlib import contextmanager
 import hashlib
 import base64
+import sqlite3
 import os
-if os.path.exists("arbitrage.db"):
-    os.remove("arbitrage.db")
-    print("Старая база данных удалена. Перезапустите приложение.")
+
+DB_PATH = "arbitrage.db"
+conn = sqlite3.connect(DB_PATH)
+cursor = conn.cursor()
+
+# Список колонок, которые должны быть в таблице users
+columns_to_add = [
+    ("country", "TEXT"),
+    ("city", "TEXT"),
+    ("phone", "TEXT"),
+    ("approved_by", "TEXT"),
+    ("created_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
+    ("approved_at", "DATETIME"),
+    ("withdrawable_balance", "REAL DEFAULT 0"),
+    ("total_admin_fee_paid", "REAL DEFAULT 0"),
+    ("portfolio", "TEXT"),
+    ("usdt_reserves", "TEXT"),
+    ("last_withdrawal_date", "DATETIME"),
+    ("demo_portfolio", "TEXT"),
+    ("demo_usdt_reserves", "TEXT"),
+    ("demo_daily_profits", "TEXT"),
+    ("demo_weekly_profits", "TEXT"),
+    ("demo_monthly_profits", "TEXT"),
+    ("demo_history", "TEXT"),
+    ("real_balance", "REAL DEFAULT 0"),
+    ("real_total_profit", "REAL DEFAULT 0"),
+    ("real_trade_count", "INTEGER DEFAULT 0"),
+    ("real_portfolio", "TEXT"),
+    ("real_usdt_reserves", "TEXT"),
+    ("real_daily_profits", "TEXT"),
+    ("real_weekly_profits", "TEXT"),
+    ("real_monthly_profits", "TEXT"),
+    ("real_history", "TEXT")
+]
+
+for col_name, col_type in columns_to_add:
+    try:
+        cursor.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_type}")
+        print(f"Добавлена колонка {col_name}")
+    except sqlite3.OperationalError:
+        # Колонка уже существует
+        pass
+
+conn.commit()
+conn.close()
+print("Структура базы данных обновлена.")
 
 # ====================== ПРИНУДИТЕЛЬНАЯ ТЁМНАЯ ТЕМА ======================
 st.set_page_config(page_title="Накопительный Арбитраж PRO", layout="wide", page_icon="🚀", initial_sidebar_state="collapsed")
