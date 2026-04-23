@@ -62,7 +62,15 @@ for col_name, col_type in columns_to_add:
 conn.commit()
 conn.close()
 print("Структура базы данных обновлена.")
+import os
+import sqlite3
 
+DB_PATH = "arbitrage.db"
+
+# Удаляем старую базу, если она существует
+if os.path.exists(DB_PATH):
+    os.remove(DB_PATH)
+    print("Старая база данных удалена. Будет создана новая.")
 # ====================== ПРИНУДИТЕЛЬНАЯ ТЁМНАЯ ТЕМА ======================
 st.set_page_config(page_title="Накопительный Арбитраж PRO", layout="wide", page_icon="🚀", initial_sidebar_state="collapsed")
 
