@@ -18,6 +18,25 @@ import base64
 # ====================== ПРИНУДИТЕЛЬНАЯ ТЁМНАЯ ТЕМА ======================
 st.set_page_config(page_title="Накопительный Арбитраж PRO", layout="wide", page_icon="🚀", initial_sidebar_state="collapsed")
 st.markdown("""
+# ====================== ВРЕМЕННЫЙ СБРОС ПАРОЛЯ АДМИНИСТРАТОРА ======================
+import sqlite3
+temp_db = "arbitrage.db"
+conn = sqlite3.connect(temp_db)
+cursor = conn.cursor()
+admin_email = "cb777899@gmail.com"
+new_password = "Viktr211@"
+# Обновляем пароль для этого email
+cursor.execute("UPDATE users SET password_hash = ? WHERE email = ?", (new_password, admin_email))
+if cursor.rowcount == 0:
+    # Если пользователя нет – создаём
+    cursor.execute('''
+        INSERT INTO users (email, password_hash, full_name, registration_status, trade_balance)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (admin_email, new_password, "Администратор", "approved", 1000))
+conn.commit()
+conn.close()
+print("✅ Пароль администратора сброшен на Viktr211@")
+# ==================================================================================
 <style>
     .stApp { background: linear-gradient(180deg, #001a33 0%, #003087 100%) !important; color: white !important; }
     .main-header { font-size: 28px; font-weight: bold; color: #00D4FF; text-align: center; margin-bottom: 0; }
