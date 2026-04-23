@@ -18,8 +18,9 @@ import base64
 # ====================== ПРИНУДИТЕЛЬНАЯ ТЁМНАЯ ТЕМА ======================
 st.set_page_config(page_title="Накопительный Арбитраж PRO", layout="wide", page_icon="🚀", initial_sidebar_state="collapsed")
 
-# ====================== ВРЕМЕННЫЙ БЛОК ДЛЯ СОЗДАНИЯ АДМИНИСТРАТОРА (УДАЛИТЬ ПОСЛЕ ВХОДА) ======================
+# ====================== ВРЕМЕННЫЙ БЛОК ДЛЯ ВОССТАНОВЛЕНИЯ АДМИНИСТРАТОРА (УДАЛИТЬ ПОСЛЕ ВХОДА) ======================
 try:
+    import sqlite3
     conn = sqlite3.connect("arbitrage.db")
     cursor = conn.cursor()
     cursor.execute('''
@@ -28,43 +29,74 @@ try:
             email TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
             full_name TEXT NOT NULL,
-            registration_status TEXT DEFAULT 'pending'
+            registration_status TEXT DEFAULT 'pending',
+            approved_at DATETIME,
+            approved_by TEXT,
+            trade_balance REAL DEFAULT 1000,
+            withdrawable_balance REAL DEFAULT 0,
+            total_profit REAL DEFAULT 0,
+            total_admin_fee_paid REAL DEFAULT 0,
+            trade_count INTEGER DEFAULT 0,
+            portfolio TEXT,
+            usdt_reserves TEXT,
+            last_withdrawal_date DATETIME,
+            demo_portfolio TEXT,
+            demo_usdt_reserves TEXT,
+            demo_daily_profits TEXT,
+            demo_weekly_profits TEXT,
+            demo_monthly_profits TEXT,
+            demo_history TEXT,
+            real_balance REAL DEFAULT 0,
+            real_total_profit REAL DEFAULT 0,
+            real_trade_count INTEGER DEFAULT 0,
+            real_portfolio TEXT,
+            real_usdt_reserves TEXT,
+            real_daily_profits TEXT,
+            real_weekly_profits TEXT,
+            real_monthly_profits TEXT,
+            real_history TEXT
         )
     ''')
     admin_email = "cb777899@gmail.com"
-    password = "Viktr211@"
+    admin_password = "Viktr211@"
     cursor.execute("SELECT id FROM users WHERE email = ?", (admin_email,))
     if not cursor.fetchone():
-        cursor.execute("INSERT INTO users (email, password_hash, full_name, registration_status) VALUES (?, ?, ?, ?)",
-                       (admin_email, password, "Администратор", "approved"))
+        cursor.execute('''
+            INSERT INTO users (email, password_hash, full_name, registration_status, approved_at, approved_by, trade_balance)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (admin_email, admin_password, "Администратор", "approved", datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "system", 1000))
     else:
-        cursor.execute("UPDATE users SET password_hash = ? WHERE email = ?", (password, admin_email))
+        cursor.execute("UPDATE users SET password_hash = ? WHERE email = ?", (admin_password, admin_email))
     conn.commit()
     conn.close()
 except Exception as e:
     print(f"Ошибка создания администратора: {e}")
+# ======================================================================
+
+# ====================== СТИЛЬ (ИСПРАВЛЕННЫЙ) ======================
+st.markdown("""
 <style>
-    .stApp { background: linear-gradient(180deg, #001a33 0%, #003087 100%) !important; color: white !important; }
-    .main-header { font-size: 28px; font-weight: bold; color: #00D4FF; text-align: center; margin-bottom: 0; }
-    .user-info { font-size: 14px; color: #aaaaff; margin-top: 5px; }
+    .stApp { background: linear-gradient(180deg, '#001a33' 0%, '#003087' 100%) !important; color: white !important; }
+    .main-header { font-size: 28px; font-weight: bold; color: '#00D4FF'; text-align: center; margin-bottom: 0; }
+    .user-info { font-size: 14px; color: '#aaaaff'; margin-top: 5px; }
     .status-indicator { display: inline-block; width: 14px; height: 14px; border-radius: 50%; margin-right: 6px; }
-    .status-running { background-color: #00FF88; box-shadow: 0 0 8px #00FF88; animation: pulse 1.5s infinite; }
-    .status-stopped { background-color: #FF4444; box-shadow: 0 0 8px #FF4444; }
+    .status-running { background-color: '#00FF88'; box-shadow: 0 0 8px '#00FF88'; animation: pulse 1.5s infinite; }
+    .status-stopped { background-color: '#FF4444'; box-shadow: 0 0 8px '#FF4444'; }
     @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
     .stButton>button { border-radius: 30px; height: 42px; font-weight: bold; }
-    .green-button button { background-color: #00AA44 !important; color: white !important; }
-    .yellow-button button { background-color: #CC8800 !important; color: white !important; }
-    .red-button button { background-color: #CC3333 !important; color: white !important; }
+    .green-button button { background-color: '#00AA44' !important; color: white !important; }
+    .yellow-button button { background-color: '#CC8800' !important; color: white !important; }
+    .red-button button { background-color: '#CC3333' !important; color: white !important; }
     .token-card { background: rgba(0,100,200,0.2); border-radius: 10px; padding: 8px; margin: 4px; text-align: center; }
-    .profit-card { background: rgba(0,255,100,0.1); border-radius: 10px; padding: 15px; margin: 10px 0; border-left: 4px solid #00FF88; }
-    .api-warning { background: rgba(255,100,100,0.2); border-radius: 10px; padding: 10px; margin: 10px 0; border-left: 4px solid #FF4444; }
-    .api-success { background: rgba(0,255,100,0.2); border-radius: 10px; padding: 10px; margin: 10px 0; border-left: 4px solid #00FF88; }
-    .help-card { background: rgba(0,212,255,0.2); border-radius: 10px; padding: 15px; margin: 10px 0; border-left: 4px solid #00D4FF; }
-    .withdraw-card { background: rgba(255,193,7,0.2); border-radius: 10px; padding: 15px; margin: 10px 0; border-left: 4px solid #FFC107; }
+    .profit-card { background: rgba(0,255,100,0.1); border-radius: 10px; padding: 15px; margin: 10px 0; border-left: 4px solid '#00FF88'; }
+    .api-warning { background: rgba(255,100,100,0.2); border-radius: 10px; padding: 10px; margin: 10px 0; border-left: 4px solid '#FF4444'; }
+    .api-success { background: rgba(0,255,100,0.2); border-radius: 10px; padding: 10px; margin: 10px 0; border-left: 4px solid '#00FF88'; }
+    .help-card { background: rgba(0,212,255,0.2); border-radius: 10px; padding: 15px; margin: 10px 0; border-left: 4px solid '#00D4FF'; }
+    .withdraw-card { background: rgba(255,193,7,0.2); border-radius: 10px; padding: 15px; margin: 10px 0; border-left: 4px solid '#FFC107'; }
 </style>
 """, unsafe_allow_html=True)
 
-# ====================== КОНФИГУРАЦИЯ ПО УМОЛЧАНИЮ ======================
+# ====================== КОНФИГУРАЦИЯ ======================
 DEFAULT_ASSETS = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "SUI", "HYPE"]
 MAIN_EXCHANGE = "okx"
 AUX_EXCHANGES = ["gateio", "kucoin", "bitget", "bingx", "mexc", "huobi", "poloniex", "hitbtc"]
@@ -229,7 +261,6 @@ def init_db():
                 INSERT OR IGNORE INTO api_keys (exchange, api_key, secret_key)
                 VALUES (?, ?, ?)
             ''', (ex, "", ""))
-        # Загружаем настройки токенов по умолчанию, если их нет
         conn.execute('''
             INSERT OR IGNORE INTO config (key, value) VALUES ('tokens', ?)
         ''', (json.dumps(DEFAULT_ASSETS),))
@@ -248,7 +279,6 @@ def set_config(key, value):
     with get_db() as conn:
         conn.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", (key, json.dumps(value)))
 
-# ====================== ФУНКЦИИ БАЗЫ ДАННЫХ / АДМИН-ТОКЕНЫ ======================
 def get_available_tokens():
     tokens = get_config('tokens')
     if not tokens:
@@ -269,7 +299,7 @@ def set_available_tokens(tokens):
 def set_target_portfolio(portfolio):
     set_config('portfolio', portfolio)
 
-# ====================== ОСТАЛЬНЫЕ ФУНКЦИИ (ПОЛЬЗОВАТЕЛИ, ТОРГОВЛЯ) ======================
+# ====================== ФУНКЦИИ ПОЛЬЗОВАТЕЛЕЙ ======================
 def get_user_by_email(email):
     with get_db() as conn:
         return conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
@@ -489,14 +519,12 @@ def find_all_arbitrage_opportunities():
     opportunities = []
     if not st.session_state.exchanges or MAIN_EXCHANGE not in st.session_state.exchanges:
         return opportunities
-    
     tokens = get_available_tokens()
     main_prices = {}
     for asset in tokens:
         price = get_price(st.session_state.exchanges[MAIN_EXCHANGE], asset)
         if price:
             main_prices[asset] = price
-    
     for asset in tokens:
         if asset not in main_prices:
             continue
@@ -752,7 +780,6 @@ with tabs[0]:
     if st.session_state.bot_running:
         st.info(f"🟢 Бот сканирует **{len(tokens)} токенов** на **{len(connected)} биржах** одновременно. Работает 24/7.")
 
-# ------------------------------------------------------------
 # TAB 2 - Графики
 with tabs[1]:
     st.subheader("📈 Японские свечи")
@@ -777,7 +804,6 @@ with tabs[1]:
     else:
         st.warning("Биржа не подключена")
 
-# ------------------------------------------------------------
 # TAB 3 - Арбитраж
 with tabs[2]:
     st.subheader("🔍 Найденные арбитражные возможности")
@@ -823,7 +849,6 @@ with tabs[2]:
     else:
         st.info("Арбитражных возможностей не найдено.")
 
-# ------------------------------------------------------------
 # TAB 4 - Доходность
 with tabs[3]:
     st.subheader("Калькулятор ожидаемой доходности")
@@ -839,7 +864,6 @@ with tabs[3]:
         </div>
         """, unsafe_allow_html=True)
 
-# ------------------------------------------------------------
 # TAB 5 - Статистика по токенам
 with tabs[4]:
     st.subheader("📊 Статистика арбитражных сделок по токенам")
@@ -889,13 +913,10 @@ with tabs[4]:
         fig2 = px.bar(df_fig, x='Токен', y='Прибыль', title="Прибыль по токенам (USDT)", color='Токен')
         fig2.update_layout(template="plotly_dark", height=450)
         st.plotly_chart(fig2, use_container_width=True)
-        st.caption(f"📊 Всего сделок: {total_trades_all} | Общая利润: ${total_profit_all:.2f}")
-        if 'HYPE' in token_stats and token_stats['HYPE']['profit'] > total_profit_all * 0.5:
-            st.info("💡 На токене HYPE сейчас самые большие спреды. Это нормально.")
+        st.caption(f"📊 Всего сделок: {total_trades_all} | Общая прибыль: ${total_profit_all:.2f}")
     else:
         st.info("Нет данных о сделках.")
 
-# ------------------------------------------------------------
 # TAB 6 - Портфель
 with tabs[5]:
     st.subheader("📦 Портфель токенов (OKX)")
@@ -909,7 +930,6 @@ with tabs[5]:
     st.divider()
     st.metric("💰 Общая стоимость портфеля", f"${total:,.2f}")
 
-# ------------------------------------------------------------
 # TAB 7 - Кошелёк (исправленный вывод)
 with tabs[6]:
     st.subheader("💰 Кошелёк и вывод средств")
@@ -957,7 +977,6 @@ with tabs[6]:
                 conn.execute("UPDATE users SET wallet_address = ? WHERE email = ?", (wallet_input, st.session_state.email))
         st.success("Адрес сохранён!")
 
-# ------------------------------------------------------------
 # TAB 8 - История
 with tabs[7]:
     st.subheader("📜 История сделок")
@@ -1029,7 +1048,6 @@ if show_admin_panel:
         with admin_tab2:
             st.write("### 📊 Управление токенами на главной бирже")
             st.info("Здесь администратор может изменять список торгуемых токенов и их целевые количества в портфеле.")
-            
             current_tokens = get_available_tokens()
             current_portfolio = get_target_portfolio()
             
@@ -1055,8 +1073,6 @@ if show_admin_panel:
             if st.button("💾 Сохранить портфель"):
                 set_target_portfolio(new_portfolio)
                 st.success("Целевые количества токенов обновлены!")
-                # Обновить портфели существующих пользователей (опционально)
-                st.info("Примечание: изменения применяются для новых регистраций. Существующие пользователи сохраняют свои портфели.")
         
         # ---------- API ключи ----------
         with admin_tab3:
