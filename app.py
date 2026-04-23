@@ -17,7 +17,32 @@ import base64
 
 # ====================== ПРИНУДИТЕЛЬНАЯ ТЁМНАЯ ТЕМА ======================
 st.set_page_config(page_title="Накопительный Арбитраж PRO", layout="wide", page_icon="🚀", initial_sidebar_state="collapsed")
-st.markdown("""
+
+# ====================== ВРЕМЕННЫЙ БЛОК ДЛЯ СОЗДАНИЯ АДМИНИСТРАТОРА (УДАЛИТЬ ПОСЛЕ ВХОДА) ======================
+try:
+    conn = sqlite3.connect("arbitrage.db")
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            full_name TEXT NOT NULL,
+            registration_status TEXT DEFAULT 'pending'
+        )
+    ''')
+    admin_email = "cb777899@gmail.com"
+    password = "Viktr211@"
+    cursor.execute("SELECT id FROM users WHERE email = ?", (admin_email,))
+    if not cursor.fetchone():
+        cursor.execute("INSERT INTO users (email, password_hash, full_name, registration_status) VALUES (?, ?, ?, ?)",
+                       (admin_email, password, "Администратор", "approved"))
+    else:
+        cursor.execute("UPDATE users SET password_hash = ? WHERE email = ?", (password, admin_email))
+    conn.commit()
+    conn.close()
+except Exception as e:
+    print(f"Ошибка создания администратора: {e}")
 <style>
     .stApp { background: linear-gradient(180deg, #001a33 0%, #003087 100%) !important; color: white !important; }
     .main-header { font-size: 28px; font-weight: bold; color: #00D4FF; text-align: center; margin-bottom: 0; }
