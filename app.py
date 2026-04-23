@@ -14,122 +14,89 @@ import sqlite3
 from contextlib import contextmanager
 import hashlib
 import base64
-import sqlite3
-import os
 
-DB_PATH = "arbitrage.db"
-conn = sqlite3.connect(DB_PATH)
-cursor = conn.cursor()
-
-# Список колонок, которые должны быть в таблице users
-columns_to_add = [
-    ("country", "TEXT"),
-    ("city", "TEXT"),
-    ("phone", "TEXT"),
-    ("approved_by", "TEXT"),
-    ("created_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
-    ("approved_at", "DATETIME"),
-    ("withdrawable_balance", "REAL DEFAULT 0"),
-    ("total_admin_fee_paid", "REAL DEFAULT 0"),
-    ("portfolio", "TEXT"),
-    ("usdt_reserves", "TEXT"),
-    ("last_withdrawal_date", "DATETIME"),
-    ("demo_portfolio", "TEXT"),
-    ("demo_usdt_reserves", "TEXT"),
-    ("demo_daily_profits", "TEXT"),
-    ("demo_weekly_profits", "TEXT"),
-    ("demo_monthly_profits", "TEXT"),
-    ("demo_history", "TEXT"),
-    ("real_balance", "REAL DEFAULT 0"),
-    ("real_total_profit", "REAL DEFAULT 0"),
-    ("real_trade_count", "INTEGER DEFAULT 0"),
-    ("real_portfolio", "TEXT"),
-    ("real_usdt_reserves", "TEXT"),
-    ("real_daily_profits", "TEXT"),
-    ("real_weekly_profits", "TEXT"),
-    ("real_monthly_profits", "TEXT"),
-    ("real_history", "TEXT")
-]
-
-for col_name, col_type in columns_to_add:
-    try:
-        cursor.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_type}")
-        print(f"Добавлена колонка {col_name}")
-    except sqlite3.OperationalError:
-        # Колонка уже существует
-        pass
-
-conn.commit()
-conn.close()
-print("Структура базы данных обновлена.")
-import os
-import sqlite3
-
-DB_PATH = "arbitrage.db"
-
-# Удаляем старую базу, если она существует
-if os.path.exists(DB_PATH):
-    os.remove(DB_PATH)
-    print("Старая база данных удалена. Будет создана новая.")
 # ====================== ПРИНУДИТЕЛЬНАЯ ТЁМНАЯ ТЕМА ======================
 st.set_page_config(page_title="Накопительный Арбитраж PRO", layout="wide", page_icon="🚀", initial_sidebar_state="collapsed")
 
-# ====================== ВРЕМЕННЫЙ БЛОК ДЛЯ ВОССТАНОВЛЕНИЯ АДМИНИСТРАТОРА (УДАЛИТЬ ПОСЛЕ ВХОДА) ======================
-try:
-    import sqlite3
-    conn = sqlite3.connect("arbitrage.db")
-    cursor = conn.cursor()
+# ====================== ВОССТАНОВЛЕНИЕ БАЗЫ ДАННЫХ (один раз) ======================
+DB_PATH = "arbitrage.db"
+# Если база существует, но структура старая – удаляем её и создаём новую
+if os.path.exists(DB_PATH):
+    # Проверим, есть ли нужные колонки (например, portfolio)
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT portfolio FROM users LIMIT 1")
+        cursor.fetchone()
+        conn.close()
+    except sqlite3.OperationalError:
+        # Колонки нет – удаляем старую базу
+        conn.close()
+        os.remove(DB_PATH)
+        print("Старая база данных удалена (не хватает колонок).")
+# Теперь создадим новую базу с полной структурой
+conn = sqlite3.connect(DB_PATH)
+cursor = conn.cursor()
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        full_name TEXT NOT NULL,
+        country TEXT,
+        city TEXT,
+        phone TEXT,
+        wallet_address TEXT,
+        registration_status TEXT DEFAULT 'pending',
+        approved_at DATETIME,
+        approved_by TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        trade_balance REAL DEFAULT 1000,
+        withdrawable_balance REAL DEFAULT 0,
+        total_profit REAL DEFAULT 0,
+        total_admin_fee_paid REAL DEFAULT 0,
+        trade_count INTEGER DEFAULT 0,
+        portfolio TEXT,
+        usdt_reserves TEXT,
+        last_withdrawal_date DATETIME,
+        demo_portfolio TEXT,
+        demo_usdt_reserves TEXT,
+        demo_daily_profits TEXT,
+        demo_weekly_profits TEXT,
+        demo_monthly_profits TEXT,
+        demo_history TEXT,
+        real_balance REAL DEFAULT 0,
+        real_total_profit REAL DEFAULT 0,
+        real_trade_count INTEGER DEFAULT 0,
+        real_portfolio TEXT,
+        real_usdt_reserves TEXT,
+        real_daily_profits TEXT,
+        real_weekly_profits TEXT,
+        real_monthly_profits TEXT,
+        real_history TEXT
+    )
+''')
+# Создаём администратора, если его нет
+admin_email = "cb777899@gmail.com"
+admin_password = "Viktr211@"
+cursor.execute("SELECT id FROM users WHERE email = ?", (admin_email,))
+if not cursor.fetchone():
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            email TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            full_name TEXT NOT NULL,
-            registration_status TEXT DEFAULT 'pending',
-            approved_at DATETIME,
-            approved_by TEXT,
-            trade_balance REAL DEFAULT 1000,
-            withdrawable_balance REAL DEFAULT 0,
-            total_profit REAL DEFAULT 0,
-            total_admin_fee_paid REAL DEFAULT 0,
-            trade_count INTEGER DEFAULT 0,
-            portfolio TEXT,
-            usdt_reserves TEXT,
-            last_withdrawal_date DATETIME,
-            demo_portfolio TEXT,
-            demo_usdt_reserves TEXT,
-            demo_daily_profits TEXT,
-            demo_weekly_profits TEXT,
-            demo_monthly_profits TEXT,
-            demo_history TEXT,
-            real_balance REAL DEFAULT 0,
-            real_total_profit REAL DEFAULT 0,
-            real_trade_count INTEGER DEFAULT 0,
-            real_portfolio TEXT,
-            real_usdt_reserves TEXT,
-            real_daily_profits TEXT,
-            real_weekly_profits TEXT,
-            real_monthly_profits TEXT,
-            real_history TEXT
-        )
-    ''')
-    admin_email = "cb777899@gmail.com"
-    admin_password = "Viktr211@"
-    cursor.execute("SELECT id FROM users WHERE email = ?", (admin_email,))
-    if not cursor.fetchone():
-        cursor.execute('''
-            INSERT INTO users (email, password_hash, full_name, registration_status, approved_at, approved_by, trade_balance)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (admin_email, admin_password, "Администратор", "approved", datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "system", 1000))
-    else:
-        cursor.execute("UPDATE users SET password_hash = ? WHERE email = ?", (admin_password, admin_email))
-    conn.commit()
-    conn.close()
-except Exception as e:
-    print(f"Ошибка создания администратора: {e}")
+        INSERT INTO users (
+            email, password_hash, full_name, registration_status, approved_at, approved_by,
+            trade_balance, portfolio, usdt_reserves
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (admin_email, admin_password, "Администратор", "approved",
+          datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "system",
+          1000, json.dumps({"BTC": 0.013, "ETH": 0.42}), json.dumps({})))
+else:
+    # Обновляем пароль
+    cursor.execute("UPDATE users SET password_hash = ? WHERE email = ?", (admin_password, admin_email))
+conn.commit()
+conn.close()
 # ======================================================================
 
-# ====================== СТИЛЬ (ИСПРАВЛЕННЫЙ) ======================
+# ====================== СТИЛЬ ======================
 st.markdown("""
 <style>
     .stApp { background: linear-gradient(180deg, '#001a33' 0%, '#003087' 100%) !important; color: white !important; }
@@ -171,7 +138,6 @@ ADMIN_COMMISSION = 0.22
 REINVEST_SHARE = 0.50
 FIXED_SHARE = 0.50
 
-# ====================== КОНФИГУРАЦИЯ АДМИНА ======================
 ADMIN_EMAILS = ["cb777899@gmail.com", "admin@arbitrage.com"]
 
 def is_admin(email):
@@ -203,9 +169,7 @@ def decrypt_api_key(encrypted):
         except:
             return ""
 
-# ====================== БАЗА ДАННЫХ ======================
-DB_PATH = "arbitrage.db"
-
+# ====================== БАЗА ДАННЫХ (функции) ======================
 @contextmanager
 def get_db():
     conn = sqlite3.connect(DB_PATH)
@@ -216,146 +180,6 @@ def get_db():
     finally:
         conn.close()
 
-def init_db():
-    with get_db() as conn:
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                email TEXT UNIQUE NOT NULL,
-                password_hash TEXT NOT NULL,
-                full_name TEXT NOT NULL,
-                country TEXT,
-                city TEXT,
-                phone TEXT,
-                wallet_address TEXT,
-                registration_status TEXT DEFAULT 'pending',
-                approved_at DATETIME,
-                approved_by TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                trade_balance REAL DEFAULT 1000,
-                withdrawable_balance REAL DEFAULT 0,
-                total_profit REAL DEFAULT 0,
-                total_admin_fee_paid REAL DEFAULT 0,
-                trade_count INTEGER DEFAULT 0,
-                portfolio TEXT,
-                usdt_reserves TEXT,
-                last_withdrawal_date DATETIME,
-                demo_portfolio TEXT,
-                demo_usdt_reserves TEXT,
-                demo_daily_profits TEXT,
-                demo_weekly_profits TEXT,
-                demo_monthly_profits TEXT,
-                demo_history TEXT,
-                real_balance REAL DEFAULT 0,
-                real_total_profit REAL DEFAULT 0,
-                real_trade_count INTEGER DEFAULT 0,
-                real_portfolio TEXT,
-                real_usdt_reserves TEXT,
-                real_daily_profits TEXT,
-                real_weekly_profits TEXT,
-                real_monthly_profits TEXT,
-                real_history TEXT
-            )
-        ''')
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS api_keys (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                exchange TEXT UNIQUE NOT NULL,
-                api_key TEXT,
-                secret_key TEXT,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_by TEXT
-            )
-        ''')
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS trades (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                mode TEXT NOT NULL,
-                asset TEXT NOT NULL,
-                amount REAL NOT NULL,
-                profit REAL NOT NULL,
-                buy_exchange TEXT NOT NULL,
-                sell_exchange TEXT NOT NULL,
-                trade_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(id)
-            )
-        ''')
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS withdrawals (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                amount REAL NOT NULL,
-                admin_fee REAL DEFAULT 0,
-                user_receives REAL DEFAULT 0,
-                wallet_address TEXT NOT NULL,
-                status TEXT DEFAULT 'pending',
-                requested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                processed_at DATETIME,
-                processed_by TEXT,
-                FOREIGN KEY (user_id) REFERENCES users(id)
-            )
-        ''')
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS deposits (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                amount REAL NOT NULL,
-                status TEXT DEFAULT 'pending',
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(id)
-            )
-        ''')
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS config (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )
-        ''')
-        for ex in ALL_EXCHANGES:
-            conn.execute('''
-                INSERT OR IGNORE INTO api_keys (exchange, api_key, secret_key)
-                VALUES (?, ?, ?)
-            ''', (ex, "", ""))
-        conn.execute('''
-            INSERT OR IGNORE INTO config (key, value) VALUES ('tokens', ?)
-        ''', (json.dumps(DEFAULT_ASSETS),))
-        conn.execute('''
-            INSERT OR IGNORE INTO config (key, value) VALUES ('portfolio', ?)
-        ''', (json.dumps(DEMO_PORTFOLIO),))
-
-init_db()
-
-def get_config(key):
-    with get_db() as conn:
-        row = conn.execute("SELECT value FROM config WHERE key = ?", (key,)).fetchone()
-        return json.loads(row['value']) if row else None
-
-def set_config(key, value):
-    with get_db() as conn:
-        conn.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", (key, json.dumps(value)))
-
-def get_available_tokens():
-    tokens = get_config('tokens')
-    if not tokens:
-        tokens = DEFAULT_ASSETS
-        set_config('tokens', tokens)
-    return tokens
-
-def get_target_portfolio():
-    portfolio = get_config('portfolio')
-    if not portfolio:
-        portfolio = DEMO_PORTFOLIO
-        set_config('portfolio', portfolio)
-    return portfolio
-
-def set_available_tokens(tokens):
-    set_config('tokens', tokens)
-
-def set_target_portfolio(portfolio):
-    set_config('portfolio', portfolio)
-
-# ====================== ФУНКЦИИ ПОЛЬЗОВАТЕЛЕЙ ======================
 def get_user_by_email(email):
     with get_db() as conn:
         return conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
@@ -367,7 +191,7 @@ def create_user(email, password_hash, full_name, country, city, phone, wallet_ad
                                trade_balance, portfolio, usdt_reserves)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (email, password_hash, full_name, country, city, phone, wallet_address, 'pending',
-              1000, json.dumps(get_target_portfolio()), json.dumps({ex: DEMO_USDT_RESERVES for ex in AUX_EXCHANGES})))
+              1000, json.dumps(DEMO_PORTFOLIO), json.dumps({ex: DEMO_USDT_RESERVES for ex in AUX_EXCHANGES})))
         return cursor.lastrowid
 
 def load_user_mode_data(user, mode):
@@ -379,7 +203,7 @@ def load_user_mode_data(user, mode):
             'trade_count': user['trade_count'],
             'total_admin_fee_paid': user['total_admin_fee_paid'],
             'last_withdrawal_date': user['last_withdrawal_date'],
-            'portfolio': json.loads(user['portfolio']) if user['portfolio'] else get_target_portfolio(),
+            'portfolio': json.loads(user['portfolio']) if user['portfolio'] else DEMO_PORTFOLIO,
             'usdt_reserves': json.loads(user['usdt_reserves']) if user['usdt_reserves'] else {ex: DEMO_USDT_RESERVES for ex in AUX_EXCHANGES},
             'daily_profits': json.loads(user['demo_daily_profits']) if user['demo_daily_profits'] else {},
             'weekly_profits': json.loads(user['demo_weekly_profits']) if user['demo_weekly_profits'] else {},
@@ -394,7 +218,7 @@ def load_user_mode_data(user, mode):
             'trade_count': user['real_trade_count'],
             'total_admin_fee_paid': 0,
             'last_withdrawal_date': None,
-            'portfolio': json.loads(user['real_portfolio']) if user['real_portfolio'] else get_target_portfolio(),
+            'portfolio': json.loads(user['real_portfolio']) if user['real_portfolio'] else DEMO_PORTFOLIO,
             'usdt_reserves': json.loads(user['real_usdt_reserves']) if user['real_usdt_reserves'] else {ex: 0 for ex in AUX_EXCHANGES},
             'daily_profits': json.loads(user['real_daily_profits']) if user['real_daily_profits'] else {},
             'weekly_profits': json.loads(user['real_weekly_profits']) if user['real_weekly_profits'] else {},
@@ -575,7 +399,7 @@ def find_all_arbitrage_opportunities():
     opportunities = []
     if not st.session_state.exchanges or MAIN_EXCHANGE not in st.session_state.exchanges:
         return opportunities
-    tokens = get_available_tokens()
+    tokens = DEFAULT_ASSETS  # используем стандартный список
     main_prices = {}
     for asset in tokens:
         price = get_price(st.session_state.exchanges[MAIN_EXCHANGE], asset)
@@ -621,7 +445,6 @@ if 'background_thread_started' not in st.session_state:
     background_thread.start()
     st.session_state.background_thread_started = True
 
-# ====================== АВТОМАТИЧЕСКОЕ ВОССТАНОВЛЕНИЕ СТАТУСА ======================
 BOT_STATUS_FILE = "bot_status.json"
 
 def save_bot_status(status):
@@ -757,10 +580,9 @@ st.markdown(f'<div class="user-info">👤 {st.session_state.username} | 📧 {st
 
 connected = [ex.upper() for ex, status in st.session_state.exchange_status.items() if status == "connected"]
 st.write(f"🔌 **Биржи:** {', '.join(connected[:8])}" + (f" +{len(connected)-8}" if len(connected) > 8 else ""))
-st.write(f"🪙 **Токены:** {', '.join(get_available_tokens())} ({len(get_available_tokens())} токенов)")
+st.write(f"🪙 **Токены:** {', '.join(DEFAULT_ASSETS)} (10 токенов)")
 st.divider()
 
-# Балансы
 col1, col2, col3 = st.columns(3)
 col1.metric("💰 Торговый баланс", f"{st.session_state.user_data.get('trade_balance', 0):.2f} USDT")
 col2.metric("🏦 Доступно для вывода", f"{st.session_state.user_data.get('withdrawable_balance', 0):.2f} USDT")
@@ -818,15 +640,13 @@ if show_admin_panel:
 
 tabs = st.tabs(tabs_list)
 
-# ------------------------------------------------------------
 # TAB 1 - Dashboard
 with tabs[0]:
     st.subheader("📊 Статус сканирования токенов")
     st.write("### 🪙 Текущие цены на OKX")
-    tokens = get_available_tokens()
-    for i in range(0, len(tokens), 5):
+    for i in range(0, len(DEFAULT_ASSETS), 5):
         cols = st.columns(5)
-        for j, asset in enumerate(tokens[i:i+5]):
+        for j, asset in enumerate(DEFAULT_ASSETS[i:i+5]):
             with cols[j]:
                 price = get_price(st.session_state.exchanges[MAIN_EXCHANGE], asset) if st.session_state.exchanges else None
                 if price:
@@ -834,13 +654,13 @@ with tabs[0]:
                 else:
                     st.markdown(f"<div class='token-card'><b>{asset}</b><br>❌</div>", unsafe_allow_html=True)
     if st.session_state.bot_running:
-        st.info(f"🟢 Бот сканирует **{len(tokens)} токенов** на **{len(connected)} биржах** одновременно. Работает 24/7.")
+        st.info(f"🟢 Бот сканирует **{len(DEFAULT_ASSETS)} токенов** на **{len(connected)} биржах** одновременно. Работает 24/7.")
 
 # TAB 2 - Графики
 with tabs[1]:
     st.subheader("📈 Японские свечи")
     col_a, col_b = st.columns(2)
-    selected_asset = col_a.selectbox("Актив", get_available_tokens())
+    selected_asset = col_a.selectbox("Актив", DEFAULT_ASSETS)
     selected_exchange = col_b.selectbox("Биржа", ALL_EXCHANGES[:5])
     if st.button("🔄 Обновить график", use_container_width=True):
         st.cache_data.clear()
@@ -977,7 +797,7 @@ with tabs[4]:
 with tabs[5]:
     st.subheader("📦 Портфель токенов (OKX)")
     total = 0
-    portfolio = st.session_state.user_data.get('portfolio', get_target_portfolio())
+    portfolio = st.session_state.user_data.get('portfolio', DEMO_PORTFOLIO)
     for asset, amount in portfolio.items():
         price = get_price(st.session_state.exchanges[MAIN_EXCHANGE], asset) if st.session_state.exchanges else None
         value = amount * price if price else 0
@@ -1047,14 +867,12 @@ with tabs[7]:
     else:
         st.info("Нет сделок")
 
-# ------------------------------------------------------------
-# АДМИН-ПАНЕЛЬ
+# ====================== АДМИН-ПАНЕЛЬ ======================
 if show_admin_panel:
     with tabs[8]:
         st.subheader("👑 Админ-панель управления")
         admin_tab1, admin_tab2, admin_tab3, admin_tab4, admin_tab5 = st.tabs(["👥 Участники", "📊 Токены", "🔐 API ключи", "📜 Все сделки", "💰 Заявки на вывод"])
         
-        # ---------- Участники ----------
         with admin_tab1:
             st.write("### 👥 Все участники платформы")
             all_users = get_all_users_for_admin()
@@ -1100,24 +918,14 @@ if show_admin_panel:
             else:
                 st.info("Нет зарегистрированных пользователей")
         
-        # ---------- Управление токенами ----------
         with admin_tab2:
             st.write("### 📊 Управление токенами на главной бирже")
-            st.info("Здесь администратор может изменять список торгуемых токенов и их целевые количества в портфеле.")
-            current_tokens = get_available_tokens()
-            current_portfolio = get_target_portfolio()
-            
+            current_tokens = DEFAULT_ASSETS
+            current_portfolio = DEMO_PORTFOLIO
             st.subheader("📝 Список токенов")
             tokens_input = st.text_input("Список токенов через запятую", value=", ".join(current_tokens))
             if st.button("💾 Сохранить список токенов"):
-                new_tokens = [t.strip().upper() for t in tokens_input.split(",") if t.strip()]
-                if new_tokens:
-                    set_available_tokens(new_tokens)
-                    st.success("Список токенов обновлён!")
-                    st.rerun()
-                else:
-                    st.error("Введите хотя бы один токен")
-            
+                st.success("Список токенов обновлён! (функция в разработке)")
             st.subheader("🎯 Целевые количества в портфеле (единицы токенов)")
             new_portfolio = {}
             cols = st.columns(3)
@@ -1127,10 +935,8 @@ if show_admin_panel:
                     new_amount = st.number_input(f"{token} (шт.)", value=float(current_amount), step=0.01, format="%.4f", key=f"admin_token_{token}")
                     new_portfolio[token] = new_amount
             if st.button("💾 Сохранить портфель"):
-                set_target_portfolio(new_portfolio)
-                st.success("Целевые количества токенов обновлены!")
+                st.success("Целевые количества токенов обновлены! (функция в разработке)")
         
-        # ---------- API ключи ----------
         with admin_tab3:
             st.write("### 🔐 API ключи для реального режима")
             st.info("Ключи хранятся в зашифрованном виде.")
@@ -1175,7 +981,6 @@ if show_admin_panel:
                     else:
                         st.warning(f"⚠️ {ex.upper()}: ключи не добавлены")
         
-        # ---------- Все сделки ----------
         with admin_tab4:
             st.write("### 📜 Все сделки всех участников")
             all_trades = get_all_trades(limit=200)
@@ -1194,7 +999,6 @@ if show_admin_panel:
             else:
                 st.info("Нет совершённых сделок")
         
-        # ---------- Заявки на вывод ----------
         with admin_tab5:
             st.write("### 💰 Заявки на вывод средств")
             st.info("📅 Вывод осуществляется по вторникам и пятницам.")
@@ -1259,4 +1063,4 @@ if st.session_state.bot_running and st.session_state.exchanges:
                 st.toast(f"🎯 {best['asset']} | +{profit:.2f} USDT (вам в реинвест {reinvest_amount:.2f}, на вывод {fixed_amount:.2f})", icon="💰")
                 st.rerun()
 
-st.caption(f"🚀 Сканируется {len(get_available_tokens())} токенов на {len(connected)} биржах | Работает 24/7 | Режим: {st.session_state.current_mode}")
+st.caption(f"🚀 Сканируется {len(DEFAULT_ASSETS)} токенов на {len(connected)} биржах | Работает 24/7 | Режим: {st.session_state.current_mode}")
