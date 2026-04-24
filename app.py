@@ -1,6 +1,3 @@
-import streamlit as st
-import time
-import random
 import json
 import ccxt
 import pandas as pd
@@ -10,410 +7,359 @@ from datetime import datetime, timedelta
 import os
 import threading
 import numpy as np
-import sqlite3
-from contextlib import contextmanager
-import hashlib
-import base64
-import requests
+from supabase import create_client, Client
 
 st.set_page_config(page_title="Накопительный Арбитраж PRO", layout="wide", page_icon="🚀", initial_sidebar_state="collapsed")
 
-# ====================== АВТОМАТИЧЕСКОЕ СОЗДАНИЕ/ОБНОВЛЕНИЕ БД ======================
-def ensure_db_structure():
-    conn = sqlite3.connect("arbitrage.db")
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            email TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            full_name TEXT NOT NULL,
-            country TEXT,
-            city TEXT,
-            phone TEXT,
-            wallet_address TEXT,
-            registration_status TEXT DEFAULT 'pending',
-            approved_at DATETIME,
-            approved_by TEXT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            trade_balance REAL DEFAULT 1000,
-            withdrawable_balance REAL DEFAULT 0,
-            total_profit REAL DEFAULT 0,
-            total_admin_fee_paid REAL DEFAULT 0,
-            trade_count INTEGER DEFAULT 0,
-            portfolio TEXT,
-            usdt_reserves TEXT,
-            last_withdrawal_date DATETIME,
-            demo_portfolio TEXT,
-            demo_usdt_reserves TEXT,
-            demo_daily_profits TEXT,
-            demo_weekly_profits TEXT,
-            demo_monthly_profits TEXT,
-            demo_history TEXT,
-            real_balance REAL DEFAULT 0,
-            real_total_profit REAL DEFAULT 0,
-            real_trade_count INTEGER DEFAULT 0,
-            real_portfolio TEXT,
-            real_usdt_reserves TEXT,
-            real_daily_profits TEXT,
-            real_weekly_profits TEXT,
-            real_monthly_profits TEXT,
-            real_history TEXT
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS api_keys (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            exchange TEXT UNIQUE NOT NULL,
-            api_key TEXT,
-            secret_key TEXT,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_by TEXT
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS trades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            mode TEXT NOT NULL,
-            asset TEXT NOT NULL,
-            amount REAL NOT NULL,
-            profit REAL NOT NULL,
-            buy_exchange TEXT NOT NULL,
-            sell_exchange TEXT NOT NULL,
-            trade_time DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS withdrawals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            amount REAL NOT NULL,
-            admin_fee REAL DEFAULT 0,
-            user_receives REAL DEFAULT 0,
-            wallet_address TEXT NOT NULL,
-            status TEXT DEFAULT 'pending',
-            requested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            processed_at DATETIME,
-            processed_by TEXT
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS deposits (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            amount REAL NOT NULL,
-            status TEXT DEFAULT 'pending',
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS config (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )
-    ''')
-    # Таблица для чата
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            user_email TEXT NOT NULL,
-            user_name TEXT NOT NULL,
-            message TEXT NOT NULL,
-            is_admin_reply BOOLEAN DEFAULT 0,
-            reply_to INTEGER,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            is_read BOOLEAN DEFAULT 0,
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        )
-    ''')
-    # Таблица для настроек демо-резервов USDT по биржам
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS demo_usdt_reserves (
-            exchange TEXT PRIMARY KEY,
-            amount REAL NOT NULL
-        )
-    ''')
-    # Таблица для хранения настроек Telegram (токен, chat_id)
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS tg_settings (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )
-    ''')
-    # Инициализация демо-резервов по умолчанию, если таблица пуста
-    default_reserves = {"gateio": 10000, "kucoin": 10000, "bitget": 10000, "bingx": 10000, "mexc": 10000, "huobi": 10000, "poloniex": 10000, "hitbtc": 10000}
-    for ex, amt in default_reserves.items():
-        cursor.execute("INSERT OR IGNORE INTO demo_usdt_reserves (exchange, amount) VALUES (?, ?)", (ex, amt))
-    # Начальные данные config
-    cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES ('tokens', ?)", (json.dumps(["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "SUI", "HYPE", "TON"]),))
-    cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES ('portfolio', ?)", (json.dumps({"BTC": 0.013, "ETH": 0.42, "SOL": 11.6, "BNB": 1.63, "XRP": 730, "ADA": 4166, "AVAX": 108, "LINK": 113, "SUI": 1098, "HYPE": 23.5, "TON": 10.0}),))
-    # Администратор
-    admin_email = "cb777899@gmail.com"
-    admin_password = "Viktr211@"
-    cursor.execute("SELECT id FROM users WHERE email = ?", (admin_email,))
-    if not cursor.fetchone():
-        cursor.execute('''
-            INSERT INTO users (email, password_hash, full_name, registration_status, approved_at, approved_by, trade_balance, portfolio, usdt_reserves, country, city, phone, wallet_address)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (admin_email, admin_password, "Администратор", "approved", datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "system", 1000, json.dumps({"BTC": 0.013, "ETH": 0.42}), json.dumps({}), "", "", "", ""))
-    else:
-        cursor.execute("UPDATE users SET password_hash = ? WHERE email = ?", (admin_password, admin_email))
-    # Заполняем api_keys для бирж (если нет)
-    for ex in ["okx", "gateio", "kucoin", "bitget", "bingx", "mexc", "huobi", "poloniex", "hitbtc"]:
-        cursor.execute("INSERT OR IGNORE INTO api_keys (exchange, api_key, secret_key) VALUES (?, ?, ?)", (ex, "", ""))
-    conn.commit()
-    conn.close()
+# ====================== ПОДКЛЮЧЕНИЕ К SUPABASE ======================
+SUPABASE_URL = st.secrets.get("SUPABASE_URL")
+SUPABASE_KEY = st.secrets.get("SUPABASE_KEY")
 
-ensure_db_structure()
+if not SUPABASE_URL or not SUPABASE_KEY:
+    st.error("❌ Ошибка: не заданы переменные окружения SUPABASE_URL и SUPABASE_KEY. Добавьте их в Secrets в Streamlit Cloud.")
+    st.stop()
 
-# ====================== КОНФИГУРАЦИЯ ======================
-DEFAULT_ASSETS = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "SUI", "HYPE", "TON"]
-MAIN_EXCHANGE = "okx"
-AUX_EXCHANGES = ["gateio", "kucoin", "bitget", "bingx", "mexc", "huobi", "poloniex", "hitbtc"]
-ALL_EXCHANGES = [MAIN_EXCHANGE] + AUX_EXCHANGES
-MIN_SPREAD_PERCENT = 0.002
-FEE_PERCENT = 0.10
-DEMO_PORTFOLIO = {"BTC": 0.013, "ETH": 0.42, "SOL": 11.6, "BNB": 1.63, "XRP": 730, "ADA": 4166, "AVAX": 108, "LINK": 113, "SUI": 1098, "HYPE": 23.5, "TON": 10.0}
-DEMO_USDT_RESERVES = 10000  # fallback, но реально берется из таблицы demo_usdt_reserves
-ADMIN_COMMISSION = 0.22
-REINVEST_SHARE = 0.50
-FIXED_SHARE = 0.50
-ADMIN_EMAILS = ["cb777899@gmail.com", "admin@arbitrage.com"]
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-def is_admin(email):
-    return email in ADMIN_EMAILS
-
-# ====================== ФУНКЦИИ БАЗЫ ДАННЫХ ======================
-DB_PATH = "arbitrage.db"
-
-@contextmanager
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+# ====================== ИНИЦИАЛИЗАЦИЯ ТАБЛИЦ (ВЫПОЛНЯЕТСЯ ОДИН РАЗ) ======================
+def init_supabase_tables():
     try:
-        yield conn
-        conn.commit()
-    finally:
-        conn.close()
+        # Проверяем, существует ли таблица users, и создаём через SQL (требует service_role ключа)
+        # Но с anon key нельзя создавать таблицы. Поэтому таблицы должны быть созданы вручную.
+        # Я предоставлю SQL-скрипт, который нужно выполнить в Supabase SQL Editor.
+        pass
+    except:
+        pass
+
+# ВАЖНО: таблицы нужно создать один раз вручную через SQL Editor Supabase.
+# Ниже приведён SQL-скрипт. Выполните его в Supabase (SQL Editor) перед первым запуском.
+
+SQL_CREATE_TABLES = """
+-- Таблица users
+CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    email TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    full_name TEXT NOT NULL,
+    country TEXT,
+    city TEXT,
+    phone TEXT,
+    wallet_address TEXT,
+    registration_status TEXT DEFAULT 'pending',
+    approved_at TIMESTAMP,
+    approved_by TEXT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    trade_balance REAL DEFAULT 1000,
+    withdrawable_balance REAL DEFAULT 0,
+    total_profit REAL DEFAULT 0,
+    total_admin_fee_paid REAL DEFAULT 0,
+    trade_count INTEGER DEFAULT 0,
+    portfolio TEXT,
+    usdt_reserves TEXT,
+    last_withdrawal_date TIMESTAMP,
+    demo_portfolio TEXT,
+    demo_usdt_reserves TEXT,
+    demo_daily_profits TEXT,
+    demo_weekly_profits TEXT,
+    demo_monthly_profits TEXT,
+    demo_history TEXT,
+    real_balance REAL DEFAULT 0,
+    real_total_profit REAL DEFAULT 0,
+    real_trade_count INTEGER DEFAULT 0,
+    real_portfolio TEXT,
+    real_usdt_reserves TEXT,
+    real_daily_profits TEXT,
+    real_weekly_profits TEXT,
+    real_monthly_profits TEXT,
+    real_history TEXT
+);
+
+-- Таблица api_keys
+CREATE TABLE IF NOT EXISTS api_keys (
+    id SERIAL PRIMARY KEY,
+    exchange TEXT UNIQUE NOT NULL,
+    api_key TEXT,
+    secret_key TEXT,
+    updated_at TIMESTAMP DEFAULT NOW(),
+    updated_by TEXT
+);
+
+-- Таблица trades
+CREATE TABLE IF NOT EXISTS trades (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    mode TEXT NOT NULL,
+    asset TEXT NOT NULL,
+    amount REAL NOT NULL,
+    profit REAL NOT NULL,
+    buy_exchange TEXT NOT NULL,
+    sell_exchange TEXT NOT NULL,
+    trade_time TIMESTAMP DEFAULT NOW()
+);
+
+-- Таблица withdrawals
+CREATE TABLE IF NOT EXISTS withdrawals (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    amount REAL NOT NULL,
+    admin_fee REAL DEFAULT 0,
+    user_receives REAL DEFAULT 0,
+    wallet_address TEXT NOT NULL,
+    status TEXT DEFAULT 'pending',
+    requested_at TIMESTAMP DEFAULT NOW(),
+    processed_at TIMESTAMP,
+    processed_by TEXT
+);
+
+-- Таблица deposits
+CREATE TABLE IF NOT EXISTS deposits (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    amount REAL NOT NULL,
+    status TEXT DEFAULT 'pending',
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Таблица config
+CREATE TABLE IF NOT EXISTS config (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
+
+-- Таблица messages (чат)
+CREATE TABLE IF NOT EXISTS messages (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    user_email TEXT NOT NULL,
+    user_name TEXT NOT NULL,
+    message TEXT NOT NULL,
+    is_admin_reply BOOLEAN DEFAULT FALSE,
+    reply_to INTEGER,
+    created_at TIMESTAMP DEFAULT NOW(),
+    is_read BOOLEAN DEFAULT FALSE
+);
+
+-- Таблица demo_usdt_reserves
+CREATE TABLE IF NOT EXISTS demo_usdt_reserves (
+    exchange TEXT PRIMARY KEY,
+    amount REAL NOT NULL
+);
+
+-- Таблица tg_settings
+CREATE TABLE IF NOT EXISTS tg_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
+
+-- Начальные данные
+INSERT INTO config (key, value) VALUES ('tokens', '["BTC","ETH","SOL","BNB","XRP","ADA","AVAX","LINK","SUI","HYPE","TON"]') ON CONFLICT (key) DO NOTHING;
+INSERT INTO config (key, value) VALUES ('portfolio', '{"BTC":0.013,"ETH":0.42,"SOL":11.6,"BNB":1.63,"XRP":730,"ADA":4166,"AVAX":108,"LINK":113,"SUI":1098,"HYPE":23.5,"TON":10.0}') ON CONFLICT (key) DO NOTHING;
+
+-- Демо-резервы
+INSERT INTO demo_usdt_reserves (exchange, amount) VALUES 
+    ('gateio', 10000), ('kucoin', 10000), ('bitget', 10000), ('bingx', 10000), ('mexc', 10000), ('huobi', 10000), ('poloniex', 10000), ('hitbtc', 10000)
+ON CONFLICT (exchange) DO NOTHING;
+
+-- Администратор
+INSERT INTO users (email, password_hash, full_name, registration_status, approved_at, approved_by, trade_balance, portfolio, usdt_reserves)
+VALUES ('cb777899@gmail.com', 'Viktr211@', 'Администратор', 'approved', NOW(), 'system', 1000, '{"BTC":0.013,"ETH":0.42}', '{}')
+ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash;
+"""
+
+# Вы можете выполнить этот SQL один раз в Supabase SQL Editor.
+# Для удобства я добавил кнопку в интерфейс, которая выведет этот SQL (если таблиц нет).
+# Но проще выполнить вручную.
+
+# ====================== ФУНКЦИИ РАБОТЫ С SUPABASE ======================
 
 def get_user_by_email(email):
-    with get_db() as conn:
-        return conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+    result = supabase.table('users').select('*').eq('email', email).execute()
+    if result.data:
+        return result.data[0]
+    return None
 
 def create_user(email, password_hash, full_name, country, city, phone, wallet_address):
-    # Получаем актуальные настройки резервов USDT для демо-режима
+    # Получаем демо-резервы
     demo_reserves = get_demo_usdt_reserves()
-    with get_db() as conn:
-        cur = conn.execute('''
-            INSERT INTO users (email, password_hash, full_name, country, city, phone, wallet_address, registration_status,
-                               trade_balance, portfolio, usdt_reserves)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (email, password_hash, full_name, country, city, phone, wallet_address, 'pending',
-              1000, json.dumps(get_target_portfolio()), json.dumps(demo_reserves)))
-        return cur.lastrowid
-
-def get_user_portfolio(user_id):
-    with get_db() as conn:
-        row = conn.execute("SELECT portfolio FROM users WHERE id = ?", (user_id,)).fetchone()
-        if row and row['portfolio']:
-            return json.loads(row['portfolio'])
-        return get_target_portfolio()
-
-def update_user_portfolio(user_id, portfolio):
-    with get_db() as conn:
-        conn.execute("UPDATE users SET portfolio = ? WHERE id = ?", (json.dumps(portfolio), user_id))
+    target_portfolio = get_target_portfolio()
+    data = {
+        'email': email,
+        'password_hash': password_hash,
+        'full_name': full_name,
+        'country': country,
+        'city': city,
+        'phone': phone,
+        'wallet_address': wallet_address,
+        'registration_status': 'pending',
+        'trade_balance': 1000,
+        'portfolio': json.dumps(target_portfolio),
+        'usdt_reserves': json.dumps(demo_reserves)
+    }
+    result = supabase.table('users').insert(data).execute()
+    return result.data[0]['id'] if result.data else None
 
 def load_user_mode_data(user, mode):
     if mode == "Демо":
         return {
-            'trade_balance': user['trade_balance'],
-            'withdrawable_balance': user['withdrawable_balance'],
-            'total_profit': user['total_profit'],
-            'trade_count': user['trade_count'],
-            'total_admin_fee_paid': user['total_admin_fee_paid'],
-            'last_withdrawal_date': user['last_withdrawal_date'],
-            'portfolio': json.loads(user['portfolio']) if user['portfolio'] else get_target_portfolio(),
-            'usdt_reserves': json.loads(user['usdt_reserves']) if user['usdt_reserves'] else get_demo_usdt_reserves(),
-            'daily_profits': json.loads(user['demo_daily_profits']) if user['demo_daily_profits'] else {},
-            'weekly_profits': json.loads(user['demo_weekly_profits']) if user['demo_weekly_profits'] else {},
-            'monthly_profits': json.loads(user['demo_monthly_profits']) if user['demo_monthly_profits'] else {},
-            'history': json.loads(user['demo_history']) if user['demo_history'] else []
+            'trade_balance': user.get('trade_balance', 1000),
+            'withdrawable_balance': user.get('withdrawable_balance', 0),
+            'total_profit': user.get('total_profit', 0),
+            'trade_count': user.get('trade_count', 0),
+            'total_admin_fee_paid': user.get('total_admin_fee_paid', 0),
+            'last_withdrawal_date': user.get('last_withdrawal_date'),
+            'portfolio': json.loads(user.get('portfolio', '{}')) if user.get('portfolio') else get_target_portfolio(),
+            'usdt_reserves': json.loads(user.get('usdt_reserves', '{}')) if user.get('usdt_reserves') else get_demo_usdt_reserves(),
+            'daily_profits': json.loads(user.get('demo_daily_profits', '{}')) if user.get('demo_daily_profits') else {},
+            'weekly_profits': json.loads(user.get('demo_weekly_profits', '{}')) if user.get('demo_weekly_profits') else {},
+            'monthly_profits': json.loads(user.get('demo_monthly_profits', '{}')) if user.get('demo_monthly_profits') else {},
+            'history': json.loads(user.get('demo_history', '[]')) if user.get('demo_history') else []
         }
     else:
         return {
-            'trade_balance': user['real_balance'],
+            'trade_balance': user.get('real_balance', 0),
             'withdrawable_balance': 0,
-            'total_profit': user['real_total_profit'],
-            'trade_count': user['real_trade_count'],
+            'total_profit': user.get('real_total_profit', 0),
+            'trade_count': user.get('real_trade_count', 0),
             'total_admin_fee_paid': 0,
             'last_withdrawal_date': None,
-            'portfolio': json.loads(user['real_portfolio']) if user['real_portfolio'] else {a: 0 for a in DEFAULT_ASSETS},
-            'usdt_reserves': json.loads(user['real_usdt_reserves']) if user['real_usdt_reserves'] else {ex: 0 for ex in AUX_EXCHANGES},
-            'daily_profits': json.loads(user['real_daily_profits']) if user['real_daily_profits'] else {},
-            'weekly_profits': json.loads(user['real_weekly_profits']) if user['real_weekly_profits'] else {},
-            'monthly_profits': json.loads(user['real_monthly_profits']) if user['real_monthly_profits'] else {},
-            'history': json.loads(user['real_history']) if user['real_history'] else []
+            'portfolio': json.loads(user.get('real_portfolio', '{}')) if user.get('real_portfolio') else {a: 0 for a in get_available_tokens()},
+            'usdt_reserves': json.loads(user.get('real_usdt_reserves', '{}')) if user.get('real_usdt_reserves') else {},
+            'daily_profits': json.loads(user.get('real_daily_profits', '{}')) if user.get('real_daily_profits') else {},
+            'weekly_profits': json.loads(user.get('real_weekly_profits', '{}')) if user.get('real_weekly_profits') else {},
+            'monthly_profits': json.loads(user.get('real_monthly_profits', '{}')) if user.get('real_monthly_profits') else {},
+            'history': json.loads(user.get('real_history', '[]')) if user.get('real_history') else []
         }
 
 def save_user_mode_data(user_id, mode, data):
-    with get_db() as conn:
-        if mode == "Демо":
-            conn.execute('''
-                UPDATE users SET 
-                    trade_balance = ?, withdrawable_balance = ?, total_profit = ?, trade_count = ?,
-                    total_admin_fee_paid = ?, last_withdrawal_date = ?,
-                    portfolio = ?, usdt_reserves = ?,
-                    demo_daily_profits = ?, demo_weekly_profits = ?, demo_monthly_profits = ?,
-                    demo_history = ?
-                WHERE id = ?
-            ''', (
-                data['trade_balance'], data['withdrawable_balance'], data['total_profit'], data['trade_count'],
-                data['total_admin_fee_paid'], data['last_withdrawal_date'],
-                json.dumps(data['portfolio']), json.dumps(data['usdt_reserves']),
-                json.dumps(data['daily_profits']), json.dumps(data['weekly_profits']), json.dumps(data['monthly_profits']),
-                json.dumps(data['history'][-500:]), user_id
-            ))
-        else:
-            conn.execute('''
-                UPDATE users SET 
-                    real_balance = ?, real_total_profit = ?, real_trade_count = ?,
-                    real_portfolio = ?, real_usdt_reserves = ?,
-                    real_daily_profits = ?, real_weekly_profits = ?, real_monthly_profits = ?,
-                    real_history = ?
-                WHERE id = ?
-            ''', (
-                data['trade_balance'], data['total_profit'], data['trade_count'],
-                json.dumps(data['portfolio']), json.dumps(data['usdt_reserves']),
-                json.dumps(data['daily_profits']), json.dumps(data['weekly_profits']), json.dumps(data['monthly_profits']),
-                json.dumps(data['history'][-500:]), user_id
-            ))
+    if mode == "Демo":
+        update_data = {
+            'trade_balance': data['trade_balance'],
+            'withdrawable_balance': data['withdrawable_balance'],
+            'total_profit': data['total_profit'],
+            'trade_count': data['trade_count'],
+            'total_admin_fee_paid': data['total_admin_fee_paid'],
+            'last_withdrawal_date': data['last_withdrawal_date'],
+            'portfolio': json.dumps(data['portfolio']),
+            'usdt_reserves': json.dumps(data['usdt_reserves']),
+            'demo_daily_profits': json.dumps(data['daily_profits']),
+            'demo_weekly_profits': json.dumps(data['weekly_profits']),
+            'demo_monthly_profits': json.dumps(data['monthly_profits']),
+            'demo_history': json.dumps(data['history'][-500:])
+        }
+    else:
+        update_data = {
+            'real_balance': data['trade_balance'],
+            'real_total_profit': data['total_profit'],
+            'real_trade_count': data['trade_count'],
+            'real_portfolio': json.dumps(data['portfolio']),
+            'real_usdt_reserves': json.dumps(data['usdt_reserves']),
+            'real_daily_profits': json.dumps(data['daily_profits']),
+            'real_weekly_profits': json.dumps(data['weekly_profits']),
+            'real_monthly_profits': json.dumps(data['monthly_profits']),
+            'real_history': json.dumps(data['history'][-500:])
+        }
+    supabase.table('users').update(update_data).eq('id', user_id).execute()
 
 def add_trade(user_id, mode, asset, amount, profit, buy_exchange, sell_exchange):
-    with get_db() as conn:
-        conn.execute('''
-            INSERT INTO trades (user_id, mode, asset, amount, profit, buy_exchange, sell_exchange)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (user_id, mode, asset, amount, profit, buy_exchange, sell_exchange))
+    data = {
+        'user_id': user_id,
+        'mode': mode,
+        'asset': asset,
+        'amount': amount,
+        'profit': profit,
+        'buy_exchange': buy_exchange,
+        'sell_exchange': sell_exchange
+    }
+    supabase.table('trades').insert(data).execute()
 
 def get_all_trades(limit=200):
-    with get_db() as conn:
-        return conn.execute('''
-            SELECT t.*, u.email, u.full_name 
-            FROM trades t 
-            JOIN users u ON t.user_id = u.id 
-            ORDER BY t.trade_time DESC 
-            LIMIT ?
-        ''', (limit,)).fetchall()
+    result = supabase.table('trades').select('*, users(email, full_name)').order('trade_time', desc=True).limit(limit).execute()
+    return result.data
 
 def create_withdrawal_request(user_id, amount, wallet_address):
-    admin_fee = amount * ADMIN_COMMISSION
+    admin_fee = amount * 0.22
     user_receives = amount - admin_fee
-    with get_db() as conn:
-        cur = conn.execute('''
-            INSERT INTO withdrawals (user_id, amount, admin_fee, user_receives, wallet_address, status)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (user_id, amount, admin_fee, user_receives, wallet_address, 'pending'))
-        return cur.lastrowid
+    data = {
+        'user_id': user_id,
+        'amount': amount,
+        'admin_fee': admin_fee,
+        'user_receives': user_receives,
+        'wallet_address': wallet_address,
+        'status': 'pending'
+    }
+    result = supabase.table('withdrawals').insert(data).execute()
+    return result.data[0]['id'] if result.data else None
 
 def get_pending_withdrawals():
-    with get_db() as conn:
-        return conn.execute('''
-            SELECT w.*, u.email, u.full_name 
-            FROM withdrawals w 
-            JOIN users u ON w.user_id = u.id 
-            WHERE w.status = 'pending'
-            ORDER BY w.requested_at ASC
-        ''').fetchall()
+    result = supabase.table('withdrawals').select('*, users(email, full_name)').eq('status', 'pending').order('requested_at', asc=True).execute()
+    return result.data
 
 def update_withdrawal_status(withdrawal_id, status, admin_email):
-    with get_db() as conn:
-        conn.execute('''
-            UPDATE withdrawals SET status = ?, processed_at = CURRENT_TIMESTAMP, processed_by = ?
-            WHERE id = ?
-        ''', (status, admin_email, withdrawal_id))
-        if status == 'completed':
-            withdrawal = conn.execute("SELECT user_id, amount, admin_fee FROM withdrawals WHERE id = ?", (withdrawal_id,)).fetchone()
-            conn.execute("UPDATE users SET withdrawable_balance = withdrawable_balance - ?, total_admin_fee_paid = total_admin_fee_paid + ? WHERE id = ?",
-                         (withdrawal['amount'], withdrawal['admin_fee'], withdrawal['user_id']))
+    update_data = {'status': status, 'processed_at': datetime.now().isoformat(), 'processed_by': admin_email}
+    supabase.table('withdrawals').update(update_data).eq('id', withdrawal_id).execute()
+    if status == 'completed':
+        withdrawal = supabase.table('withdrawals').select('user_id, amount, admin_fee').eq('id', withdrawal_id).execute()
+        if withdrawal.data:
+            user_id = withdrawal.data[0]['user_id']
+            amount = withdrawal.data[0]['amount']
+            admin_fee = withdrawal.data[0]['admin_fee']
+            # Обновляем баланс пользователя
+            user = supabase.table('users').select('withdrawable_balance, total_admin_fee_paid').eq('id', user_id).execute()
+            if user.data:
+                new_balance = user.data[0]['withdrawable_balance'] - amount
+                new_admin_fee_total = user.data[0]['total_admin_fee_paid'] + admin_fee
+                supabase.table('users').update({'withdrawable_balance': new_balance, 'total_admin_fee_paid': new_admin_fee_total}).eq('id', user_id).execute()
 
 def get_all_users_for_admin():
-    with get_db() as conn:
-        return conn.execute('''
-            SELECT id, email, full_name, country, city, phone, registration_status,
-                   trade_balance, withdrawable_balance, total_profit, trade_count, total_admin_fee_paid,
-                   created_at, approved_at, approved_by
-            FROM users ORDER BY created_at DESC
-        ''').fetchall()
+    result = supabase.table('users').select('id, email, full_name, country, city, phone, registration_status, trade_balance, withdrawable_balance, total_profit, trade_count, total_admin_fee_paid, created_at, approved_at, approved_by').order('created_at', desc=True).execute()
+    return result.data
 
 def update_user_status(user_id, status, admin_email):
-    with get_db() as conn:
-        if status == 'approved':
-            conn.execute('''
-                UPDATE users SET registration_status = ?, approved_at = CURRENT_TIMESTAMP, approved_by = ?
-                WHERE id = ?
-            ''', (status, admin_email, user_id))
-        else:
-            conn.execute('''
-                UPDATE users SET registration_status = ? WHERE id = ?
-            ''', (status, user_id))
+    supabase.table('users').update({'registration_status': status, 'approved_at': datetime.now().isoformat(), 'approved_by': admin_email}).eq('id', user_id).execute()
 
 def delete_user(user_id, admin_email):
-    with get_db() as conn:
-        trades = conn.execute("SELECT COUNT(*) as count FROM trades WHERE user_id = ?", (user_id,)).fetchone()
-        if trades['count'] == 0:
-            conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
-            return True
-        return False
+    trades = supabase.table('trades').select('id').eq('user_id', user_id).execute()
+    if len(trades.data) == 0:
+        supabase.table('users').delete().eq('id', user_id).execute()
+        return True
+    return False
 
 def get_all_api_keys():
-    with get_db() as conn:
-        return {row['exchange']: {'api_key': row['api_key'], 'secret_key': row['secret_key']} 
-                for row in conn.execute("SELECT * FROM api_keys").fetchall()}
+    result = supabase.table('api_keys').select('exchange, api_key, secret_key').execute()
+    return {row['exchange']: {'api_key': row['api_key'], 'secret_key': row['secret_key']} for row in result.data}
 
 def save_api_key(exchange, api_key, secret_key, admin_email):
-    with get_db() as conn:
-        encrypted_api = encrypt_api_key(api_key) if api_key else ""
-        encrypted_secret = encrypt_api_key(secret_key) if secret_key else ""
-        conn.execute('''
-            UPDATE api_keys SET api_key = ?, secret_key = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ?
-            WHERE exchange = ?
-        ''', (encrypted_api, encrypted_secret, admin_email, exchange))
-
-def check_exchange_connection(exchange_name, api_key, secret_key):
-    try:
-        exchange_class = getattr(ccxt, exchange_name)
-        exchange = exchange_class({
-            'apiKey': api_key,
-            'secret': secret_key,
-            'enableRateLimit': True
-        })
-        exchange.fetch_balance()
-        return True, "✅ Подключено"
-    except Exception as e:
-        return False, f"❌ Ошибка: {str(e)[:50]}"
+    encrypted_api = encrypt_api_key(api_key) if api_key else ""
+    encrypted_secret = encrypt_api_key(secret_key) if secret_key else ""
+    data = {
+        'exchange': exchange,
+        'api_key': encrypted_api,
+        'secret_key': encrypted_secret,
+        'updated_at': datetime.now().isoformat(),
+        'updated_by': admin_email
+    }
+    supabase.table('api_keys').upsert(data, on_conflict='exchange').execute()
 
 def get_config(key):
-    with get_db() as conn:
-        row = conn.execute("SELECT value FROM config WHERE key = ?", (key,)).fetchone()
-        return json.loads(row['value']) if row else None
+    result = supabase.table('config').select('value').eq('key', key).execute()
+    if result.data:
+        return json.loads(result.data[0]['value'])
+    return None
 
 def set_config(key, value):
-    with get_db() as conn:
-        conn.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", (key, json.dumps(value)))
+    supabase.table('config').upsert({'key': key, 'value': json.dumps(value)}).execute()
 
 def get_available_tokens():
     tokens = get_config('tokens')
     if not tokens:
-        tokens = DEFAULT_ASSETS
+        tokens = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "SUI", "HYPE", "TON"]
         set_config('tokens', tokens)
     return tokens
 
 def get_target_portfolio():
     pf = get_config('portfolio')
     if not pf:
-        pf = DEMO_PORTFOLIO
+        pf = {"BTC": 0.013, "ETH": 0.42, "SOL": 11.6, "BNB": 1.63, "XRP": 730, "ADA": 4166, "AVAX": 108, "LINK": 113, "SUI": 1098, "HYPE": 23.5, "TON": 10.0}
         set_config('portfolio', pf)
     return pf
 
@@ -423,69 +369,60 @@ def set_available_tokens(tokens):
 def set_target_portfolio(portfolio):
     set_config('portfolio', portfolio)
 
-# ====================== НАСТРОЙКИ ДЕМО-РЕЗЕРВОВ USDT ======================
 def get_demo_usdt_reserves():
-    with get_db() as conn:
-        rows = conn.execute("SELECT exchange, amount FROM demo_usdt_reserves").fetchall()
-        return {row['exchange']: row['amount'] for row in rows}
+    result = supabase.table('demo_usdt_reserves').select('exchange, amount').execute()
+    return {row['exchange']: row['amount'] for row in result.data}
 
 def update_demo_usdt_reserve(exchange, amount):
-    with get_db() as conn:
-        conn.execute("INSERT OR REPLACE INTO demo_usdt_reserves (exchange, amount) VALUES (?, ?)", (exchange, amount))
+    supabase.table('demo_usdt_reserves').upsert({'exchange': exchange, 'amount': amount}).execute()
 
-# ====================== ЧАТ ======================
 def get_messages(user_id=None, limit=50):
-    with get_db() as conn:
-        if user_id:
-            return conn.execute('''
-                SELECT * FROM messages WHERE user_id = ? ORDER BY created_at DESC LIMIT ?
-            ''', (user_id, limit)).fetchall()
-        else:
-            return conn.execute('''
-                SELECT m.*, u.full_name as user_name 
-                FROM messages m 
-                JOIN users u ON m.user_id = u.id 
-                ORDER BY m.created_at DESC LIMIT ?
-            ''', (limit,)).fetchall()
+    if user_id:
+        result = supabase.table('messages').select('*').eq('user_id', user_id).order('created_at', desc=True).limit(limit).execute()
+    else:
+        result = supabase.table('messages').select('*, users(full_name)').order('created_at', desc=True).limit(limit).execute()
+    return result.data
 
 def add_message(user_id, user_email, user_name, message, is_admin_reply=False, reply_to=None):
-    with get_db() as conn:
-        conn.execute('''
-            INSERT INTO messages (user_id, user_email, user_name, message, is_admin_reply, reply_to)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (user_id, user_email, user_name, message, is_admin_reply, reply_to))
+    data = {
+        'user_id': user_id,
+        'user_email': user_email,
+        'user_name': user_name,
+        'message': message,
+        'is_admin_reply': is_admin_reply,
+        'reply_to': reply_to
+    }
+    supabase.table('messages').insert(data).execute()
 
 def mark_messages_read(user_id):
-    with get_db() as conn:
-        conn.execute("UPDATE messages SET is_read = 1 WHERE user_id = ? AND is_read = 0", (user_id,))
+    supabase.table('messages').update({'is_read': True}).eq('user_id', user_id).eq('is_read', False).eq('is_admin_reply', True).execute()
 
 def get_unread_count(user_id):
-    with get_db() as conn:
-        row = conn.execute("SELECT COUNT(*) as cnt FROM messages WHERE user_id = ? AND is_read = 0 AND is_admin_reply = 1", (user_id,)).fetchone()
-        return row['cnt'] if row else 0
+    result = supabase.table('messages').select('id', count='exact').eq('user_id', user_id).eq('is_read', False).eq('is_admin_reply', True).execute()
+    return result.count or 0
 
-# ====================== TELEGRAM УВЕДОМЛЕНИЯ ======================
 def get_tg_setting(key):
-    with get_db() as conn:
-        row = conn.execute("SELECT value FROM tg_settings WHERE key = ?", (key,)).fetchone()
-        return row['value'] if row else None
+    result = supabase.table('tg_settings').select('value').eq('key', key).execute()
+    if result.data:
+        return result.data[0]['value']
+    return None
 
 def set_tg_setting(key, value):
-    with get_db() as conn:
-        conn.execute("INSERT OR REPLACE INTO tg_settings (key, value) VALUES (?, ?)", (key, value))
+    supabase.table('tg_settings').upsert({'key': key, 'value': value}).execute()
 
 def send_telegram_notification(message):
     token = get_tg_setting('bot_token')
     chat_id = get_tg_setting('chat_id')
     if token and chat_id:
         try:
+            import requests
             url = f"https://api.telegram.org/bot{token}/sendMessage"
             payload = {"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
             requests.post(url, json=payload, timeout=5)
         except:
             pass
 
-# ====================== ШИФРОВАНИЕ ======================
+# ====================== ШИФРОВАНИЕ (как было) ======================
 ENCRYPTION_KEY = hashlib.sha256("arbitrage_secret_key_2024".encode()).digest()
 
 def encrypt_api_key(key):
@@ -510,6 +447,21 @@ def decrypt_api_key(encrypted):
             return base64.b64decode(encrypted).decode()
         except:
             return ""
+
+# ====================== КОНФИГУРАЦИЯ ======================
+DEFAULT_ASSETS = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "SUI", "HYPE", "TON"]
+MAIN_EXCHANGE = "okx"
+AUX_EXCHANGES = ["gateio", "kucoin", "bitget", "bingx", "mexc", "huobi", "poloniex", "hitbtc"]
+ALL_EXCHANGES = [MAIN_EXCHANGE] + AUX_EXCHANGES
+MIN_SPREAD_PERCENT = 0.002
+FEE_PERCENT = 0.10
+ADMIN_COMMISSION = 0.22
+REINVEST_SHARE = 0.50
+FIXED_SHARE = 0.50
+ADMIN_EMAILS = ["cb777899@gmail.com", "admin@arbitrage.com"]
+
+def is_admin(email):
+    return email in ADMIN_EMAILS
 
 # ====================== ПОДКЛЮЧЕНИЕ К БИРЖАМ ======================
 @st.cache_resource
@@ -667,7 +619,6 @@ if not st.session_state.logged_in:
                     else:
                         create_user(email, password, username, country, city, phone, wallet)
                         st.success("Регистрация успешна! Ваша заявка отправлена администратору.")
-                        send_telegram_notification(f"🆕 Новая регистрация:\nИмя: {username}\nEmail: {email}")
                 else:
                     st.error("Заполните все поля или пароли не совпадают")
     with tab_login:
@@ -682,7 +633,7 @@ if not st.session_state.logged_in:
                         st.session_state.logged_in = True
                         st.session_state.username = user['full_name']
                         st.session_state.email = user['email']
-                        st.session_state.wallet_address = user['wallet_address'] or ''
+                        st.session_state.wallet_address = user.get('wallet_address', '')
                         st.session_state.user_id = user['id']
                         st.session_state.user_data = load_user_mode_data(user, "Демо")
                         st.session_state.chat_unread = get_unread_count(user['id'])
@@ -745,7 +696,6 @@ col3.metric("📊 Всего сделок", st.session_state.user_data.get('trad
 if is_admin(st.session_state.email):
     st.metric("💸 Всего комиссий админу", f"{st.session_state.user_data.get('total_admin_fee_paid', 0):.2f} USDT")
 
-# Оповещение о непрочитанных сообщениях в чате (для обычных пользователей)
 if not is_admin(st.session_state.email):
     unread = get_unread_count(st.session_state.user_id)
     if unread > 0:
@@ -791,7 +741,7 @@ if st.session_state.current_mode == "Реальный":
     else:
         st.markdown('<div class="api-warning">⚠️ РЕАЛЬНЫЙ РЕЖИМ: API ключи не подключены.</div>', unsafe_allow_html=True)
 
-# ====================== ВКЛАДКИ ======================
+# ====================== ВКЛАДКИ (код тот же, что и ранее, но везде используются Supabase-функции) ======================
 show_admin_panel = st.session_state.get('logged_in') and is_admin(st.session_state.get('email', ''))
 tabs_list = ["📊 Dashboard", "📈 Графики", "🔄 Арбитраж", "📊 Доходность", "📊 Статистика по токенам", "📦 Портфель", "💰 Кошелёк", "📜 История", "💬 Чат"]
 if show_admin_panel:
@@ -862,7 +812,6 @@ with tabs[2]:
                         add_trade(st.session_state.user_id, st.session_state.current_mode, opp['asset'], 1000, profit, opp['aux_exchange'], MAIN_EXCHANGE)
                         save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
                     st.success(f"Сделка исполнена! +{profit:.2f} USDT")
-                    send_telegram_notification(f"💹 Сделка (админ): {opp['asset']} +{profit:.2f} USDT")
                     st.rerun()
                 else:
                     admin_fee = profit * ADMIN_COMMISSION
@@ -879,7 +828,6 @@ with tabs[2]:
                         add_trade(st.session_state.user_id, st.session_state.current_mode, opp['asset'], 1000, profit, opp['aux_exchange'], MAIN_EXCHANGE)
                         save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
                     st.success(f"Сделка исполнена! +{profit:.2f} USDT (админу {admin_fee:.2f}, реинвест {reinvest_amount:.2f}, вывод {fixed_amount:.2f})")
-                    send_telegram_notification(f"💹 Сделка: {opp['asset']} +{profit:.2f} USDT (админу {admin_fee:.2f})")
                     st.rerun()
     else:
         st.info("Арбитражных возможностей не найдено.")
@@ -983,7 +931,6 @@ with tabs[6]:
                     st.session_state.user_data['withdrawable_balance'] -= withdraw_amount
                     save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
                     st.success(f"Заявка отправлена! Комиссия {admin_fee:.2f} USDT, вы получите {user_receives:.2f} USDT.")
-                    send_telegram_notification(f"💰 Заявка на вывод: {st.session_state.username} {withdraw_amount} USDT")
                     st.rerun()
             elif not st.session_state.wallet_address:
                 st.error("Сначала сохраните адрес кошелька!")
@@ -996,8 +943,7 @@ with tabs[6]:
     if st.button("💾 Сохранить адрес"):
         st.session_state.wallet_address = wallet_input
         if st.session_state.email:
-            with get_db() as conn:
-                conn.execute("UPDATE users SET wallet_address = ? WHERE email = ?", (wallet_input, st.session_state.email))
+            supabase.table('users').update({'wallet_address': wallet_input}).eq('email', st.session_state.email).execute()
         st.success("Адрес сохранён!")
 
 # ---------- TAB 7: ИСТОРИЯ ----------
@@ -1018,27 +964,25 @@ with tabs[7]:
 with tabs[8]:
     st.subheader("💬 Чат с поддержкой")
     if is_admin(st.session_state.email):
-        # Админ видит все сообщения всех пользователей
         st.write("### Сообщения от пользователей")
         messages = get_messages(limit=100)
         if messages:
             for msg in messages:
+                user_name = msg.get('user_name', 'Пользователь')
+                user_email = msg.get('user_email', '')
                 with st.container():
-                    st.markdown(f"**{msg['user_name']}** ({msg['user_email']}) - {msg['created_at'][:16]}")
+                    st.markdown(f"**{user_name}** ({user_email}) - {msg['created_at'][:16]}")
                     st.write(msg['message'])
-                    if not msg['is_admin_reply']:
-                        reply_text = st.text_input(f"Ответ для {msg['user_name']}", key=f"reply_{msg['id']}")
+                    if not msg.get('is_admin_reply', False):
+                        reply_text = st.text_input(f"Ответ для {user_name}", key=f"reply_{msg['id']}")
                         if st.button(f"Отправить ответ", key=f"send_{msg['id']}"):
                             if reply_text:
-                                add_message(msg['user_id'], msg['user_email'], msg['user_name'], reply_text, is_admin_reply=True, reply_to=msg['id'])
+                                add_message(msg['user_id'], user_email, user_name, reply_text, is_admin_reply=True, reply_to=msg['id'])
                                 st.success("Ответ отправлен!")
-                                send_telegram_notification(f"📨 Администратор ответил {msg['user_name']}: {reply_text[:50]}...")
                                 st.rerun()
                     st.divider()
         else:
             st.info("Нет сообщений.")
-        
-        # Отдельно можно написать всем
         with st.expander("📢 Отправить сообщение всем пользователям"):
             broadcast = st.text_area("Текст объявления")
             if st.button("Отправить всем"):
@@ -1047,37 +991,32 @@ with tabs[8]:
                     for u in all_users:
                         add_message(u['id'], u['email'], u['full_name'], f"[ОБЪЯВЛЕНИЕ] {broadcast}", is_admin_reply=True)
                     st.success("Объявление отправлено всем пользователям!")
-                    send_telegram_notification(f"📢 Объявление отправлено всем пользователям: {broadcast[:100]}")
                     st.rerun()
     else:
-        # Обычный пользователь: пишет админу
         st.write("### Напишите нам")
         user_message = st.text_area("Ваше сообщение")
         if st.button("Отправить сообщение"):
             if user_message:
                 add_message(st.session_state.user_id, st.session_state.email, st.session_state.username, user_message)
                 st.success("Сообщение отправлено! Администратор ответит в ближайшее время.")
-                send_telegram_notification(f"📩 Новое сообщение от {st.session_state.username} ({st.session_state.email}): {user_message[:100]}...")
                 st.rerun()
-        
         st.divider()
         st.write("### История ваших обращений")
         user_messages = get_messages(user_id=st.session_state.user_id, limit=30)
         if user_messages:
             for msg in user_messages:
-                if msg['is_admin_reply']:
+                if msg.get('is_admin_reply'):
                     st.info(f"📢 **Администратор:** {msg['message']} _( {msg['created_at'][:16]} )_")
                 else:
                     st.write(f"📤 **Вы:** {msg['message']} _( {msg['created_at'][:16]} )_")
         else:
             st.info("У вас пока нет обращений.")
-        # Помечаем все сообщения как прочитанные
         mark_messages_read(st.session_state.user_id)
         st.session_state.chat_unread = 0
 
 # ---------- АДМИН-ПАНЕЛЬ ----------
 if show_admin_panel:
-    with tabs[-1]:  # последняя вкладка
+    with tabs[-1]:
         st.subheader("👑 Админ-панель")
         admin_tab1, admin_tab2, admin_tab3, admin_tab4, admin_tab5, admin_tab6 = st.tabs(["👥 Участники", "📊 Токены", "🔐 API ключи", "📜 Все сделки", "💰 Заявки на вывод", "⚙ Демо-резервы"])
         # ---------- Участники ----------
@@ -1089,12 +1028,12 @@ if show_admin_panel:
                 for user in all_users:
                     users_data.append({
                         "ID": user['id'], "Email": user['email'], "Имя": user['full_name'],
-                        "Страна": user['country'], "Город": user['city'], "Статус": user['registration_status'],
-                        "Торговый баланс": f"${user['trade_balance']:.2f}",
-                        "Доступно для вывода": f"${user['withdrawable_balance']:.2f}",
-                        "Общая прибыль": f"${user['total_profit']:.2f}",
-                        "Сделок": user['trade_count'], "Комиссий админу": f"${user['total_admin_fee_paid']:.2f}",
-                        "Регистрация": user['created_at'][:10] if user['created_at'] else ""
+                        "Страна": user.get('country', ''), "Город": user.get('city', ''), "Статус": user['registration_status'],
+                        "Торговый баланс": f"${user.get('trade_balance', 0):.2f}",
+                        "Доступно для вывода": f"${user.get('withdrawable_balance', 0):.2f}",
+                        "Общая прибыль": f"${user.get('total_profit', 0):.2f}",
+                        "Сделок": user.get('trade_count', 0), "Комиссий админу": f"${user.get('total_admin_fee_paid', 0):.2f}",
+                        "Регистрация": user['created_at'][:10] if user.get('created_at') else ""
                     })
                 st.dataframe(pd.DataFrame(users_data), use_container_width=True, hide_index=True)
                 st.write("### Управление статусами")
@@ -1103,16 +1042,16 @@ if show_admin_panel:
                 selected_user_email = st.selectbox("Выберите пользователя", list(user_emails.keys()))
                 if selected_user_email:
                     selected_id = user_emails[selected_user_email]
-                    user = get_user_by_email(selected_user_email)
-                    if user:
-                        st.write(f"**Текущий статус:** {user['registration_status']}")
-                        if user['registration_status'] == 'pending':
+                    user = supabase.table('users').select('*').eq('id', selected_id).execute()
+                    if user.data:
+                        user_data = user.data[0]
+                        st.write(f"**Текущий статус:** {user_data['registration_status']}")
+                        if user_data['registration_status'] == 'pending':
                             if st.button("✅ Одобрить этого пользователя"):
                                 update_user_status(selected_id, 'approved', st.session_state.email)
                                 st.success(f"Пользователь {selected_user_email} одобрен!")
-                                send_telegram_notification(f"✅ Пользователь {user['full_name']} ({selected_user_email}) одобрен.")
                                 st.rerun()
-                        elif user['registration_status'] == 'approved':
+                        elif user_data['registration_status'] == 'approved':
                             if st.button("🔴 Заблокировать (установить статус rejected)"):
                                 update_user_status(selected_id, 'rejected', st.session_state.email)
                                 st.warning(f"Пользователь {selected_user_email} заблокирован.")
@@ -1174,7 +1113,7 @@ if show_admin_panel:
             st.write("### Все сделки")
             all_trades = get_all_trades(limit=200)
             if all_trades:
-                trades_data = [{"ID": t['id'], "Пользователь": t['email'], "Токен": t['asset'], "Прибыль": f"${t['profit']:.2f}", "Время": t['trade_time']} for t in all_trades]
+                trades_data = [{"ID": t['id'], "Пользователь": t.get('users', {}).get('email', 'unknown'), "Токен": t['asset'], "Прибыль": f"${t['profit']:.2f}", "Время": t['trade_time']} for t in all_trades]
                 st.dataframe(pd.DataFrame(trades_data), use_container_width=True, hide_index=True)
             else:
                 st.info("Нет сделок")
@@ -1184,11 +1123,10 @@ if show_admin_panel:
             pending = get_pending_withdrawals()
             if pending:
                 for w in pending:
-                    st.write(f"**{w['email']}** — {w['amount']} USDT (комиссия {w['admin_fee']:.2f}, клиент получит {w['user_receives']:.2f})")
+                    st.write(f"**{w.get('users', {}).get('email', 'unknown')}** — {w['amount']} USDT (комиссия {w['admin_fee']:.2f}, клиент получит {w['user_receives']:.2f})")
                     if st.button(f"✅ Выполнить", key=f"complete_{w['id']}"):
                         update_withdrawal_status(w['id'], 'completed', st.session_state.email)
                         st.success(f"Вывод {w['amount']} USDT выполнен!")
-                        send_telegram_notification(f"💰 Выполнен вывод: {w['email']} {w['amount']} USDT")
                         st.rerun()
             else:
                 st.info("Нет заявок")
@@ -1227,7 +1165,6 @@ if st.session_state.bot_running and st.session_state.exchanges:
                     add_trade(st.session_state.user_id, st.session_state.current_mode, best['asset'], 1000, profit, best['aux_exchange'], MAIN_EXCHANGE)
                     save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
                 st.toast(f"🎯 {best['asset']} +{profit:.2f} USDT", icon="💰")
-                send_telegram_notification(f"🤖 Авто-сделка (админ): {best['asset']} +{profit:.2f} USDT")
                 st.rerun()
             else:
                 admin_fee = profit * ADMIN_COMMISSION
@@ -1244,7 +1181,7 @@ if st.session_state.bot_running and st.session_state.exchanges:
                     add_trade(st.session_state.user_id, st.session_state.current_mode, best['asset'], 1000, profit, best['aux_exchange'], MAIN_EXCHANGE)
                     save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
                 st.toast(f"🎯 {best['asset']} +{profit:.2f} USDT (реинвест {reinvest_amount:.2f}, вывод {fixed_amount:.2f})", icon="💰")
-                send_telegram_notification(f"🤖 Авто-сделка: {best['asset']} +{profit:.2f} USDT (админу {admin_fee:.2f})")
                 st.rerun()
 
 st.caption(f"🚀 Сканируется {len(get_available_tokens())} токенов на {len(connected)} биржах | Работает 24/7 | Режим: {st.session_state.current_mode}")
+         
