@@ -9,7 +9,7 @@ import os
 import threading
 import numpy as np
 from supabase import create_client, Client
-
+import streamlit as st
 st.set_page_config(page_title="Накопительный Арбитраж PRO", layout="wide", page_icon="🚀", initial_sidebar_state="collapsed")
 
 # ====================== ПОДКЛЮЧЕНИЕ К SUPABASE ======================
