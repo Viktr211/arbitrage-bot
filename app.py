@@ -156,9 +156,8 @@ def create_withdrawal_request(user_id, amount, wallet_address):
     return result.data[0]['id'] if result.data else None
 
 def get_pending_withdrawals():
-    result = supabase.table('withdrawals').select('*, users(email, full_name)').eq('status', 'pending').order('requested_at', asc=True).execute()
+    result = supabase.table('withdrawals').select('*, users(email, full_name)').eq('status', 'pending').order('requested_at').execute()
     return result.data
-
 def update_withdrawal_status(withdrawal_id, status, admin_email):
     update_data = {'status': status, 'processed_at': datetime.now().isoformat(), 'processed_by': admin_email}
     supabase.table('withdrawals').update(update_data).eq('id', withdrawal_id).execute()
