@@ -14,8 +14,8 @@ import sqlite3
 from contextlib import contextmanager
 import hashlib
 import base64
+import requests
 
-# ====================== ПРИНУДИТЕЛЬНАЯ ТЁМНАЯ ТЕМА ======================
 st.set_page_config(page_title="Накопительный Арбитраж PRO", layout="wide", page_icon="🚀", initial_sidebar_state="collapsed")
 
 # ====================== АВТОМАТИЧЕСКОЕ СОЗДАНИЕ/ОБНОВЛЕНИЕ БД ======================
@@ -113,7 +113,40 @@ def ensure_db_structure():
             value TEXT
         )
     ''')
-    # Начальные данные
+    # Таблица для чата
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            user_email TEXT NOT NULL,
+            user_name TEXT NOT NULL,
+            message TEXT NOT NULL,
+            is_admin_reply BOOLEAN DEFAULT 0,
+            reply_to INTEGER,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            is_read BOOLEAN DEFAULT 0,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    ''')
+    # Таблица для настроек демо-резервов USDT по биржам
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS demo_usdt_reserves (
+            exchange TEXT PRIMARY KEY,
+            amount REAL NOT NULL
+        )
+    ''')
+    # Таблица для хранения настроек Telegram (токен, chat_id)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS tg_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    ''')
+    # Инициализация демо-резервов по умолчанию, если таблица пуста
+    default_reserves = {"gateio": 10000, "kucoin": 10000, "bitget": 10000, "bingx": 10000, "mexc": 10000, "huobi": 10000, "poloniex": 10000, "hitbtc": 10000}
+    for ex, amt in default_reserves.items():
+        cursor.execute("INSERT OR IGNORE INTO demo_usdt_reserves (exchange, amount) VALUES (?, ?)", (ex, amt))
+    # Начальные данные config
     cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES ('tokens', ?)", (json.dumps(["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "SUI", "HYPE", "TON"]),))
     cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES ('portfolio', ?)", (json.dumps({"BTC": 0.013, "ETH": 0.42, "SOL": 11.6, "BNB": 1.63, "XRP": 730, "ADA": 4166, "AVAX": 108, "LINK": 113, "SUI": 1098, "HYPE": 23.5, "TON": 10.0}),))
     # Администратор
@@ -127,6 +160,7 @@ def ensure_db_structure():
         ''', (admin_email, admin_password, "Администратор", "approved", datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "system", 1000, json.dumps({"BTC": 0.013, "ETH": 0.42}), json.dumps({}), "", "", "", ""))
     else:
         cursor.execute("UPDATE users SET password_hash = ? WHERE email = ?", (admin_password, admin_email))
+    # Заполняем api_keys для бирж (если нет)
     for ex in ["okx", "gateio", "kucoin", "bitget", "bingx", "mexc", "huobi", "poloniex", "hitbtc"]:
         cursor.execute("INSERT OR IGNORE INTO api_keys (exchange, api_key, secret_key) VALUES (?, ?, ?)", (ex, "", ""))
     conn.commit()
@@ -142,7 +176,7 @@ ALL_EXCHANGES = [MAIN_EXCHANGE] + AUX_EXCHANGES
 MIN_SPREAD_PERCENT = 0.002
 FEE_PERCENT = 0.10
 DEMO_PORTFOLIO = {"BTC": 0.013, "ETH": 0.42, "SOL": 11.6, "BNB": 1.63, "XRP": 730, "ADA": 4166, "AVAX": 108, "LINK": 113, "SUI": 1098, "HYPE": 23.5, "TON": 10.0}
-DEMO_USDT_RESERVES = 10000
+DEMO_USDT_RESERVES = 10000  # fallback, но реально берется из таблицы demo_usdt_reserves
 ADMIN_COMMISSION = 0.22
 REINVEST_SHARE = 0.50
 FIXED_SHARE = 0.50
@@ -169,14 +203,15 @@ def get_user_by_email(email):
         return conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
 
 def create_user(email, password_hash, full_name, country, city, phone, wallet_address):
-    target_portfolio = get_target_portfolio()
+    # Получаем актуальные настройки резервов USDT для демо-режима
+    demo_reserves = get_demo_usdt_reserves()
     with get_db() as conn:
         cur = conn.execute('''
             INSERT INTO users (email, password_hash, full_name, country, city, phone, wallet_address, registration_status,
                                trade_balance, portfolio, usdt_reserves)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (email, password_hash, full_name, country, city, phone, wallet_address, 'pending',
-              1000, json.dumps(target_portfolio), json.dumps({ex: DEMO_USDT_RESERVES for ex in AUX_EXCHANGES})))
+              1000, json.dumps(get_target_portfolio()), json.dumps(demo_reserves)))
         return cur.lastrowid
 
 def get_user_portfolio(user_id):
@@ -200,7 +235,7 @@ def load_user_mode_data(user, mode):
             'total_admin_fee_paid': user['total_admin_fee_paid'],
             'last_withdrawal_date': user['last_withdrawal_date'],
             'portfolio': json.loads(user['portfolio']) if user['portfolio'] else get_target_portfolio(),
-            'usdt_reserves': json.loads(user['usdt_reserves']) if user['usdt_reserves'] else {ex: DEMO_USDT_RESERVES for ex in AUX_EXCHANGES},
+            'usdt_reserves': json.loads(user['usdt_reserves']) if user['usdt_reserves'] else get_demo_usdt_reserves(),
             'daily_profits': json.loads(user['demo_daily_profits']) if user['demo_daily_profits'] else {},
             'weekly_profits': json.loads(user['demo_weekly_profits']) if user['demo_weekly_profits'] else {},
             'monthly_profits': json.loads(user['demo_monthly_profits']) if user['demo_monthly_profits'] else {},
@@ -388,6 +423,68 @@ def set_available_tokens(tokens):
 def set_target_portfolio(portfolio):
     set_config('portfolio', portfolio)
 
+# ====================== НАСТРОЙКИ ДЕМО-РЕЗЕРВОВ USDT ======================
+def get_demo_usdt_reserves():
+    with get_db() as conn:
+        rows = conn.execute("SELECT exchange, amount FROM demo_usdt_reserves").fetchall()
+        return {row['exchange']: row['amount'] for row in rows}
+
+def update_demo_usdt_reserve(exchange, amount):
+    with get_db() as conn:
+        conn.execute("INSERT OR REPLACE INTO demo_usdt_reserves (exchange, amount) VALUES (?, ?)", (exchange, amount))
+
+# ====================== ЧАТ ======================
+def get_messages(user_id=None, limit=50):
+    with get_db() as conn:
+        if user_id:
+            return conn.execute('''
+                SELECT * FROM messages WHERE user_id = ? ORDER BY created_at DESC LIMIT ?
+            ''', (user_id, limit)).fetchall()
+        else:
+            return conn.execute('''
+                SELECT m.*, u.full_name as user_name 
+                FROM messages m 
+                JOIN users u ON m.user_id = u.id 
+                ORDER BY m.created_at DESC LIMIT ?
+            ''', (limit,)).fetchall()
+
+def add_message(user_id, user_email, user_name, message, is_admin_reply=False, reply_to=None):
+    with get_db() as conn:
+        conn.execute('''
+            INSERT INTO messages (user_id, user_email, user_name, message, is_admin_reply, reply_to)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (user_id, user_email, user_name, message, is_admin_reply, reply_to))
+
+def mark_messages_read(user_id):
+    with get_db() as conn:
+        conn.execute("UPDATE messages SET is_read = 1 WHERE user_id = ? AND is_read = 0", (user_id,))
+
+def get_unread_count(user_id):
+    with get_db() as conn:
+        row = conn.execute("SELECT COUNT(*) as cnt FROM messages WHERE user_id = ? AND is_read = 0 AND is_admin_reply = 1", (user_id,)).fetchone()
+        return row['cnt'] if row else 0
+
+# ====================== TELEGRAM УВЕДОМЛЕНИЯ ======================
+def get_tg_setting(key):
+    with get_db() as conn:
+        row = conn.execute("SELECT value FROM tg_settings WHERE key = ?", (key,)).fetchone()
+        return row['value'] if row else None
+
+def set_tg_setting(key, value):
+    with get_db() as conn:
+        conn.execute("INSERT OR REPLACE INTO tg_settings (key, value) VALUES (?, ?)", (key, value))
+
+def send_telegram_notification(message):
+    token = get_tg_setting('bot_token')
+    chat_id = get_tg_setting('chat_id')
+    if token and chat_id:
+        try:
+            url = f"https://api.telegram.org/bot{token}/sendMessage"
+            payload = {"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
+            requests.post(url, json=payload, timeout=5)
+        except:
+            pass
+
 # ====================== ШИФРОВАНИЕ ======================
 ENCRYPTION_KEY = hashlib.sha256("arbitrage_secret_key_2024".encode()).digest()
 
@@ -539,6 +636,8 @@ if 'api_keys' not in st.session_state:
     st.session_state.api_keys = {}
 if 'show_api_warning' not in st.session_state:
     st.session_state.show_api_warning = False
+if 'chat_unread' not in st.session_state:
+    st.session_state.chat_unread = 0
 
 if st.session_state.exchanges is None:
     with st.spinner("Подключение к биржам..."):
@@ -568,6 +667,7 @@ if not st.session_state.logged_in:
                     else:
                         create_user(email, password, username, country, city, phone, wallet)
                         st.success("Регистрация успешна! Ваша заявка отправлена администратору.")
+                        send_telegram_notification(f"🆕 Новая регистрация:\nИмя: {username}\nEmail: {email}")
                 else:
                     st.error("Заполните все поля или пароли не совпадают")
     with tab_login:
@@ -585,6 +685,7 @@ if not st.session_state.logged_in:
                         st.session_state.wallet_address = user['wallet_address'] or ''
                         st.session_state.user_id = user['id']
                         st.session_state.user_data = load_user_mode_data(user, "Демо")
+                        st.session_state.chat_unread = get_unread_count(user['id'])
                         st.success(f"Добро пожаловать, {st.session_state.username}!")
                         st.rerun()
                     elif user['registration_status'] == 'pending':
@@ -644,6 +745,12 @@ col3.metric("📊 Всего сделок", st.session_state.user_data.get('trad
 if is_admin(st.session_state.email):
     st.metric("💸 Всего комиссий админу", f"{st.session_state.user_data.get('total_admin_fee_paid', 0):.2f} USDT")
 
+# Оповещение о непрочитанных сообщениях в чате (для обычных пользователей)
+if not is_admin(st.session_state.email):
+    unread = get_unread_count(st.session_state.user_id)
+    if unread > 0:
+        st.info(f"💬 У вас {unread} непрочитанных сообщений в чате поддержки!")
+
 c1, c2, c3, c4 = st.columns(4)
 with c1:
     if st.button("▶ СТАРТ", use_container_width=True):
@@ -686,12 +793,12 @@ if st.session_state.current_mode == "Реальный":
 
 # ====================== ВКЛАДКИ ======================
 show_admin_panel = st.session_state.get('logged_in') and is_admin(st.session_state.get('email', ''))
-tabs_list = ["📊 Dashboard", "📈 Графики", "🔄 Арбитраж", "📊 Доходность", "📊 Статистика по токенам", "📦 Портфель", "💰 Кошелёк", "📜 История"]
+tabs_list = ["📊 Dashboard", "📈 Графики", "🔄 Арбитраж", "📊 Доходность", "📊 Статистика по токенам", "📦 Портфель", "💰 Кошелёк", "📜 История", "💬 Чат"]
 if show_admin_panel:
     tabs_list.append("👑 Админ-панель")
 tabs = st.tabs(tabs_list)
 
-# ---------- TAB 1: DASHBOARD ----------
+# ---------- TAB 0: DASHBOARD ----------
 with tabs[0]:
     st.subheader("📊 Статус сканирования токенов")
     st.write("### 🪙 Текущие цены на OKX")
@@ -708,7 +815,7 @@ with tabs[0]:
     if st.session_state.bot_running:
         st.info(f"🟢 Бот сканирует **{len(tokens)} токенов** на **{len(connected)} биржах** одновременно. Работает 24/7.")
 
-# ---------- TAB 2: ГРАФИКИ ----------
+# ---------- TAB 1: ГРАФИКИ ----------
 with tabs[1]:
     st.subheader("📈 Японские свечи")
     col_a, col_b = st.columns(2)
@@ -732,7 +839,7 @@ with tabs[1]:
     else:
         st.warning("Биржа не подключена")
 
-# ---------- TAB 3: АРБИТРАЖ ----------
+# ---------- TAB 2: АРБИТРАЖ ----------
 with tabs[2]:
     st.subheader("🔍 Найденные арбитражные возможности")
     if st.button("🔄 Обновить", use_container_width=True):
@@ -755,6 +862,7 @@ with tabs[2]:
                         add_trade(st.session_state.user_id, st.session_state.current_mode, opp['asset'], 1000, profit, opp['aux_exchange'], MAIN_EXCHANGE)
                         save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
                     st.success(f"Сделка исполнена! +{profit:.2f} USDT")
+                    send_telegram_notification(f"💹 Сделка (админ): {opp['asset']} +{profit:.2f} USDT")
                     st.rerun()
                 else:
                     admin_fee = profit * ADMIN_COMMISSION
@@ -771,11 +879,12 @@ with tabs[2]:
                         add_trade(st.session_state.user_id, st.session_state.current_mode, opp['asset'], 1000, profit, opp['aux_exchange'], MAIN_EXCHANGE)
                         save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
                     st.success(f"Сделка исполнена! +{profit:.2f} USDT (админу {admin_fee:.2f}, реинвест {reinvest_amount:.2f}, вывод {fixed_amount:.2f})")
+                    send_telegram_notification(f"💹 Сделка: {opp['asset']} +{profit:.2f} USDT (админу {admin_fee:.2f})")
                     st.rerun()
     else:
         st.info("Арбитражных возможностей не найдено.")
 
-# ---------- TAB 4: ДОХОДНОСТЬ ----------
+# ---------- TAB 3: ДОХОДНОСТЬ ----------
 with tabs[3]:
     st.subheader("Калькулятор ожидаемой доходности")
     capital = st.number_input("Капитал для арбитража (USDT)", min_value=100.0, value=10000.0, step=1000.0)
@@ -790,7 +899,7 @@ with tabs[3]:
         </div>
         """, unsafe_allow_html=True)
 
-# ---------- TAB 5: СТАТИСТИКА ПО ТОКЕНАМ ----------
+# ---------- TAB 4: СТАТИСТИКА ПО ТОКЕНАМ ----------
 with tabs[4]:
     st.subheader("📊 Статистика арбитражных сделок по токенам")
     token_stats = {}
@@ -835,7 +944,7 @@ with tabs[4]:
     else:
         st.info("Нет данных о сделках.")
 
-# ---------- TAB 6: ПОРТФЕЛЬ ----------
+# ---------- TAB 5: ПОРТФЕЛЬ ----------
 with tabs[5]:
     st.subheader("📦 Портфель токенов (OKX)")
     total = 0
@@ -848,7 +957,7 @@ with tabs[5]:
     st.divider()
     st.metric("💰 Общая стоимость портфеля", f"${total:,.2f}")
 
-# ---------- TAB 7: КОШЕЛЁК ----------
+# ---------- TAB 6: КОШЕЛЁК ----------
 with tabs[6]:
     st.subheader("💰 Кошелёк и вывод средств")
     st.write(f"**Доступно для вывода:** {st.session_state.user_data.get('withdrawable_balance', 0):.2f} USDT")
@@ -874,6 +983,7 @@ with tabs[6]:
                     st.session_state.user_data['withdrawable_balance'] -= withdraw_amount
                     save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
                     st.success(f"Заявка отправлена! Комиссия {admin_fee:.2f} USDT, вы получите {user_receives:.2f} USDT.")
+                    send_telegram_notification(f"💰 Заявка на вывод: {st.session_state.username} {withdraw_amount} USDT")
                     st.rerun()
             elif not st.session_state.wallet_address:
                 st.error("Сначала сохраните адрес кошелька!")
@@ -890,7 +1000,7 @@ with tabs[6]:
                 conn.execute("UPDATE users SET wallet_address = ? WHERE email = ?", (wallet_input, st.session_state.email))
         st.success("Адрес сохранён!")
 
-# ---------- TAB 8: ИСТОРИЯ ----------
+# ---------- TAB 7: ИСТОРИЯ ----------
 with tabs[7]:
     st.subheader("📜 История сделок")
     if st.session_state.user_data.get('history'):
@@ -904,11 +1014,72 @@ with tabs[7]:
     else:
         st.info("Нет сделок")
 
+# ---------- TAB 8: ЧАТ ----------
+with tabs[8]:
+    st.subheader("💬 Чат с поддержкой")
+    if is_admin(st.session_state.email):
+        # Админ видит все сообщения всех пользователей
+        st.write("### Сообщения от пользователей")
+        messages = get_messages(limit=100)
+        if messages:
+            for msg in messages:
+                with st.container():
+                    st.markdown(f"**{msg['user_name']}** ({msg['user_email']}) - {msg['created_at'][:16]}")
+                    st.write(msg['message'])
+                    if not msg['is_admin_reply']:
+                        reply_text = st.text_input(f"Ответ для {msg['user_name']}", key=f"reply_{msg['id']}")
+                        if st.button(f"Отправить ответ", key=f"send_{msg['id']}"):
+                            if reply_text:
+                                add_message(msg['user_id'], msg['user_email'], msg['user_name'], reply_text, is_admin_reply=True, reply_to=msg['id'])
+                                st.success("Ответ отправлен!")
+                                send_telegram_notification(f"📨 Администратор ответил {msg['user_name']}: {reply_text[:50]}...")
+                                st.rerun()
+                    st.divider()
+        else:
+            st.info("Нет сообщений.")
+        
+        # Отдельно можно написать всем
+        with st.expander("📢 Отправить сообщение всем пользователям"):
+            broadcast = st.text_area("Текст объявления")
+            if st.button("Отправить всем"):
+                if broadcast:
+                    all_users = get_all_users_for_admin()
+                    for u in all_users:
+                        add_message(u['id'], u['email'], u['full_name'], f"[ОБЪЯВЛЕНИЕ] {broadcast}", is_admin_reply=True)
+                    st.success("Объявление отправлено всем пользователям!")
+                    send_telegram_notification(f"📢 Объявление отправлено всем пользователям: {broadcast[:100]}")
+                    st.rerun()
+    else:
+        # Обычный пользователь: пишет админу
+        st.write("### Напишите нам")
+        user_message = st.text_area("Ваше сообщение")
+        if st.button("Отправить сообщение"):
+            if user_message:
+                add_message(st.session_state.user_id, st.session_state.email, st.session_state.username, user_message)
+                st.success("Сообщение отправлено! Администратор ответит в ближайшее время.")
+                send_telegram_notification(f"📩 Новое сообщение от {st.session_state.username} ({st.session_state.email}): {user_message[:100]}...")
+                st.rerun()
+        
+        st.divider()
+        st.write("### История ваших обращений")
+        user_messages = get_messages(user_id=st.session_state.user_id, limit=30)
+        if user_messages:
+            for msg in user_messages:
+                if msg['is_admin_reply']:
+                    st.info(f"📢 **Администратор:** {msg['message']} _( {msg['created_at'][:16]} )_")
+                else:
+                    st.write(f"📤 **Вы:** {msg['message']} _( {msg['created_at'][:16]} )_")
+        else:
+            st.info("У вас пока нет обращений.")
+        # Помечаем все сообщения как прочитанные
+        mark_messages_read(st.session_state.user_id)
+        st.session_state.chat_unread = 0
+
 # ---------- АДМИН-ПАНЕЛЬ ----------
 if show_admin_panel:
-    with tabs[8]:
+    with tabs[-1]:  # последняя вкладка
         st.subheader("👑 Админ-панель")
-        admin_tab1, admin_tab2, admin_tab3, admin_tab4, admin_tab5 = st.tabs(["👥 Участники", "📊 Токены", "🔐 API ключи", "📜 Все сделки", "💰 Заявки на вывод"])
+        admin_tab1, admin_tab2, admin_tab3, admin_tab4, admin_tab5, admin_tab6 = st.tabs(["👥 Участники", "📊 Токены", "🔐 API ключи", "📜 Все сделки", "💰 Заявки на вывод", "⚙ Демо-резервы"])
         # ---------- Участники ----------
         with admin_tab1:
             st.write("### Все участники")
@@ -926,7 +1097,6 @@ if show_admin_panel:
                         "Регистрация": user['created_at'][:10] if user['created_at'] else ""
                     })
                 st.dataframe(pd.DataFrame(users_data), use_container_width=True, hide_index=True)
-                # Управление пользователем
                 st.write("### Управление статусами")
                 all_users_list = list(all_users)
                 user_emails = {u['email']: u['id'] for u in all_users_list}
@@ -940,6 +1110,7 @@ if show_admin_panel:
                             if st.button("✅ Одобрить этого пользователя"):
                                 update_user_status(selected_id, 'approved', st.session_state.email)
                                 st.success(f"Пользователь {selected_user_email} одобрен!")
+                                send_telegram_notification(f"✅ Пользователь {user['full_name']} ({selected_user_email}) одобрен.")
                                 st.rerun()
                         elif user['registration_status'] == 'approved':
                             if st.button("🔴 Заблокировать (установить статус rejected)"):
@@ -1017,9 +1188,27 @@ if show_admin_panel:
                     if st.button(f"✅ Выполнить", key=f"complete_{w['id']}"):
                         update_withdrawal_status(w['id'], 'completed', st.session_state.email)
                         st.success(f"Вывод {w['amount']} USDT выполнен!")
+                        send_telegram_notification(f"💰 Выполнен вывод: {w['email']} {w['amount']} USDT")
                         st.rerun()
             else:
                 st.info("Нет заявок")
+        # ---------- Демо-резервы USDT ----------
+        with admin_tab6:
+            st.write("### Настройка начальных резервов USDT для демо-режима")
+            st.info("Эти значения будут использоваться при создании новых пользователей в демо-режиме.")
+            current_reserves = get_demo_usdt_reserves()
+            new_reserves = {}
+            cols = st.columns(3)
+            for i, ex in enumerate(AUX_EXCHANGES):
+                with cols[i % 3]:
+                    current_val = current_reserves.get(ex, 10000)
+                    new_val = st.number_input(f"{ex.upper()} (USDT)", value=float(current_val), step=500.0, key=f"reserve_{ex}")
+                    new_reserves[ex] = new_val
+            if st.button("💾 Сохранить резервы"):
+                for ex, amt in new_reserves.items():
+                    update_demo_usdt_reserve(ex, amt)
+                st.success("Настройки резервов сохранены! Новые пользователи будут получать указанные суммы USDT.")
+                st.rerun()
 
 # ====================== АВТОМАТИЧЕСКИЙ АРБИТРАЖ ======================
 if st.session_state.bot_running and st.session_state.exchanges:
@@ -1038,6 +1227,7 @@ if st.session_state.bot_running and st.session_state.exchanges:
                     add_trade(st.session_state.user_id, st.session_state.current_mode, best['asset'], 1000, profit, best['aux_exchange'], MAIN_EXCHANGE)
                     save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
                 st.toast(f"🎯 {best['asset']} +{profit:.2f} USDT", icon="💰")
+                send_telegram_notification(f"🤖 Авто-сделка (админ): {best['asset']} +{profit:.2f} USDT")
                 st.rerun()
             else:
                 admin_fee = profit * ADMIN_COMMISSION
@@ -1054,6 +1244,7 @@ if st.session_state.bot_running and st.session_state.exchanges:
                     add_trade(st.session_state.user_id, st.session_state.current_mode, best['asset'], 1000, profit, best['aux_exchange'], MAIN_EXCHANGE)
                     save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
                 st.toast(f"🎯 {best['asset']} +{profit:.2f} USDT (реинвест {reinvest_amount:.2f}, вывод {fixed_amount:.2f})", icon="💰")
+                send_telegram_notification(f"🤖 Авто-сделка: {best['asset']} +{profit:.2f} USDT (админу {admin_fee:.2f})")
                 st.rerun()
 
 st.caption(f"🚀 Сканируется {len(get_available_tokens())} токенов на {len(connected)} биржах | Работает 24/7 | Режим: {st.session_state.current_mode}")
