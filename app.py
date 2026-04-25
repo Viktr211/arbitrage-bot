@@ -925,7 +925,7 @@ if st.session_state.bot_running and st.session_state.exchanges:
     if opportunities:
         best = opportunities[0]
         profit = best['profit_usdt']
-        if profit >= 0.10:
+        if profit >= 0.05:
             if is_admin(st.session_state.email):
                 st.session_state.user_data['trade_balance'] += profit
                 st.session_state.user_data['total_profit'] += profit
