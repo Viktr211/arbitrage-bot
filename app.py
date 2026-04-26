@@ -63,6 +63,8 @@ st.markdown("""
         flex: 0 0 auto;
         white-space: nowrap;
     }
+    .api-warning { background: #ffaa0022; border-left: 4px solid #FFAA00; padding: 10px; border-radius: 8px; margin: 10px 0; }
+    .api-success { background: #00ff8822; border-left: 4px solid #00FF88; padding: 10px; border-radius: 8px; margin: 10px 0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -71,8 +73,13 @@ DEFAULT_ASSETS = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "SUI
 MAIN_EXCHANGE = "okx"
 AUX_EXCHANGES = ["gateio", "kucoin", "bitget", "bingx", "mexc", "huobi", "poloniex", "hitbtc"]
 ALL_EXCHANGES = [MAIN_EXCHANGE] + AUX_EXCHANGES
-MIN_SPREAD_PERCENT = 0.001   # 0.1% (можно изменить при необходимости)
-FEE_PERCENT = 0.10
+
+# --- НОВЫЕ ПАРАМЕТРЫ ФИЛЬТРОВ ---
+MIN_SPREAD_PERCENT = 0.001          # 0.1% минимальный чистый спред после всех вычетов
+FEE_PERCENT = 0.1                   # 0.1% комиссия тейкера (в процентах)
+SLIPPAGE_PERCENT = 0.2              # 0.2% запас на проскальзывание
+MIN_24H_VOLUME_USDT = 500000        # минимальный объём торгов за 24ч (ликвидность)
+MAX_WITHDRAWAL_FEE_PERCENT = 10     # если комиссия вывода >10% от прибыли – сделку не совершаем
 ADMIN_COMMISSION = 0.22
 REINVEST_SHARE = 0.50
 FIXED_SHARE = 0.50
@@ -361,6 +368,37 @@ def get_price(exchange, symbol):
     except:
         return None
 
+def get_24h_volume(exchange, symbol):
+    """Возвращает объём торгов за 24ч в USDT"""
+    try:
+        ticker = exchange.fetch_ticker(f"{symbol}/USDT")
+        # quoteVolume обычно в USDT
+        volume = ticker.get('quoteVolume')
+        if volume is None:
+            volume = ticker['last'] * ticker.get('baseVolume', 0)
+        return volume
+    except:
+        return 0
+
+def get_withdrawal_fee(exchange, asset):
+    """
+    Возвращает комиссию за вывод токена asset с биржи exchange (в USDT).
+    Если биржа не поддерживает fetch_withdraw_fee, возвращает 0.
+    """
+    try:
+        # У некоторых бирж (например, binance) есть метод fetch_withdraw_fee
+        if hasattr(exchange, 'fetch_withdraw_fee'):
+            fee_info = exchange.fetch_withdraw_fee(asset)
+            # fee_info может быть словарём {'fee': 0.5, 'currency': 'USDT'}
+            fee = fee_info.get('fee', 0)
+            if isinstance(fee, (int, float)):
+                return fee
+        # Если не получилось, пробуем через fetch_withdrawals или задаём стандартные комиссии
+        # Заглушка для демо – возвращаем 0 (на многих биржах комиссия USDT небольшая)
+        return 0.0
+    except:
+        return 0.0
+
 def get_historical_ohlcv(exchange, symbol, timeframe='1h', limit=100):
     try:
         ohlcv = exchange.fetch_ohlcv(f"{symbol}/USDT", timeframe, limit)
@@ -371,36 +409,67 @@ def get_historical_ohlcv(exchange, symbol, timeframe='1h', limit=100):
         return pd.DataFrame()
 
 def find_all_arbitrage_opportunities():
+    """
+    Поиск арбитражных возможностей с учётом:
+    - ликвидности (24h объём > MIN_24H_VOLUME_USDT)
+    - комиссий тейкера (FEE_PERCENT)
+    - проскальзывания (SLIPPAGE_PERCENT)
+    - комиссии вывода токена (если > MAX_WITHDRAWAL_FEE_PERCENT % от прибыли – отсекаем)
+    """
     opportunities = []
     if not st.session_state.exchanges or MAIN_EXCHANGE not in st.session_state.exchanges:
         return opportunities
     tokens = get_available_tokens()
     main_prices = {}
+    main_volumes = {}
     for asset in tokens:
         price = get_price(st.session_state.exchanges[MAIN_EXCHANGE], asset)
         if price:
             main_prices[asset] = price
+            # Проверяем ликвидность на основной бирже (OKX)
+            main_volumes[asset] = get_24h_volume(st.session_state.exchanges[MAIN_EXCHANGE], asset)
+
     for asset in tokens:
         if asset not in main_prices:
             continue
+        # Фильтр 1: ликвидность на OKX
+        if main_volumes.get(asset, 0) < MIN_24H_VOLUME_USDT:
+            continue
+
         main_price = main_prices[asset]
         for aux_ex in AUX_EXCHANGES:
-            if aux_ex in st.session_state.exchanges and st.session_state.exchanges[aux_ex]:
-                aux_price = get_price(st.session_state.exchanges[aux_ex], asset)
-                if aux_price and aux_price < main_price:
-                    spread_pct = (main_price - aux_price) / aux_price * 100
-                    net_spread = spread_pct - FEE_PERCENT
-                    profit_usdt = round((main_price - aux_price) - (main_price * 0.0008) - (aux_price * 0.0008), 2)
-                    if net_spread > MIN_SPREAD_PERCENT and profit_usdt >= 0.10:
-                        opportunities.append({
-                            'asset': asset,
-                            'aux_exchange': aux_ex,
-                            'main_price': main_price,
-                            'aux_price': aux_price,
-                            'spread_pct': round(spread_pct, 2),
-                            'profit_usdt': profit_usdt
-                        })
-    return sorted(opportunities, key=lambda x: x['profit_usdt'], reverse=True)
+            if aux_ex not in st.session_state.exchanges or not st.session_state.exchanges[aux_ex]:
+                continue
+            aux_price = get_price(st.session_state.exchanges[aux_ex], asset)
+            if aux_price and aux_price < main_price:
+                # Спред в процентах
+                spread_pct = (main_price - aux_price) / aux_price * 100
+                # Учитываем комиссии тейкера и проскальзывание
+                net_spread = spread_pct - FEE_PERCENT - SLIPPAGE_PERCENT
+                if net_spread <= MIN_SPREAD_PERCENT:
+                    continue
+
+                # Примерная прибыль в USDT (упрощённо: разница цен * 1 токен)
+                profit_usdt = main_price - aux_price - (main_price * (FEE_PERCENT/100) + aux_price * (FEE_PERCENT/100))
+                if profit_usdt <= 0:
+                    continue
+
+                # Фильтр 3: комиссия вывода токена (если токен нужно переводить с aux_ex на OKX)
+                withdraw_fee = get_withdrawal_fee(st.session_state.exchanges[aux_ex], asset)
+                if withdraw_fee > profit_usdt * (MAX_WITHDRAWAL_FEE_PERCENT / 100):
+                    continue   # комиссия за вывод слишком велика
+
+                opportunities.append({
+                    'asset': asset,
+                    'aux_exchange': aux_ex,
+                    'main_price': main_price,
+                    'aux_price': aux_price,
+                    'spread_pct': round(spread_pct, 2),
+                    'profit_usdt': round(profit_usdt, 2),
+                    'withdrawal_fee': withdraw_fee,
+                    'net_profit_after_withdrawal': round(profit_usdt - withdraw_fee, 2)
+                })
+    return sorted(opportunities, key=lambda x: x['net_profit_after_withdrawal'], reverse=True)
 
 # ====================== ФОНОВЫЙ ПОТОК ======================
 background_running = True
@@ -668,9 +737,9 @@ with tabs[2]:
         st.success(f"Найдено {len(opportunities)} возможностей!")
         for idx, opp in enumerate(opportunities[:10]):
             unique_key = f"{opp['asset']}_{opp['aux_exchange']}_{idx}"
-            st.info(f"🎯 {opp['asset']}: OKX ${opp['main_price']:,.0f} → {opp['aux_exchange'].upper()} ${opp['aux_price']:,.0f} | +{opp['profit_usdt']:.2f} USDT")
+            st.info(f"🎯 {opp['asset']}: OKX ${opp['main_price']:,.0f} → {opp['aux_exchange'].upper()} ${opp['aux_price']:,.0f} | +{opp['profit_usdt']:.2f} USDT (чистая после вывода: {opp['net_profit_after_withdrawal']:.2f})")
             if st.button(f"Исполнить {opp['asset']} на {opp['aux_exchange'].upper()}", key=unique_key):
-                profit = opp['profit_usdt']
+                profit = opp['net_profit_after_withdrawal']   # используем прибыль после вычета всех комиссий
                 if is_admin(st.session_state.email):
                     st.session_state.user_data['trade_balance'] += profit
                     st.session_state.user_data['total_profit'] += profit
@@ -700,7 +769,7 @@ with tabs[2]:
                     send_telegram(f"💹 Сделка: {opp['asset']} +{profit:.2f} USDT")
                     st.rerun()
     else:
-        st.info("Арбитражных возможностей не найдено.")
+        st.info("Арбитражных возможностей не найдено (возможно, не хватает ликвидности или высокие комиссии).")
 
 # ---------- TAB 3: Доходность ----------
 with tabs[3]:
@@ -834,14 +903,12 @@ with tabs[7]:
 with tabs[8]:
     st.subheader("👤 Личный кабинет")
 
-    # Информация о пользователе
     st.write(f"**Имя:** {st.session_state.username}")
     st.write(f"**Email:** {st.session_state.email}")
     st.write(f"**Кошелёк для вывода:** {st.session_state.wallet_address if st.session_state.wallet_address else 'не указан'}")
 
     st.divider()
 
-    # Балансы
     col_bal1, col_bal2 = st.columns(2)
     with col_bal1:
         st.metric("💰 Торговый баланс", f"{st.session_state.user_data.get('trade_balance', 0):.2f} USDT")
@@ -850,7 +917,6 @@ with tabs[8]:
 
     st.divider()
 
-    # Статистика
     st.write("### 📊 Ваша статистика")
     col_stat1, col_stat2, col_stat3 = st.columns(3)
     with col_stat1:
@@ -862,7 +928,6 @@ with tabs[8]:
 
     st.divider()
 
-    # Портфель (топ-5 токенов)
     st.write("### 📦 Ваши токены (топ-5)")
     portfolio = st.session_state.user_data.get('portfolio', {})
     if portfolio:
@@ -876,10 +941,7 @@ with tabs[8]:
 
     st.divider()
 
-    # Управление средствами
     st.write("### 💳 Управление средствами")
-
-    # Пополнение (демо-режим)
     deposit_amount = st.number_input("Сумма пополнения (USDT)", min_value=10.0, step=10.0, key="deposit_lk")
     if st.button("💰 Пополнить", key="deposit_btn"):
         st.session_state.user_data['trade_balance'] += deposit_amount
@@ -887,7 +949,6 @@ with tabs[8]:
         st.success(f"✅ Баланс пополнен на {deposit_amount} USDT!")
         st.rerun()
 
-    # Вывод (дублируем для удобства)
     withdraw_amount_lk = st.number_input("Сумма вывода (USDT)", min_value=10.0, step=10.0, key="withdraw_lk")
     if st.button("📤 Запросить вывод", key="withdraw_btn"):
         if withdraw_amount_lk <= st.session_state.user_data.get('withdrawable_balance', 0):
@@ -1040,11 +1101,18 @@ if show_admin_panel:
                     col1, col2 = st.columns(2)
                     if col1.button(f"🔍 Проверить {ex.upper()}", key=f"test_{ex}"):
                         if new_api and new_secret:
-                            ok, msg = check_exchange_connection(ex, new_api, new_secret)
-                            if ok:
-                                st.success(msg)
-                            else:
-                                st.error(msg)
+                            # Простая проверка: попробовать создать экземпляр и получить баланс
+                            try:
+                                exchange_class = getattr(ccxt, ex)
+                                ex_test = exchange_class({
+                                    'apiKey': new_api,
+                                    'secret': new_secret,
+                                    'enableRateLimit': True
+                                })
+                                ex_test.fetch_balance()
+                                st.success("✅ Ключи действительны")
+                            except Exception as e:
+                                st.error(f"❌ Ошибка: {str(e)[:100]}")
                         else:
                             st.warning("Введите ключи")
                     if col2.button(f"💾 Сохранить {ex.upper()}", key=f"save_{ex}"):
@@ -1098,8 +1166,8 @@ if st.session_state.bot_running and st.session_state.exchanges:
     opportunities = find_all_arbitrage_opportunities()
     if opportunities:
         best = opportunities[0]
-        profit = best['profit_usdt']
-        if profit >= 0.08:   # порог авто-сделки (можно менять)
+        profit = best['net_profit_after_withdrawal']
+        if profit >= 0.08:   # порог авто-сделки
             if is_admin(st.session_state.email):
                 st.session_state.user_data['trade_balance'] += profit
                 st.session_state.user_data['total_profit'] += profit
@@ -1129,4 +1197,4 @@ if st.session_state.bot_running and st.session_state.exchanges:
                 send_telegram(f"🤖 Авто-сделка: {best['asset']} +{profit:.2f} USDT")
                 st.rerun()
 
-st.caption(f"🚀 Сканируется {len(get_available_tokens())} токенов на {len(connected)} биржах | Работает 24/7 | Режим: {st.session_state.current_mode}")
+st.caption(f"🚀 Сканируется {len(get_available_tokens())} токенов на {len(connected)} биржах | Режим: {st.session_state.current_mode} | Фильтры: ликвидность >{MIN_24H_VOLUME_USDT/1000}k USDT, проскальзывание {SLIPPAGE_PERCENT}%, комиссия вывода <{MAX_WITHDRAWAL_FEE_PERCENT}% от прибыли")
