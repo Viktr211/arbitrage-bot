@@ -56,7 +56,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------- КОНСТАНТЫ ----------
-DEFAULT_ASSETS = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "SUI", "HYPE", "TON"]
+DEFAULT_ASSETS = ["ETH", "SOL", "LINK", "AAVE", "DOT", "ADA", "TON", "VET", "HBAR", "XTZ"]
 MAIN_EXCHANGE = "okx"
 AUX_EXCHANGES = ["gateio", "kucoin", "bybit", "mexc", "bitget", "bingx", "bitmart"]
 ALL_EXCHANGES = [MAIN_EXCHANGE] + AUX_EXCHANGES
@@ -82,7 +82,7 @@ REBALANCE_HOUR = 2          # в 2:00 UTC
 def is_admin(email):
     return email in ADMIN_EMAILS
 
-# ---------- ФУНКЦИИ SUPABASE (без изменений, см. предыдущие версии) ----------
+# ---------- ФУНКЦИИ SUPABASE ----------
 def get_user_by_email(email):
     res = supabase.table('users').select('*').eq('email', email).execute()
     return res.data[0] if res.data else None
@@ -226,7 +226,10 @@ def get_available_tokens():
 def get_target_portfolio():
     pf = get_config('portfolio')
     if not pf:
-        pf = {"BTC": 0.013, "ETH": 0.42, "SOL": 11.6, "BNB": 1.63, "XRP": 730, "ADA": 4166, "AVAX": 108, "LINK": 113, "SUI": 1098, "HYPE": 23.5, "TON": 10.0}
+        pf = {
+            "ETH": 0.55, "SOL": 12.0, "LINK": 60.0, "AAVE": 5.5, "DOT": 80.0,
+            "ADA": 2800.0, "TON": 25.0, "VET": 35000.0, "HBAR": 4000.0, "XTZ": 55.0
+        }
         set_config('portfolio', pf)
     return pf
 
@@ -322,7 +325,7 @@ def get_withdrawal_fee(exchange, asset):
         'gateio': 1.0, 'kucoin': 1.0, 'bybit': 1.0, 'bitget': 1.0,
         'bingx': 1.0, 'mexc': 1.0, 'bitmart': 1.0, 'okx': 0.5
     }
-    high_fee_assets = ['BTC', 'ETH', 'BNB']
+    high_fee_assets = ['ETH', 'LINK', 'AAVE']
     if asset in high_fee_assets:
         return default_fees.get(exchange, 2.0) * 2
     return default_fees.get(exchange, 1.0)
@@ -407,7 +410,6 @@ def execute_arbitrage_trade(opp):
 
     sell_price = opp['main_price']
     buy_price = opp['aux_price']
-    slippage_factor = 1 - (SLIPPAGE_BPS / 10000)
     if ORDER_TYPE == 'limit':
         sell_limit = sell_price
         buy_limit = buy_price
@@ -1006,6 +1008,23 @@ if show_admin:
                         if st.button("🔴 Заблокировать"):
                             update_user_status(uid,'rejected',st.session_state.email)
                             st.rerun()
+                # ---- КНОПКА ДЛЯ ПРИМЕНЕНИЯ ЦЕЛЕВОГО ПОРТФЕЛЯ КО ВСЕМ ПОЛЬЗОВАТЕЛЯМ ----
+                st.divider()
+                st.warning("⚠️ ВНИМАНИЕ: применить целевой портфель для всех пользователей (перезапишет их текущие портфели на целевые количества).")
+                if st.button("🔄 Применить целевой портфель для всех пользователей"):
+                    target = get_target_portfolio()
+                    for u in users:
+                        uid = u['id']
+                        # Обновляем демо-портфель
+                        demo_port = json.loads(u.get('portfolio', '{}'))
+                        demo_port.update(target)
+                        supabase.table('users').update({'portfolio': json.dumps(demo_port)}).eq('id', uid).execute()
+                        # Обновляем реальный портфель (если есть)
+                        real_port = json.loads(u.get('real_portfolio', '{}'))
+                        real_port.update(target)
+                        supabase.table('users').update({'real_portfolio': json.dumps(real_port)}).eq('id', uid).execute()
+                    st.success("Целевой портфель применён ко всем пользователям!")
+                    st.rerun()
         with a2:
             cur_tokens = get_available_tokens()
             new_tokens = st.text_input("Список токенов через запятую", value=", ".join(cur_tokens))
