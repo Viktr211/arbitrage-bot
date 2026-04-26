@@ -57,15 +57,15 @@ st.markdown("""
 
 # ---------- КОНСТАНТЫ ----------
 DEFAULT_ASSETS = ["ETH", "SOL", "LINK", "AAVE", "DOT", "ADA", "TON", "VET", "HBAR", "XTZ"]
-MAIN_EXCHANGE = "okx"
+MAIN_EXCHANGE = "binance"          # изменено с okx на binance
 AUX_EXCHANGES = ["gateio", "kucoin", "bybit", "mexc", "bitget", "bingx", "bitmart"]
 ALL_EXCHANGES = [MAIN_EXCHANGE] + AUX_EXCHANGES
 
-MIN_SPREAD_PERCENT = 0.1
-FEE_PERCENT = 0.1
-SLIPPAGE_PERCENT = 0.2
-MIN_24H_VOLUME_USDT = 200000
-MAX_WITHDRAWAL_FEE_PERCENT = 15
+MIN_SPREAD_PERCENT = 0.1           # 0.1% чистый спред
+FEE_PERCENT = 0.1                  # 0.1% комиссия тейкера
+SLIPPAGE_PERCENT = 0.2             # 0.2% проскальзывание
+MIN_24H_VOLUME_USDT = 100000       # 100k USDT
+MAX_WITHDRAWAL_FEE_PERCENT = 20    # комиссия вывода до 20% от прибыли
 
 ADMIN_COMMISSION = 0.22
 REINVEST_SHARE = 0.50
@@ -322,8 +322,8 @@ def get_24h_volume(exchange, symbol):
 
 def get_withdrawal_fee(exchange, asset):
     default_fees = {
-        'gateio': 1.0, 'kucoin': 1.0, 'bybit': 1.0, 'bitget': 1.0,
-        'bingx': 1.0, 'mexc': 1.0, 'bitmart': 1.0, 'okx': 0.5
+        'binance': 0.5, 'gateio': 1.0, 'kucoin': 1.0, 'bybit': 1.0, 'bitget': 1.0,
+        'bingx': 1.0, 'mexc': 1.0, 'bitmart': 1.0
     }
     high_fee_assets = ['ETH', 'LINK', 'AAVE']
     if asset in high_fee_assets:
@@ -400,7 +400,7 @@ def execute_arbitrage_trade(opp):
 
     main_balance = get_balance(main_ex, asset)
     if main_balance < amount:
-        st.warning(f"Недостаточно {asset} на OKX (есть {main_balance})")
+        st.warning(f"Недостаточно {asset} на {MAIN_EXCHANGE} (есть {main_balance})")
         return None
     aux_usdt = get_balance(aux_ex_obj, 'USDT')
     buy_cost = opp['aux_price'] * amount
@@ -417,7 +417,7 @@ def execute_arbitrage_trade(opp):
         sell_limit = None
         buy_limit = None
 
-    with st.spinner(f"Исполнение: продажа {amount} {asset} на OKX по {sell_price:.2f}, покупка на {aux_ex} по {buy_price:.2f}"):
+    with st.spinner(f"Исполнение: продажа {amount} {asset} на {MAIN_EXCHANGE} по {sell_price:.2f}, покупка на {aux_ex} по {buy_price:.2f}"):
         sell_oid, exec_sell, filled_sell, fee_sell = place_order(main_ex, f"{asset}/USDT", 'sell', amount, sell_limit)
         if sell_oid is None or filled_sell < amount * 0.99:
             st.error("Продажа не удалась")
@@ -441,7 +441,7 @@ def execute_arbitrage_trade(opp):
     st.session_state.user_data['total_profit'] += profit_usdt
     st.session_state.user_data['history'].append(
         f"✅ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {asset} | "
-        f"Продажа OKX {exec_sell:.2f} | Покупка {aux_ex} {exec_buy:.2f} | +{profit_usdt:.2f} USDT"
+        f"Продажа {MAIN_EXCHANGE} {exec_sell:.2f} | Покупка {aux_ex} {exec_buy:.2f} | +{profit_usdt:.2f} USDT"
     )
     send_telegram(f"💹 Сделка: {asset} +{profit_usdt:.2f} USDT")
     return profit_usdt
@@ -790,7 +790,7 @@ with tabs[2]:
         st.success(f"Найдено {len(opps)} возможностей")
         for idx,opp in enumerate(opps[:10]):
             key = f"{opp['asset']}_{opp['aux_exchange']}_{idx}"
-            st.info(f"🎯 {opp['asset']}: OKX ${opp['main_price']:,.0f} → {opp['aux_exchange'].upper()} ${opp['aux_price']:,.0f} | +{opp['profit_usdt']:.2f} USDT (чистая: {opp['net_profit_after_withdrawal']:.2f})")
+            st.info(f"🎯 {opp['asset']}: {MAIN_EXCHANGE.upper()} ${opp['main_price']:,.0f} → {opp['aux_exchange'].upper()} ${opp['aux_price']:,.0f} | +{opp['profit_usdt']:.2f} USDT (чистая: {opp['net_profit_after_withdrawal']:.2f})")
             if st.button(f"Исполнить {opp['asset']} на {opp['aux_exchange'].upper()}", key=key):
                 if st.session_state.current_mode == "Реальный" and REAL_TRADING:
                     profit = execute_arbitrage_trade(opp)
@@ -867,7 +867,7 @@ with tabs[4]:
 
 # TAB 5: Портфель
 with tabs[5]:
-    st.subheader("📦 Портфель токенов (OKX)")
+    st.subheader("📦 Портфель токенов")
     total = 0
     portfolio = st.session_state.user_data.get('portfolio', get_target_portfolio())
     for asset, amount in portfolio.items():
@@ -1008,18 +1008,15 @@ if show_admin:
                         if st.button("🔴 Заблокировать"):
                             update_user_status(uid,'rejected',st.session_state.email)
                             st.rerun()
-                # ---- КНОПКА ДЛЯ ПРИМЕНЕНИЯ ЦЕЛЕВОГО ПОРТФЕЛЯ КО ВСЕМ ПОЛЬЗОВАТЕЛЯМ ----
                 st.divider()
                 st.warning("⚠️ ВНИМАНИЕ: применить целевой портфель для всех пользователей (перезапишет их текущие портфели на целевые количества).")
                 if st.button("🔄 Применить целевой портфель для всех пользователей"):
                     target = get_target_portfolio()
                     for u in users:
                         uid = u['id']
-                        # Обновляем демо-портфель
                         demo_port = json.loads(u.get('portfolio', '{}'))
                         demo_port.update(target)
                         supabase.table('users').update({'portfolio': json.dumps(demo_port)}).eq('id', uid).execute()
-                        # Обновляем реальный портфель (если есть)
                         real_port = json.loads(u.get('real_portfolio', '{}'))
                         real_port.update(target)
                         supabase.table('users').update({'real_portfolio': json.dumps(real_port)}).eq('id', uid).execute()
