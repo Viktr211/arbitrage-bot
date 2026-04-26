@@ -11,6 +11,7 @@ import os
 import threading
 import numpy as np
 from supabase import create_client, Client
+import requests
 
 st.set_page_config(page_title="Накопительный Арбитраж PRO", layout="wide", page_icon="🚀", initial_sidebar_state="collapsed")
 
@@ -24,12 +25,53 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# ====================== TELEGRAM (пока отключен) ======================
+TELEGRAM_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID")
+
+def send_telegram(message):
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+            payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
+            requests.post(url, json=payload, timeout=5)
+        except:
+            pass
+
+# ====================== СТИЛЬ (вкладки в две строки + цветные кнопки) ======================
+st.markdown("""
+<style>
+    .stApp { background: linear-gradient(180deg, #001a33 0%, #003087 100%) !important; color: white !important; }
+    .main-header { font-size: 28px; font-weight: bold; color: #00D4FF; text-align: center; margin-bottom: 0; }
+    .user-info { font-size: 14px; color: #aaaaff; margin-top: 5px; }
+    .status-indicator { display: inline-block; width: 14px; height: 14px; border-radius: 50%; margin-right: 6px; }
+    .status-running { background-color: #00FF88; box-shadow: 0 0 8px #00FF88; animation: pulse 1.5s infinite; }
+    .status-stopped { background-color: #FF4444; box-shadow: 0 0 8px #FF4444; }
+    @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
+    .stButton>button { border-radius: 30px; height: 42px; font-weight: bold; }
+    .green-button button { background-color: #00AA44 !important; color: white !important; }
+    .yellow-button button { background-color: #CC8800 !important; color: white !important; }
+    .red-button button { background-color: #CC3333 !important; color: white !important; }
+    .token-card { background: rgba(0,100,200,0.2); border-radius: 10px; padding: 8px; margin: 4px; text-align: center; }
+    .profit-card { background: rgba(0,255,100,0.1); border-radius: 10px; padding: 15px; margin: 10px 0; border-left: 4px solid #00FF88; }
+    /* Вкладки в две строки */
+    .stTabs [data-baseweb="tab-list"] {
+        flex-wrap: wrap !important;
+        gap: 4px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        flex: 0 0 auto;
+        white-space: nowrap;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 # ====================== КОНФИГУРАЦИЯ ======================
 DEFAULT_ASSETS = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "SUI", "HYPE", "TON"]
 MAIN_EXCHANGE = "okx"
 AUX_EXCHANGES = ["gateio", "kucoin", "bitget", "bingx", "mexc", "huobi", "poloniex", "hitbtc"]
 ALL_EXCHANGES = [MAIN_EXCHANGE] + AUX_EXCHANGES
-MIN_SPREAD_PERCENT = 0.0005
+MIN_SPREAD_PERCENT = 0.001   # 0.1% (можно изменить при необходимости)
 FEE_PERCENT = 0.10
 ADMIN_COMMISSION = 0.22
 REINVEST_SHARE = 0.50
@@ -61,6 +103,7 @@ def create_user(email, password_hash, full_name, country, city, phone, wallet_ad
         'usdt_reserves': json.dumps(demo_reserves)
     }
     result = supabase.table('users').insert(data).execute()
+    send_telegram(f"🆕 Новая регистрация!\n👤 {full_name}\n📧 {email}")
     return result.data[0]['id'] if result.data else None
 
 def load_user_mode_data(user, mode):
@@ -153,11 +196,13 @@ def create_withdrawal_request(user_id, amount, wallet_address):
         'status': 'pending'
     }
     result = supabase.table('withdrawals').insert(data).execute()
+    send_telegram(f"💰 Заявка на вывод: {amount} USDT от пользователя")
     return result.data[0]['id'] if result.data else None
 
 def get_pending_withdrawals():
     result = supabase.table('withdrawals').select('*, users(email, full_name)').eq('status', 'pending').order('requested_at').execute()
     return result.data
+
 def update_withdrawal_status(withdrawal_id, status, admin_email):
     update_data = {'status': status, 'processed_at': datetime.now().isoformat(), 'processed_by': admin_email}
     supabase.table('withdrawals').update(update_data).eq('id', withdrawal_id).execute()
@@ -179,6 +224,7 @@ def get_all_users_for_admin():
 
 def update_user_status(user_id, status, admin_email):
     supabase.table('users').update({'registration_status': status, 'approved_at': datetime.now().isoformat(), 'approved_by': admin_email}).eq('id', user_id).execute()
+    send_telegram(f"✅ Пользователь одобрен администратором")
 
 def delete_user(user_id, admin_email):
     trades = supabase.table('trades').select('id').eq('user_id', user_id).execute()
@@ -186,6 +232,22 @@ def delete_user(user_id, admin_email):
         supabase.table('users').delete().eq('id', user_id).execute()
         return True
     return False
+
+def get_all_api_keys():
+    result = supabase.table('api_keys').select('exchange, api_key, secret_key').execute()
+    return {row['exchange']: {'api_key': row['api_key'], 'secret_key': row['secret_key']} for row in result.data}
+
+def save_api_key(exchange, api_key, secret_key, admin_email):
+    encrypted_api = encrypt_api_key(api_key) if api_key else ""
+    encrypted_secret = encrypt_api_key(secret_key) if secret_key else ""
+    data = {
+        'exchange': exchange,
+        'api_key': encrypted_api,
+        'secret_key': encrypted_secret,
+        'updated_at': datetime.now().isoformat(),
+        'updated_by': admin_email
+    }
+    supabase.table('api_keys').upsert(data, on_conflict='exchange').execute()
 
 def get_config(key):
     result = supabase.table('config').select('value').eq('key', key).execute()
@@ -206,7 +268,7 @@ def get_available_tokens():
 def get_target_portfolio():
     pf = get_config('portfolio')
     if not pf:
-        pf = {t: 0.0 for t in DEFAULT_ASSETS}
+        pf = {"BTC": 0.013, "ETH": 0.42, "SOL": 11.6, "BNB": 1.63, "XRP": 730, "ADA": 4166, "AVAX": 108, "LINK": 113, "SUI": 1098, "HYPE": 23.5, "TON": 10.0}
         set_config('portfolio', pf)
     return pf
 
@@ -218,13 +280,7 @@ def set_target_portfolio(portfolio):
 
 def get_demo_usdt_reserves():
     result = supabase.table('demo_usdt_reserves').select('exchange, amount').execute()
-    if result.data:
-        return {row['exchange']: row['amount'] for row in result.data}
-    # значения по умолчанию
-    default = {ex: 10000 for ex in AUX_EXCHANGES}
-    for ex, amt in default.items():
-        supabase.table('demo_usdt_reserves').upsert({'exchange': ex, 'amount': amt}).execute()
-    return default
+    return {row['exchange']: row['amount'] for row in result.data}
 
 def update_demo_usdt_reserve(exchange, amount):
     supabase.table('demo_usdt_reserves').upsert({'exchange': exchange, 'amount': amount}).execute()
@@ -246,6 +302,7 @@ def add_message(user_id, user_email, user_name, message, is_admin_reply=False, r
         'reply_to': reply_to
     }
     supabase.table('messages').insert(data).execute()
+    send_telegram(f"📩 Новое сообщение от {user_name}: {message[:100]}...")
 
 def mark_messages_read(user_id):
     supabase.table('messages').update({'is_read': True}).eq('user_id', user_id).eq('is_read', False).eq('is_admin_reply', True).execute()
@@ -253,6 +310,34 @@ def mark_messages_read(user_id):
 def get_unread_count(user_id):
     result = supabase.table('messages').select('id', count='exact').eq('user_id', user_id).eq('is_read', False).eq('is_admin_reply', True).execute()
     return result.count or 0
+
+# ====================== ШИФРОВАНИЕ ======================
+import hashlib
+import base64
+ENCRYPTION_KEY = hashlib.sha256("arbitrage_secret_key_2024".encode()).digest()
+
+def encrypt_api_key(key):
+    if not key:
+        return ""
+    try:
+        from cryptography.fernet import Fernet
+        fernet = Fernet(base64.urlsafe_b64encode(ENCRYPTION_KEY[:32]))
+        return fernet.encrypt(key.encode()).decode()
+    except:
+        return base64.b64encode(key.encode()).decode()
+
+def decrypt_api_key(encrypted):
+    if not encrypted:
+        return ""
+    try:
+        from cryptography.fernet import Fernet
+        fernet = Fernet(base64.urlsafe_b64encode(ENCRYPTION_KEY[:32]))
+        return fernet.decrypt(encrypted.encode()).decode()
+    except:
+        try:
+            return base64.b64decode(encrypted).decode()
+        except:
+            return ""
 
 # ====================== ПОДКЛЮЧЕНИЕ К БИРЖАМ ======================
 @st.cache_resource
@@ -269,7 +354,6 @@ def init_exchanges():
             status[ex_name] = "error"
     return exchanges, status
 
-# ====================== ФУНКЦИИ АРБИТРАЖА ======================
 def get_price(exchange, symbol):
     try:
         ticker = exchange.fetch_ticker(f"{symbol}/USDT")
@@ -385,6 +469,7 @@ if 'chat_unread' not in st.session_state:
 if st.session_state.exchanges is None:
     with st.spinner("Подключение к биржам..."):
         st.session_state.exchanges, st.session_state.exchange_status = init_exchanges()
+        st.session_state.api_keys = get_all_api_keys()
 
 # ====================== РЕГИСТРАЦИЯ / ВХОД ======================
 if not st.session_state.logged_in:
@@ -441,20 +526,6 @@ if not st.session_state.logged_in:
 if st.session_state.user_id and st.session_state.user_data:
     save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
 
-st.markdown("""
-<style>
-.stApp { background: linear-gradient(180deg, #001a33 0%, #003087 100%) !important; color: white !important; }
-.main-header { font-size: 28px; font-weight: bold; color: #00D4FF; text-align: center; margin-bottom: 0; }
-.user-info { font-size: 14px; color: #aaaaff; margin-top: 5px; }
-.status-indicator { display: inline-block; width: 14px; height: 14px; border-radius: 50%; margin-right: 6px; }
-.status-running { background-color: #00FF88; box-shadow: 0 0 8px #00FF88; animation: pulse 1.5s infinite; }
-.status-stopped { background-color: #FF4444; box-shadow: 0 0 8px #FF4444; }
-@keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
-.stButton>button { border-radius: 30px; height: 42px; font-weight: bold; }
-.token-card { background: rgba(0,100,200,0.2); border-radius: 10px; padding: 8px; margin: 4px; text-align: center; }
-</style>
-""", unsafe_allow_html=True)
-
 col_logo, col_status, col_logout = st.columns([3, 1, 1])
 with col_logo:
     st.markdown('<h1 class="main-header">🚀 НАКОПИТЕЛЬНЫЙ АРБИТРАЖ PRO</h1>', unsafe_allow_html=True)
@@ -491,29 +562,35 @@ if not is_admin(st.session_state.email):
     if unread > 0:
         st.info(f"💬 У вас {unread} непрочитанных сообщений в чате поддержки!")
 
+# Цветные кнопки управления
 c1, c2, c3, c4 = st.columns(4)
 with c1:
+    st.markdown('<div class="green-button">', unsafe_allow_html=True)
     if st.button("▶ СТАРТ", use_container_width=True):
         st.session_state.bot_running = True
         save_bot_status(True)
         st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
 with c2:
+    st.markdown('<div class="yellow-button">', unsafe_allow_html=True)
     if st.button("⏸ ПАУЗА", use_container_width=True):
         st.session_state.bot_running = False
         save_bot_status(False)
         st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
 with c3:
+    st.markdown('<div class="red-button">', unsafe_allow_html=True)
     if st.button("⏹ СТОП", use_container_width=True):
         st.session_state.bot_running = False
         save_bot_status(False)
         st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
 with c4:
     new_mode = st.selectbox("Режим", ["Демо", "Реальный"], index=0 if st.session_state.current_mode == "Демо" else 1)
     if new_mode != st.session_state.current_mode:
         if st.session_state.user_id and st.session_state.user_data:
             save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
         if new_mode == "Реальный":
-            # Проверка наличия API ключей (упрощённо)
             has_keys = any(st.session_state.api_keys.get(ex, {}).get('api_key') for ex in ALL_EXCHANGES)
             if not has_keys:
                 st.warning("⚠️ Для реального режима необходимо подключить API ключи бирж.")
@@ -532,14 +609,14 @@ if st.session_state.current_mode == "Реальный":
     else:
         st.markdown('<div class="api-warning">⚠️ РЕАЛЬНЫЙ РЕЖИМ: API ключи не подключены.</div>', unsafe_allow_html=True)
 
-# ====================== ВКЛАДКИ ======================
+# ====================== ВКЛАДКИ (две строки через CSS) ======================
 show_admin_panel = st.session_state.get('logged_in') and is_admin(st.session_state.get('email', ''))
-tabs_list = ["📊 Dashboard", "📈 Графики", "🔄 Арбитраж", "📊 Доходность", "📊 Статистика по токенам", "📦 Портфель", "💰 Кошелёк", "📜 История", "💬 Чат"]
+tabs_list = ["📊 Dashboard", "📈 Графики", "🔄 Арбитраж", "📊 Доходность", "📊 Статистика по токенам", "📦 Портфель", "💰 Кошелёк", "📜 История", "👤 Личный кабинет", "💬 Чат"]
 if show_admin_panel:
     tabs_list.append("👑 Админ-панель")
 tabs = st.tabs(tabs_list)
 
-# ---------- TAB 0: DASHBOARD ----------
+# ---------- TAB 0: Dashboard ----------
 with tabs[0]:
     st.subheader("📊 Статус сканирования токенов")
     st.write("### 🪙 Текущие цены на OKX")
@@ -556,7 +633,7 @@ with tabs[0]:
     if st.session_state.bot_running:
         st.info(f"🟢 Бот сканирует **{len(tokens)} токенов** на **{len(connected)} биржах** одновременно. Работает 24/7.")
 
-# ---------- TAB 1: ГРАФИКИ ----------
+# ---------- TAB 1: Графики ----------
 with tabs[1]:
     st.subheader("📈 Японские свечи")
     col_a, col_b = st.columns(2)
@@ -580,7 +657,7 @@ with tabs[1]:
     else:
         st.warning("Биржа не подключена")
 
-# ---------- TAB 2: АРБИТРАЖ ----------
+# ---------- TAB 2: Арбитраж ----------
 with tabs[2]:
     st.subheader("🔍 Найденные арбитражные возможности")
     if st.button("🔄 Обновить", use_container_width=True):
@@ -603,6 +680,7 @@ with tabs[2]:
                         add_trade(st.session_state.user_id, st.session_state.current_mode, opp['asset'], 1000, profit, opp['aux_exchange'], MAIN_EXCHANGE)
                         save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
                     st.success(f"Сделка исполнена! +{profit:.2f} USDT")
+                    send_telegram(f"💹 Сделка (админ): {opp['asset']} +{profit:.2f} USDT")
                     st.rerun()
                 else:
                     admin_fee = profit * ADMIN_COMMISSION
@@ -619,11 +697,12 @@ with tabs[2]:
                         add_trade(st.session_state.user_id, st.session_state.current_mode, opp['asset'], 1000, profit, opp['aux_exchange'], MAIN_EXCHANGE)
                         save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
                     st.success(f"Сделка исполнена! +{profit:.2f} USDT (админу {admin_fee:.2f}, реинвест {reinvest_amount:.2f}, вывод {fixed_amount:.2f})")
+                    send_telegram(f"💹 Сделка: {opp['asset']} +{profit:.2f} USDT")
                     st.rerun()
     else:
         st.info("Арбитражных возможностей не найдено.")
 
-# ---------- TAB 3: ДОХОДНОСТЬ ----------
+# ---------- TAB 3: Доходность ----------
 with tabs[3]:
     st.subheader("Калькулятор ожидаемой доходности")
     capital = st.number_input("Капитал для арбитража (USDT)", min_value=100.0, value=10000.0, step=1000.0)
@@ -638,7 +717,7 @@ with tabs[3]:
         </div>
         """, unsafe_allow_html=True)
 
-# ---------- TAB 4: СТАТИСТИКА ПО ТОКЕНАМ ----------
+# ---------- TAB 4: Статистика по токенам ----------
 with tabs[4]:
     st.subheader("📊 Статистика арбитражных сделок по токенам")
     token_stats = {}
@@ -683,7 +762,7 @@ with tabs[4]:
     else:
         st.info("Нет данных о сделках.")
 
-# ---------- TAB 5: ПОРТФЕЛЬ ----------
+# ---------- TAB 5: Портфель ----------
 with tabs[5]:
     st.subheader("📦 Портфель токенов (OKX)")
     total = 0
@@ -696,7 +775,7 @@ with tabs[5]:
     st.divider()
     st.metric("💰 Общая стоимость портфеля", f"${total:,.2f}")
 
-# ---------- TAB 6: КОШЕЛЁК ----------
+# ---------- TAB 6: Кошелёк ----------
 with tabs[6]:
     st.subheader("💰 Кошелёк и вывод средств")
     st.write(f"**Доступно для вывода:** {st.session_state.user_data.get('withdrawable_balance', 0):.2f} USDT")
@@ -737,7 +816,7 @@ with tabs[6]:
             supabase.table('users').update({'wallet_address': wallet_input}).eq('email', st.session_state.email).execute()
         st.success("Адрес сохранён!")
 
-# ---------- TAB 7: ИСТОРИЯ ----------
+# ---------- TAB 7: История ----------
 with tabs[7]:
     st.subheader("📜 История сделок")
     if st.session_state.user_data.get('history'):
@@ -751,8 +830,80 @@ with tabs[7]:
     else:
         st.info("Нет сделок")
 
-# ---------- TAB 8: ЧАТ ----------
+# ---------- TAB 8: Личный кабинет ----------
 with tabs[8]:
+    st.subheader("👤 Личный кабинет")
+
+    # Информация о пользователе
+    st.write(f"**Имя:** {st.session_state.username}")
+    st.write(f"**Email:** {st.session_state.email}")
+    st.write(f"**Кошелёк для вывода:** {st.session_state.wallet_address if st.session_state.wallet_address else 'не указан'}")
+
+    st.divider()
+
+    # Балансы
+    col_bal1, col_bal2 = st.columns(2)
+    with col_bal1:
+        st.metric("💰 Торговый баланс", f"{st.session_state.user_data.get('trade_balance', 0):.2f} USDT")
+    with col_bal2:
+        st.metric("🏦 Доступно для вывода", f"{st.session_state.user_data.get('withdrawable_balance', 0):.2f} USDT")
+
+    st.divider()
+
+    # Статистика
+    st.write("### 📊 Ваша статистика")
+    col_stat1, col_stat2, col_stat3 = st.columns(3)
+    with col_stat1:
+        st.metric("📈 Общая прибыль", f"{st.session_state.user_data.get('total_profit', 0):.2f} USDT")
+    with col_stat2:
+        st.metric("📊 Сделок", st.session_state.user_data.get('trade_count', 0))
+    with col_stat3:
+        st.metric("💸 Комиссий уплачено", f"{st.session_state.user_data.get('total_admin_fee_paid', 0):.2f} USDT")
+
+    st.divider()
+
+    # Портфель (топ-5 токенов)
+    st.write("### 📦 Ваши токены (топ-5)")
+    portfolio = st.session_state.user_data.get('portfolio', {})
+    if portfolio:
+        top_tokens = list(portfolio.items())[:5]
+        for token, amount in top_tokens:
+            price = get_price(st.session_state.exchanges[MAIN_EXCHANGE], token) if st.session_state.exchanges else None
+            value = amount * price if price else 0
+            st.write(f"**{token}:** {amount:.6f} ≈ ${value:,.2f}")
+    else:
+        st.write("Нет данных")
+
+    st.divider()
+
+    # Управление средствами
+    st.write("### 💳 Управление средствами")
+
+    # Пополнение (демо-режим)
+    deposit_amount = st.number_input("Сумма пополнения (USDT)", min_value=10.0, step=10.0, key="deposit_lk")
+    if st.button("💰 Пополнить", key="deposit_btn"):
+        st.session_state.user_data['trade_balance'] += deposit_amount
+        save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
+        st.success(f"✅ Баланс пополнен на {deposit_amount} USDT!")
+        st.rerun()
+
+    # Вывод (дублируем для удобства)
+    withdraw_amount_lk = st.number_input("Сумма вывода (USDT)", min_value=10.0, step=10.0, key="withdraw_lk")
+    if st.button("📤 Запросить вывод", key="withdraw_btn"):
+        if withdraw_amount_lk <= st.session_state.user_data.get('withdrawable_balance', 0):
+            if st.session_state.wallet_address:
+                create_withdrawal_request(st.session_state.user_id, withdraw_amount_lk, st.session_state.wallet_address)
+                st.success(f"Заявка на вывод {withdraw_amount_lk} USDT отправлена!")
+                st.rerun()
+            else:
+                st.error("Сначала сохраните адрес кошелька!")
+        else:
+            st.error("Недостаточно средств для вывода!")
+
+    st.info("💡 Пополнение доступно только в демо-режиме. В реальном режиме средства вносятся напрямую на биржу.")
+
+# ---------- TAB 9: Чат ----------
+with tabs[9]:
     st.subheader("💬 Чат с поддержкой")
     if is_admin(st.session_state.email):
         st.write("### Сообщения от пользователей")
@@ -770,6 +921,7 @@ with tabs[8]:
                             if reply_text:
                                 add_message(msg['user_id'], user_email, user_name, reply_text, is_admin_reply=True, reply_to=msg['id'])
                                 st.success("Ответ отправлен!")
+                                send_telegram(f"📨 Администратор ответил {user_name}: {reply_text[:50]}...")
                                 st.rerun()
                     st.divider()
         else:
@@ -782,6 +934,7 @@ with tabs[8]:
                     for u in all_users:
                         add_message(u['id'], u['email'], u['full_name'], f"[ОБЪЯВЛЕНИЕ] {broadcast}", is_admin_reply=True)
                     st.success("Объявление отправлено всем пользователям!")
+                    send_telegram(f"📢 Объявление отправлено всем пользователям: {broadcast[:100]}")
                     st.rerun()
     else:
         st.write("### Напишите нам")
@@ -810,7 +963,7 @@ if show_admin_panel:
     with tabs[-1]:
         st.subheader("👑 Админ-панель")
         admin_tab1, admin_tab2, admin_tab3, admin_tab4, admin_tab5, admin_tab6 = st.tabs(["👥 Участники", "📊 Токены", "🔐 API ключи", "📜 Все сделки", "💰 Заявки на вывод", "⚙ Демо-резервы"])
-        # ---------- Участники ----------
+        # Участники
         with admin_tab1:
             st.write("### Все участники")
             all_users = get_all_users_for_admin()
@@ -849,7 +1002,7 @@ if show_admin_panel:
                                 st.rerun()
             else:
                 st.info("Нет пользователей")
-        # ---------- Токены ----------
+        # Токены
         with admin_tab2:
             st.write("### Управление токенами")
             current_tokens = get_available_tokens()
@@ -873,12 +1026,33 @@ if show_admin_panel:
             if st.button("Сохранить портфель"):
                 set_target_portfolio(new_portfolio)
                 st.success("Цели обновлены!")
-        # ---------- API ключи ----------
+        # API ключи
         with admin_tab3:
             st.write("### API ключи")
-            # Для простоты здесь не реализовано шифрование, но можно добавить позже
-            st.info("Здесь будут настройки API ключей для реального режима. Пока реализовано только чтение.")
-        # ---------- Все сделки ----------
+            api_keys = get_all_api_keys()
+            for ex in ALL_EXCHANGES:
+                with st.expander(f"🔑 {ex.upper()}", expanded=False):
+                    current = api_keys.get(ex, {})
+                    current_api = decrypt_api_key(current.get('api_key', ''))
+                    current_secret = decrypt_api_key(current.get('secret_key', ''))
+                    new_api = st.text_input(f"API Key ({ex.upper()})", value=current_api, type="password", key=f"api_{ex}")
+                    new_secret = st.text_input(f"Secret Key ({ex.upper()})", value=current_secret, type="password", key=f"secret_{ex}")
+                    col1, col2 = st.columns(2)
+                    if col1.button(f"🔍 Проверить {ex.upper()}", key=f"test_{ex}"):
+                        if new_api and new_secret:
+                            ok, msg = check_exchange_connection(ex, new_api, new_secret)
+                            if ok:
+                                st.success(msg)
+                            else:
+                                st.error(msg)
+                        else:
+                            st.warning("Введите ключи")
+                    if col2.button(f"💾 Сохранить {ex.upper()}", key=f"save_{ex}"):
+                        save_api_key(ex, new_api, new_secret, st.session_state.email)
+                        st.session_state.api_keys = get_all_api_keys()
+                        st.success(f"Ключи {ex.upper()} сохранены!")
+                        st.rerun()
+        # Все сделки
         with admin_tab4:
             st.write("### Все сделки")
             all_trades = get_all_trades(limit=200)
@@ -887,7 +1061,7 @@ if show_admin_panel:
                 st.dataframe(pd.DataFrame(trades_data), use_container_width=True, hide_index=True)
             else:
                 st.info("Нет сделок")
-        # ---------- Заявки на вывод ----------
+        # Заявки на вывод
         with admin_tab5:
             st.write("### Заявки на вывод")
             pending = get_pending_withdrawals()
@@ -900,7 +1074,7 @@ if show_admin_panel:
                         st.rerun()
             else:
                 st.info("Нет заявок")
-        # ---------- Демо-резервы USDT ----------
+        # Демо-резервы
         with admin_tab6:
             st.write("### Настройка начальных резервов USDT для демо-режима")
             st.info("Эти значения будут использоваться при создании новых пользователей в демо-режиме.")
@@ -925,7 +1099,7 @@ if st.session_state.bot_running and st.session_state.exchanges:
     if opportunities:
         best = opportunities[0]
         profit = best['profit_usdt']
-        if profit >= 0.05:
+        if profit >= 0.08:   # порог авто-сделки (можно менять)
             if is_admin(st.session_state.email):
                 st.session_state.user_data['trade_balance'] += profit
                 st.session_state.user_data['total_profit'] += profit
@@ -935,6 +1109,7 @@ if st.session_state.bot_running and st.session_state.exchanges:
                     add_trade(st.session_state.user_id, st.session_state.current_mode, best['asset'], 1000, profit, best['aux_exchange'], MAIN_EXCHANGE)
                     save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
                 st.toast(f"🎯 {best['asset']} +{profit:.2f} USDT", icon="💰")
+                send_telegram(f"🤖 Авто-сделка (админ): {best['asset']} +{profit:.2f} USDT")
                 st.rerun()
             else:
                 admin_fee = profit * ADMIN_COMMISSION
@@ -951,6 +1126,7 @@ if st.session_state.bot_running and st.session_state.exchanges:
                     add_trade(st.session_state.user_id, st.session_state.current_mode, best['asset'], 1000, profit, best['aux_exchange'], MAIN_EXCHANGE)
                     save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
                 st.toast(f"🎯 {best['asset']} +{profit:.2f} USDT (реинвест {reinvest_amount:.2f}, вывод {fixed_amount:.2f})", icon="💰")
+                send_telegram(f"🤖 Авто-сделка: {best['asset']} +{profit:.2f} USDT")
                 st.rerun()
 
 st.caption(f"🚀 Сканируется {len(get_available_tokens())} токенов на {len(connected)} биржах | Работает 24/7 | Режим: {st.session_state.current_mode}")
