@@ -107,7 +107,12 @@ def init_demo_data(user_id):
 def load_demo_balances(user_id):
     res = supabase.table('demo_balances').select('balances').eq('user_id', user_id).execute()
     if res.data:
-        return json.loads(res.data[0]['balances'])
+        balances = json.loads(res.data[0]['balances'])
+        # Гарантируем наличие всех бирж
+        for ex in EXCHANGES:
+            if ex not in balances:
+                balances[ex] = {"USDT": DEMO_USDT_PER_EXCHANGE, "portfolio": DEFAULT_PORTFOLIO.copy()}
+        return balances
     else:
         bal = {ex: {"USDT": DEMO_USDT_PER_EXCHANGE, "portfolio": DEFAULT_PORTFOLIO.copy()} for ex in EXCHANGES}
         supabase.table('demo_balances').insert({'user_id': user_id, 'balances': json.dumps(bal)}).execute()
@@ -420,7 +425,7 @@ if 'logged_in' not in st.session_state:
     st.session_state.api_keys = {}
     st.session_state.chat_unread = 0
     st.session_state.viewed_user_id = None
-    # Инициализируем пустыми, чтобы избежать ошибок AttributeError
+    # Инициализируем пустые переменные, чтобы избежать AttributeError
     st.session_state.user_balances = {}
     st.session_state.user_history = []
     st.session_state.user_stats = {}
@@ -431,7 +436,7 @@ if 'logged_in' not in st.session_state:
     st.session_state.last_withdrawal_date = None
 
 if st.session_state.exchanges is None:
-    with st.spinner("Подключение к биржам..."):
+    with st.spinner("Подключение к 5 биржам..."):
         st.session_state.exchanges, st.session_state.exchange_status = init_exchanges()
         st.session_state.api_keys = get_all_api_keys()
 
@@ -439,7 +444,7 @@ thresholds = get_thresholds()
 
 # ---------- РЕГИСТРАЦИЯ / ВХОД ----------
 if not st.session_state.logged_in:
-    st.markdown('<h1 class="main-header">🔄 НАКОПИТЕЛЬНЫЙ АРБИТРАЖНЫЙ БОТ</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">🔄 Накопительный арбитражный бот</h1>', unsafe_allow_html=True)
     tab_reg, tab_login = st.tabs(["📝 Регистрация","🔑 Вход"])
     with tab_reg:
         with st.form("register_form"):
@@ -491,7 +496,7 @@ if not st.session_state.logged_in:
 # ---------- ОСНОВНОЙ ИНТЕРФЕЙС ----------
 col_logo, col_status, col_logout = st.columns([3,1,1])
 with col_logo:
-    st.markdown('<h1 class="main-header">🔄 НАКОПИТЕЛЬНЫЙ АРБИТРАЖНЫЙ БОТ</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">🔄 Накопительный арбитражный бот</h1>', unsafe_allow_html=True)
 with col_status:
     if st.session_state.bot_running:
         st.markdown('<div><span class="status-indicator status-running"></span> <b>РАБОТАЕТ 24/7</b></div>', unsafe_allow_html=True)
@@ -500,9 +505,8 @@ with col_status:
 with col_logout:
     if st.button("🚪 Выйти"):
         # Сохраняем данные перед выходом
-        if st.session_state.user_id:
-            save_demo_balances(st.session_state.user_id, st.session_state.user_balances)
-            save_demo_history(st.session_state.user_id, st.session_state.user_history)
+        save_demo_balances(st.session_state.user_id, st.session_state.user_balances)
+        save_demo_history(st.session_state.user_id, st.session_state.user_history)
         st.session_state.logged_in = False
         st.session_state.bot_running = False
         save_bot_status(False)
@@ -642,7 +646,7 @@ with tabs[2]:
                     st.success(f"Сделка исполнена! +{profit:.2f} USDT (админу {admin_fee:.2f}, реинвест {reinvest:.2f}, вывод {fixed:.2f})")
                     st.rerun()
     else:
-        st.info("Арбитражных возможностей не найдено. Попробуйте снизить пороги в админ-панели или пополнить USDT на биржах.")
+        st.info("Арбитражных возможностей не найдено. Попробуйте снизить пороги в админ-панели.")
 
 # TAB 3: Статистика по токенам
 with tabs[3]:
@@ -675,7 +679,7 @@ with tabs[3]:
     else:
         st.info("Нет данных")
 
-# TAB 4: Доходность по дням/неделям/месяцам
+# TAB 4: Доходность по дням
 with tabs[4]:
     st.subheader("📈 Прибыль по периодам")
     stats = st.session_state.user_stats
@@ -706,9 +710,9 @@ with tabs[4]:
     else:
         st.info("Нет статистики")
 
-# TAB 5: Балансы
+# TAB 5: Балансы по биржам
 with tabs[5]:
-    st.subheader("💼 Балансы USDT и портфель по биржам")
+    st.subheader("💼 Балансы USDT и портфель по каждой бирже")
     for ex in EXCHANGES:
         with st.expander(f"### {ex.upper()}"):
             bal = st.session_state.user_balances.get(ex, {})
@@ -720,6 +724,20 @@ with tabs[5]:
                 price = get_price(st.session_state.exchanges.get(ex), asset) if st.session_state.exchanges.get(ex) else None
                 value = amount * price if price else 0
                 st.write(f"{asset}: {amount:.6f} ≈ ${value:.2f}")
+            # Кнопка для ручного пополнения USDT на этой бирже
+            add_usdt = st.number_input(f"Пополнить USDT на {ex.upper()}", min_value=0.0, step=100.0, key=f"add_{ex}")
+            if st.button(f"➕ Добавить {add_usdt} USDT", key=f"btn_{ex}"):
+                if add_usdt > 0:
+                    st.session_state.user_balances[ex]['USDT'] += add_usdt
+                    save_demo_balances(st.session_state.user_id, st.session_state.user_balances)
+                    st.success(f"Добавлено {add_usdt} USDT на биржу {ex.upper()}")
+                    st.rerun()
+            # Кнопка для ручного пополнения портфеля токенами (добавляем 10% от начального количества)
+            if st.button(f"🔄 Восстановить портфель токенов на {ex.upper()} (по умолчанию)", key=f"res_port_{ex}"):
+                st.session_state.user_balances[ex]['portfolio'] = DEFAULT_PORTFOLIO.copy()
+                save_demo_balances(st.session_state.user_id, st.session_state.user_balances)
+                st.success(f"Портфель токенов на {ex.upper()} восстановлен до начального")
+                st.rerun()
 
 # TAB 6: Вывод
 with tabs[6]:
@@ -770,19 +788,10 @@ with tabs[8]:
     colb1.metric("Общая прибыль (USDT)", f"{st.session_state.total_profit:.2f}")
     colb2.metric("Всего сделок", st.session_state.trade_count)
     st.divider()
-    # Ручное пополнение USDT на выбранной бирже
-    st.write("### Пополнить USDT на конкретной бирже")
-    selected_ex = st.selectbox("Выберите биржу", EXCHANGES)
-    add_usdt = st.number_input("Сумма USDT для добавления", min_value=0.0, step=100.0, value=0.0)
-    if st.button("➕ Добавить USDT") and add_usdt > 0:
-        if selected_ex in st.session_state.user_balances:
-            st.session_state.user_balances[selected_ex]['USDT'] += add_usdt
-            save_demo_balances(st.session_state.user_id, st.session_state.user_balances)
-            st.success(f"Добавлено {add_usdt} USDT на биржу {selected_ex.upper()}")
-            st.rerun()
-    st.divider()
     if st.button("Пополнить демо-счёт (добавить 1000 USDT на первую биржу)"):
         first_ex = EXCHANGES[0]
+        if first_ex not in st.session_state.user_balances:
+            st.session_state.user_balances[first_ex] = {"USDT": DEMO_USDT_PER_EXCHANGE, "portfolio": DEFAULT_PORTFOLIO.copy()}
         st.session_state.user_balances[first_ex]['USDT'] += 1000
         save_demo_balances(st.session_state.user_id, st.session_state.user_balances)
         st.success("Добавлено 1000 USDT на биржу " + first_ex.upper())
@@ -831,7 +840,7 @@ with tabs[9]:
 if show_admin:
     with tabs[-1]:
         st.subheader("👑 Админ-панель")
-        a1,a2,a3,a4,a5,a6,a7 = st.tabs(["👥 Участники","📊 Токены","⚙ Пороги","🔐 API ключи","📜 Все сделки","💰 Заявки","🔄 Сброс и настройка балансов"])
+        a1,a2,a3,a4,a5,a6,a7 = st.tabs(["👥 Участники","📊 Токены","⚙ Пороги","🔐 API ключи","📜 Все сделки","💰 Заявки","🔄 Сброс демо"])
         with a1:
             users = get_all_users_for_admin()
             if users:
@@ -855,16 +864,16 @@ if show_admin:
                     set_available_tokens(tlist)
                     st.rerun()
         with a3:
-            st.write("### Настройка порогов арбитража")
+            st.write("### Настройка порогов")
             new_th = {}
-            new_th['min_spread_percent'] = st.slider("Минимальный чистый спред (%)", 0.0005, 0.5, thresholds['min_spread_percent'], 0.0005, format="%.4f")
-            new_th['fee_percent'] = st.number_input("Комиссия тейкера (%)", min_value=0.0, max_value=0.5, value=thresholds['fee_percent'], step=0.01, format="%.2f")
-            new_th['slippage_percent'] = st.number_input("Проскальзывание (%)", min_value=0.0, max_value=1.0, value=thresholds['slippage_percent'], step=0.05, format="%.2f")
-            new_th['min_24h_volume_usdt'] = st.number_input("Минимальный 24h объём (USDT)", min_value=0, value=thresholds['min_24h_volume_usdt'], step=10000)
-            new_th['max_withdrawal_fee_percent'] = st.number_input("Макс. комиссия вывода (% от прибыли)", min_value=0, max_value=100, value=thresholds['max_withdrawal_fee_percent'], step=5)
-            if st.button("💾 Сохранить пороги"):
+            new_th['min_spread_percent'] = st.slider("Мин. чистый спред (%)", 0.0005, 0.5, thresholds['min_spread_percent'], 0.0005, format="%.4f")
+            new_th['fee_percent'] = st.number_input("Комиссия тейкера (%)", 0.0, 0.5, thresholds['fee_percent'], 0.01, format="%.2f")
+            new_th['slippage_percent'] = st.number_input("Проскальзывание (%)", 0.0, 1.0, thresholds['slippage_percent'], 0.05, format="%.2f")
+            new_th['min_24h_volume_usdt'] = st.number_input("Мин. 24h объём (USDT)", 0, 1000000, thresholds['min_24h_volume_usdt'], 10000)
+            new_th['max_withdrawal_fee_percent'] = st.number_input("Макс. комиссия вывода (% от прибыли)", 0, 100, thresholds['max_withdrawal_fee_percent'], 5)
+            if st.button("Сохранить"):
                 set_thresholds(new_th)
-                st.success("Пороги обновлены. Перезагрузите страницу, чтобы изменения вступили в силу.")
+                st.success("Пороги обновлены. Перезагрузите страницу.")
                 st.rerun()
         with a4:
             api_keys = get_all_api_keys()
@@ -903,42 +912,18 @@ if show_admin:
                     update_withdrawal_status(w['id'], 'completed', st.session_state.email)
                     st.rerun()
         with a7:
-            st.subheader("Управление балансами пользователей")
+            st.warning("Сброс демо-данных пользователя")
             users_list = get_all_users_for_admin()
             user_options = {u['email']: u['id'] for u in users_list}
-            sel_user_email = st.selectbox("Выберите пользователя", list(user_options.keys()))
-            if sel_user_email:
-                uid = user_options[sel_user_email]
-                if st.button(f"🔄 Установить начальные балансы для {sel_user_email} (5000 USDT + портфель на каждой бирже)"):
-                    init_demo_data(uid)
-                    st.success(f"Балансы пользователя {sel_user_email} сброшены до начальных.")
-                    st.rerun()
-                st.write("Или укажите сумму USDT для добавления на конкретную биржу:")
-                col1, col2 = st.columns(2)
-                with col1:
-                    ex_sel = st.selectbox("Биржа", EXCHANGES, key="admin_ex")
-                with col2:
-                    amount_usdt = st.number_input("Сумма USDT", min_value=0.0, step=100.0, value=0.0, key="admin_amount")
-                if st.button("➕ Добавить USDT пользователю"):
-                    if amount_usdt > 0:
-                        # Загружаем текущие балансы пользователя
-                        balances = load_demo_balances(uid)
-                        if ex_sel in balances:
-                            balances[ex_sel]['USDT'] += amount_usdt
-                            save_demo_balances(uid, balances)
-                            st.success(f"Добавлено {amount_usdt} USDT на биржу {ex_sel.upper()} для {sel_user_email}")
-                            st.rerun()
-                        else:
-                            st.error("Биржа не найдена")
-                st.divider()
-                st.warning("⚠️ Сброс всех демо-данных (балансы, история, статистика) этого пользователя.")
-                if st.button(f"🔥 Полный сброс данных для {sel_user_email}"):
-                    reset_demo_data(uid)
-                    st.success(f"Данные пользователя {sel_user_email} сброшены.")
-                    st.rerun()
+            sel_user = st.selectbox("Выберите пользователя", list(user_options.keys()))
+            if st.button("Сбросить демо-данные"):
+                uid = user_options[sel_user]
+                reset_demo_data(uid)
+                st.success(f"Данные {sel_user} сброшены")
+                st.rerun()
 
 # ---------- АВТОМАТИЧЕСКИЙ АРБИТРАЖ ----------
-if st.session_state.bot_running and st.session_state.exchanges and st.session_state.user_id:
+if st.session_state.bot_running and st.session_state.exchanges:
     time.sleep(8)
     thresholds = get_thresholds()
     opps = find_all_arbitrage_opportunities(st.session_state.exchanges, thresholds)
@@ -980,4 +965,4 @@ if st.session_state.bot_running and st.session_state.exchanges and st.session_st
                 send_telegram(f"🤖 Автосделка: {best['asset']} +{profit:.2f} USDT")
                 st.rerun()
 
-st.caption(f"🚀 Бот сканирует {len(get_available_tokens())} токенов на {len(EXCHANGES)} биржах | Порог спреда: {thresholds['min_spread_percent']}% | Режим: {st.session_state.current_mode}")
+st.caption(f"🚀 Сканируется {len(get_available_tokens())} токенов на {len(EXCHANGES)} биржах | Порог спреда: {thresholds['min_spread_percent']}% | Режим: {st.session_state.current_mode}")
