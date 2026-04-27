@@ -6,7 +6,6 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime, timedelta
-import threading
 import hashlib
 import base64
 from supabase import create_client, Client
@@ -73,7 +72,7 @@ DEFAULT_THRESHOLDS = {
     "min_spread_percent": 0.0005,
     "fee_percent": 0.1,
     "slippage_percent": 0.2,
-    "min_24h_volume_usdt": 0,      # отключаем фильтр объёма для теста
+    "min_24h_volume_usdt": 0,
     "max_withdrawal_fee_percent": 30
 }
 
@@ -308,7 +307,7 @@ def decrypt_api_key(encrypted):
         except:
             return ""
 
-# ---------- ПОДКЛЮЧЕНИЕ К БИРЖАМ ----------
+# ---------- ПОДКЛЮЧЕНИЕ К БИРЖАМ (кэширование цен) ----------
 @st.cache_resource
 def init_exchanges():
     exchanges = {}
@@ -323,12 +322,19 @@ def init_exchanges():
             status[ex_name] = f"error"
     return exchanges, status
 
-def get_price(exchange, symbol):
+@st.cache_data(ttl=2)
+def get_cached_price(exchange_name, symbol):
+    ex = st.session_state.exchanges.get(exchange_name)
+    if not ex:
+        return None
     try:
-        ticker = exchange.fetch_ticker(f"{symbol}/USDT")
+        ticker = ex.fetch_ticker(f"{symbol}/USDT")
         return ticker['last']
     except:
         return None
+
+def get_price(exchange_name, symbol):
+    return get_cached_price(exchange_name, symbol)
 
 def get_24h_volume(exchange, symbol):
     try:
@@ -347,20 +353,15 @@ def find_all_arbitrage_opportunities(exchanges, thresholds):
     opportunities = []
     tokens = get_available_tokens()
     prices = {}
-    volumes = {}
-    for ex_name, ex in exchanges.items():
+    for ex_name in EXCHANGES:
         prices[ex_name] = {}
-        volumes[ex_name] = {}
         for asset in tokens:
-            price = get_price(ex, asset)
+            price = get_price(ex_name, asset)
             if price:
                 prices[ex_name][asset] = price
-                volumes[ex_name][asset] = get_24h_volume(ex, asset)
     for i, buy_ex in enumerate(EXCHANGES):
-        if buy_ex not in exchanges: continue
         for j, sell_ex in enumerate(EXCHANGES):
             if i == j: continue
-            if sell_ex not in exchanges: continue
             for asset in tokens:
                 if asset not in prices[buy_ex] or asset not in prices[sell_ex]:
                     continue
@@ -368,9 +369,6 @@ def find_all_arbitrage_opportunities(exchanges, thresholds):
                 sell_price = prices[sell_ex][asset]
                 if sell_price <= buy_price:
                     continue
-                if thresholds['min_24h_volume_usdt'] > 0:
-                    if volumes[buy_ex].get(asset, 0) < thresholds['min_24h_volume_usdt'] or volumes[sell_ex].get(asset, 0) < thresholds['min_24h_volume_usdt']:
-                        continue
                 spread_pct = (sell_price - buy_price) / buy_price * 100
                 net_spread = spread_pct - thresholds['fee_percent'] - thresholds['slippage_percent']
                 if net_spread <= thresholds['min_spread_percent']:
@@ -406,21 +404,18 @@ def get_historical_ohlcv(exchange, symbol, timeframe='1h', limit=100):
     except:
         return pd.DataFrame()
 
-# ---------- ИСПРАВЛЕННАЯ ФУНКЦИЯ ВЫПОЛНЕНИЯ СДЕЛКИ ----------
+# ---------- ВЫПОЛНЕНИЕ СДЕЛКИ ----------
 def execute_trade(opp, user_id, mode):
     profit = opp['net_profit']
     buy_ex = opp['buy_exchange']
     sell_ex = opp['sell_exchange']
     asset = opp['asset']
-    
     if profit <= 0:
         return 0
-    
     if mode == "Демо":
         if is_admin(st.session_state.email):
             st.session_state.total_profit += profit
             st.session_state.trade_count += 1
-            # Увеличиваем USDT на бирже продажи
             if sell_ex in st.session_state.user_balances:
                 st.session_state.user_balances[sell_ex]['USDT'] += profit
             else:
@@ -438,7 +433,6 @@ def execute_trade(opp, user_id, mode):
                 st.session_state.user_balances[sell_ex]['USDT'] += reinvest
             else:
                 st.session_state.user_balances[sell_ex] = {"USDT": DEMO_USDT_PER_EXCHANGE + reinvest, "portfolio": DEFAULT_PORTFOLIO.copy()}
-        
         history_entry = f"✅ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {asset} | {buy_ex}→{sell_ex} | +{profit:.2f} USDT"
         st.session_state.user_history.append(history_entry)
         save_demo_history(user_id, st.session_state.user_history)
@@ -457,43 +451,6 @@ def execute_trade(opp, user_id, mode):
         return profit
     return profit
 
-# ---------- ФОНОВЫЙ ПОТОК ----------
-def background_arbitrage_loop():
-    while True:
-        try:
-            if st.session_state.get('bot_running', False) and st.session_state.get('user_id') and st.session_state.get('exchanges'):
-                time.sleep(8)
-                thresholds = get_thresholds()
-                opps = find_all_arbitrage_opportunities(st.session_state.exchanges, thresholds)
-                if opps:
-                    best = opps[0]
-                    profit = best['net_profit']
-                    if profit > 0.001:
-                        execute_trade(best, st.session_state.user_id, st.session_state.current_mode)
-                        send_telegram(f"🤖 Автосделка: {best['asset']} {best['buy_exchange']}→{best['sell_exchange']} +{profit:.2f} USDT")
-            else:
-                time.sleep(5)
-        except Exception as e:
-            print(f"Фоновый поток ошибка: {e}")
-            time.sleep(5)
-
-if 'background_thread_started' not in st.session_state:
-    threading.Thread(target=background_arbitrage_loop, daemon=True).start()
-    st.session_state.background_thread_started = True
-
-BOT_STATUS_FILE = "bot_status.json"
-def save_bot_status(status):
-    try:
-        with open(BOT_STATUS_FILE,'w') as f:
-            json.dump({'bot_running':status}, f)
-    except: pass
-def load_bot_status():
-    try:
-        with open(BOT_STATUS_FILE,'r') as f:
-            return json.load(f).get('bot_running', False)
-    except:
-        return False
-
 # ---------- СЕССИЯ ----------
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
@@ -501,7 +458,7 @@ if 'logged_in' not in st.session_state:
     st.session_state.email = None
     st.session_state.wallet_address = ''
     st.session_state.exchanges = None
-    st.session_state.bot_running = load_bot_status()
+    st.session_state.bot_running = False
     st.session_state.exchange_status = {}
     st.session_state.current_mode = "Демо"
     st.session_state.user_id = None
@@ -518,7 +475,7 @@ if 'logged_in' not in st.session_state:
     st.session_state.last_withdrawal_date = None
 
 if st.session_state.exchanges is None:
-    with st.spinner("Подключение к 5 биржам..."):
+    with st.spinner("Подключение к биржам..."):
         st.session_state.exchanges, st.session_state.exchange_status = init_exchanges()
         st.session_state.api_keys = get_all_api_keys()
 
@@ -582,14 +539,12 @@ with col_status:
     if st.session_state.bot_running:
         st.markdown('<div><span class="status-indicator status-running"></span> <b>РАБОТАЕТ 24/7</b></div>', unsafe_allow_html=True)
     else:
-        st.markdown('<div><span class="status-indicator status-stopped"></span> <b>ОСТАНОВЛЕН</b></div>', unsafe_allow_html=True)
+        st.markdown('<div><span class="status-indicator status-stopped"></span> <b>ОСТАНОВЛЕН (нажмите СТАРТ для авто-режима)</b></div>', unsafe_allow_html=True)
 with col_logout:
     if st.button("🚪 Выйти"):
         save_demo_balances(st.session_state.user_id, st.session_state.user_balances)
         save_demo_history(st.session_state.user_id, st.session_state.user_history)
         st.session_state.logged_in = False
-        st.session_state.bot_running = False
-        save_bot_status(False)
         st.rerun()
 
 st.markdown(f'<div class="user-info">👤 {st.session_state.username} | 📧 {st.session_state.email}</div>', unsafe_allow_html=True)
@@ -598,11 +553,12 @@ st.write(f"🔌 **Биржи:** {', '.join([ex.upper() for ex in EXCHANGES])}")
 st.write(f"🪙 **Токены:** {', '.join(get_available_tokens())}")
 st.divider()
 
+# Подсчёт общего USDT
 total_usdt = sum(bal.get('USDT',0) for bal in st.session_state.user_balances.values())
 total_portfolio_value = 0
 for ex, bal in st.session_state.user_balances.items():
     for asset, amount in bal.get('portfolio', {}).items():
-        price = get_price(st.session_state.exchanges.get(ex), asset) if st.session_state.exchanges.get(ex) else None
+        price = get_price(ex, asset)
         if price:
             total_portfolio_value += amount * price
 col1, col2, col3 = st.columns(3)
@@ -615,21 +571,18 @@ with c1:
     st.markdown('<div class="green-button">', unsafe_allow_html=True)
     if st.button("▶ СТАРТ", use_container_width=True):
         st.session_state.bot_running = True
-        save_bot_status(True)
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 with c2:
     st.markdown('<div class="yellow-button">', unsafe_allow_html=True)
     if st.button("⏸ ПАУЗА", use_container_width=True):
         st.session_state.bot_running = False
-        save_bot_status(False)
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 with c3:
     st.markdown('<div class="red-button">', unsafe_allow_html=True)
     if st.button("⏹ СТОП", use_container_width=True):
         st.session_state.bot_running = False
-        save_bot_status(False)
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 with c4:
@@ -651,8 +604,7 @@ with tabs[0]:
         st.write(f"**{asset}**")
         cols = st.columns(len(EXCHANGES))
         for i, ex in enumerate(EXCHANGES):
-            ex_obj = st.session_state.exchanges.get(ex)
-            price = get_price(ex_obj, asset) if ex_obj else None
+            price = get_price(ex, asset)
             with cols[i]:
                 if price:
                     st.metric(ex.upper(), f"${price:.2f}")
@@ -686,6 +638,18 @@ with tabs[2]:
         st.cache_data.clear()
         st.rerun()
     opps = find_all_arbitrage_opportunities(st.session_state.exchanges, thresholds)
+    
+    # Кнопка авто-исполнения лучшей сделки
+    if opps:
+        col_auto, _ = st.columns([1,3])
+        with col_auto:
+            if st.button("🔥 Исполнить лучшую сделку (авто)", use_container_width=True):
+                profit = execute_trade(opps[0], st.session_state.user_id, st.session_state.current_mode)
+                if profit > 0:
+                    st.success(f"Сделка исполнена! +{profit:.2f} USDT")
+                    st.rerun()
+                else:
+                    st.error("Ошибка исполнения")
     if opps:
         st.success(f"Найдено {len(opps)} возможностей")
         for idx, opp in enumerate(opps[:10]):
@@ -697,7 +661,7 @@ with tabs[2]:
                     st.success(f"Сделка исполнена! +{profit:.2f} USDT")
                     st.rerun()
                 else:
-                    st.error("Ошибка исполнения сделки")
+                    st.error("Ошибка исполнения")
     else:
         st.info("Арбитражных возможностей не найдено. Попробуйте снизить пороги в админ-панели.")
 
@@ -769,7 +733,7 @@ with tabs[5]:
             portfolio = bal.get('portfolio', {})
             st.write("**Портфель токенов:**")
             for asset, amount in portfolio.items():
-                price = get_price(st.session_state.exchanges.get(ex), asset) if st.session_state.exchanges.get(ex) else None
+                price = get_price(ex, asset)
                 value = amount * price if price else 0
                 st.write(f"{asset}: {amount:.6f} ≈ ${value:.2f}")
             add_usdt = st.number_input(f"Пополнить USDT на {ex.upper()}", min_value=0.0, step=100.0, key=f"add_{ex}")
