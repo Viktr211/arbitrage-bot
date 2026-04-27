@@ -12,7 +12,7 @@ import base64
 from supabase import create_client, Client
 import requests
 
-st.set_page_config(page_title="Арбитраж PRO 2.0 | 5 бирж", layout="wide", page_icon="🔄", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Арбитраж PRO 3.0 | 5 бирж", layout="wide", page_icon="🔄", initial_sidebar_state="collapsed")
 
 # ---------- SUPABASE ----------
 SUPABASE_URL = st.secrets.get("SUPABASE_URL")
@@ -57,7 +57,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------- КОНСТАНТЫ ----------
-EXCHANGES = ["kucoin", "bybit", "okx", "bingx", "bitget"]
+EXCHANGES = ["kucoin", "hitbtc", "okx", "bingx", "bitget"]   # Bybit заменён на HitBTC
 DEFAULT_ASSETS = ["ETH", "SOL", "LINK", "AAVE", "DOT", "ADA", "TON", "VET", "HBAR", "XTZ"]
 DEFAULT_PORTFOLIO = {
     "ETH": 0.28, "SOL": 6.0, "LINK": 10.0, "AAVE": 1.2, "DOT": 12.0,
@@ -70,7 +70,7 @@ FIXED_SHARE = 0.50
 ADMIN_EMAILS = ["cb777899@gmail.com", "admin@arbitrage.com"]
 
 DEFAULT_THRESHOLDS = {
-    "min_spread_percent": 0.05,
+    "min_spread_percent": 0.0005,   # 0.0005% (новый минимум)
     "fee_percent": 0.1,
     "slippage_percent": 0.2,
     "min_24h_volume_usdt": 50000,
@@ -80,31 +80,76 @@ DEFAULT_THRESHOLDS = {
 def is_admin(email):
     return email in ADMIN_EMAILS
 
-# ---------- ФУНКЦИИ SUPABASE (только для авторизации) ----------
+# ---------- ФУНКЦИИ SUPABASE (с сохранением демо-данных) ----------
 def get_user_by_email(email):
     res = supabase.table('users').select('*').eq('email', email).execute()
     return res.data[0] if res.data else None
 
 def create_user(email, pwd_hash, full_name, country, city, phone, wallet):
-    # Создаём запись с минимальными полями. Демо-данные будем хранить в session_state.
+    # Создаём пользователя с пустыми полями для статистики
     data = {
-        'email': email,
-        'password_hash': pwd_hash,
-        'full_name': full_name,
-        'country': country,
-        'city': city,
-        'phone': phone,
-        'wallet_address': wallet,
-        'registration_status': 'approved',   # сразу одобрен
-        'trade_balance': 0,
-        'withdrawable_balance': 0,
-        'total_profit': 0,
-        'trade_count': 0,
-        'total_admin_fee_paid': 0
+        'email': email, 'password_hash': pwd_hash, 'full_name': full_name,
+        'country': country, 'city': city, 'phone': phone, 'wallet_address': wallet,
+        'registration_status': 'approved',
+        'trade_balance': 0, 'withdrawable_balance': 0, 'total_profit': 0, 'trade_count': 0, 'total_admin_fee_paid': 0
     }
     res = supabase.table('users').insert(data).execute()
+    user_id = res.data[0]['id']
+    # Инициализируем демо-данные
+    init_demo_data(user_id)
     send_telegram(f"🆕 Новый пользователь: {full_name} ({email})")
-    return res.data[0]['id'] if res.data else None
+    return user_id
+
+def init_demo_data(user_id):
+    """Создаёт записи в demo_balances, demo_history, demo_stats для пользователя"""
+    balances = {ex: {"USDT": DEMO_USDT_PER_EXCHANGE, "portfolio": DEFAULT_PORTFOLIO.copy()} for ex in EXCHANGES}
+    supabase.table('demo_balances').upsert({'user_id': user_id, 'balances': json.dumps(balances)}).execute()
+    supabase.table('demo_history').upsert({'user_id': user_id, 'history': json.dumps([])}).execute()
+    supabase.table('demo_stats').upsert({'user_id': user_id, 'stats': json.dumps({})}).execute()
+
+def load_demo_balances(user_id):
+    res = supabase.table('demo_balances').select('balances').eq('user_id', user_id).execute()
+    if res.data:
+        return json.loads(res.data[0]['balances'])
+    else:
+        bal = {ex: {"USDT": DEMO_USDT_PER_EXCHANGE, "portfolio": DEFAULT_PORTFOLIO.copy()} for ex in EXCHANGES}
+        supabase.table('demo_balances').insert({'user_id': user_id, 'balances': json.dumps(bal)}).execute()
+        return bal
+
+def save_demo_balances(user_id, balances):
+    supabase.table('demo_balances').upsert({'user_id': user_id, 'balances': json.dumps(balances)}).execute()
+
+def load_demo_history(user_id):
+    res = supabase.table('demo_history').select('history').eq('user_id', user_id).execute()
+    if res.data:
+        return json.loads(res.data[0]['history'])
+    return []
+
+def save_demo_history(user_id, history):
+    supabase.table('demo_history').upsert({'user_id': user_id, 'history': json.dumps(history[-500:])}).execute()
+
+def load_demo_stats(user_id):
+    res = supabase.table('demo_stats').select('stats').eq('user_id', user_id).execute()
+    if res.data:
+        return json.loads(res.data[0]['stats'])
+    return {}
+
+def save_demo_stats(user_id, stats):
+    supabase.table('demo_stats').upsert({'user_id': user_id, 'stats': json.dumps(stats)}).execute()
+
+def update_demo_stats(user_id, profit):
+    """Обновляет статистику по дням/неделям/месяцам"""
+    stats = load_demo_stats(user_id)
+    now = datetime.now()
+    day_key = now.strftime("%Y-%m-%d")
+    week_key = f"{now.year}-W{now.isocalendar()[1]}"
+    month_key = now.strftime("%Y-%m")
+    year_key = now.strftime("%Y")
+    stats[day_key] = stats.get(day_key, 0) + profit
+    stats[week_key] = stats.get(week_key, 0) + profit
+    stats[month_key] = stats.get(month_key, 0) + profit
+    stats[year_key] = stats.get(year_key, 0) + profit
+    save_demo_stats(user_id, stats)
 
 def get_all_users_for_admin():
     return supabase.table('users').select('*').order('created_at', desc=True).execute().data
@@ -211,6 +256,14 @@ def mark_messages_read(user_id):
 def get_unread_count(user_id):
     res = supabase.table('messages').select('id', count='exact').eq('user_id', user_id).eq('is_read', False).eq('is_admin_reply', True).execute()
     return res.count or 0
+
+def reset_demo_data(user_id):
+    """Сброс демо-данных пользователя"""
+    balances = {ex: {"USDT": DEMO_USDT_PER_EXCHANGE, "portfolio": DEFAULT_PORTFOLIO.copy()} for ex in EXCHANGES}
+    supabase.table('demo_balances').upsert({'user_id': user_id, 'balances': json.dumps(balances)}).execute()
+    supabase.table('demo_history').upsert({'user_id': user_id, 'history': json.dumps([])}).execute()
+    supabase.table('demo_stats').upsert({'user_id': user_id, 'stats': json.dumps({})}).execute()
+    send_telegram(f"🔄 Демо-данные пользователя {user_id} сброшены")
 
 # ---------- ШИФРОВАНИЕ ----------
 ENCRYPTION_KEY = hashlib.sha256("arbitrage_secret_key_2024".encode()).digest()
@@ -368,15 +421,6 @@ if 'logged_in' not in st.session_state:
     st.session_state.bot_running = load_bot_status()
     st.session_state.exchange_status = {}
     st.session_state.current_mode = "Демо"
-    st.session_state.user_data = {
-        'balances': {ex: {"USDT": DEMO_USDT_PER_EXCHANGE, "portfolio": DEFAULT_PORTFOLIO.copy()} for ex in EXCHANGES},
-        'total_profit': 0,
-        'trade_count': 0,
-        'total_admin_fee_paid': 0,
-        'withdrawable_balance': 0,
-        'last_withdrawal_date': None,
-        'history': []
-    }
     st.session_state.user_id = None
     st.session_state.api_keys = {}
     st.session_state.chat_unread = 0
@@ -391,7 +435,7 @@ thresholds = get_thresholds()
 
 # ---------- РЕГИСТРАЦИЯ / ВХОД ----------
 if not st.session_state.logged_in:
-    st.markdown('<h1 class="main-header">🔄 АРБИТРАЖ PRO 2.0 | 5 БИРЖ</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">🔄 АРБИТРАЖ PRO 3.0 | 5 БИРЖ</h1>', unsafe_allow_html=True)
     tab_reg, tab_login = st.tabs(["📝 Регистрация","🔑 Вход"])
     with tab_reg:
         with st.form("register_form"):
@@ -424,16 +468,15 @@ if not st.session_state.logged_in:
                     st.session_state.email = user['email']
                     st.session_state.wallet_address = user.get('wallet_address','')
                     st.session_state.user_id = user['id']
-                    # Загружаем демо-данные из session_state (не из БД)
-                    st.session_state.user_data = {
-                        'balances': {ex: {"USDT": DEMO_USDT_PER_EXCHANGE, "portfolio": DEFAULT_PORTFOLIO.copy()} for ex in EXCHANGES},
-                        'total_profit': 0,
-                        'trade_count': 0,
-                        'total_admin_fee_paid': 0,
-                        'withdrawable_balance': 0,
-                        'last_withdrawal_date': None,
-                        'history': []
-                    }
+                    # Загружаем данные из БД
+                    st.session_state.user_balances = load_demo_balances(user['id'])
+                    st.session_state.user_history = load_demo_history(user['id'])
+                    st.session_state.user_stats = load_demo_stats(user['id'])
+                    st.session_state.total_profit = user.get('total_profit', 0)
+                    st.session_state.trade_count = user.get('trade_count', 0)
+                    st.session_state.total_admin_fee_paid = user.get('total_admin_fee_paid', 0)
+                    st.session_state.withdrawable_balance = user.get('withdrawable_balance', 0)
+                    st.session_state.last_withdrawal_date = user.get('last_withdrawal_date')
                     st.session_state.chat_unread = get_unread_count(user['id'])
                     st.success(f"Добро пожаловать, {st.session_state.username}!")
                     st.rerun()
@@ -441,15 +484,10 @@ if not st.session_state.logged_in:
                     st.error("Неверный email или пароль")
     st.stop()
 
-# ---------- ЕСЛИ АДМИН СМОТРИТ ДРУГОГО ПОЛЬЗОВАТЕЛЯ (просто сбрасываем просмотр) ----------
-if is_admin(st.session_state.email) and st.session_state.viewed_user_id:
-    # Для простоты не храним чужие данные, просто показываем заглушку
-    st.markdown('<div class="admin-view-banner">👁️ АДМИН ПРОСМАТРИВАЕТ ПОЛЬЗОВАТЕЛЯ (данные не сохраняются)</div>', unsafe_allow_html=True)
-
 # ---------- ОСНОВНОЙ ИНТЕРФЕЙС ----------
 col_logo, col_status, col_logout = st.columns([3,1,1])
 with col_logo:
-    st.markdown('<h1 class="main-header">🔄 АРБИТРАЖ PRO 2.0 | 5 БИРЖ</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">🔄 АРБИТРАЖ PRO 3.0 | 5 БИРЖ</h1>', unsafe_allow_html=True)
 with col_status:
     if st.session_state.bot_running:
         st.markdown('<div><span class="status-indicator status-running"></span> <b>РАБОТАЕТ 24/7</b></div>', unsafe_allow_html=True)
@@ -457,6 +495,9 @@ with col_status:
         st.markdown('<div><span class="status-indicator status-stopped"></span> <b>ОСТАНОВЛЕН</b></div>', unsafe_allow_html=True)
 with col_logout:
     if st.button("🚪 Выйти"):
+        # Сохраняем данные перед выходом
+        save_demo_balances(st.session_state.user_id, st.session_state.user_balances)
+        save_demo_history(st.session_state.user_id, st.session_state.user_history)
         st.session_state.logged_in = False
         st.session_state.bot_running = False
         save_bot_status(False)
@@ -468,18 +509,17 @@ st.write(f"🔌 **Биржи:** {', '.join([ex.upper() for ex in EXCHANGES])}")
 st.write(f"🪙 **Токены:** {', '.join(get_available_tokens())}")
 st.divider()
 
-total_usdt = 0
+total_usdt = sum(bal.get('USDT',0) for bal in st.session_state.user_balances.values())
 total_portfolio_value = 0
-for ex, balance in st.session_state.user_data.get('balances', {}).items():
-    total_usdt += balance.get('USDT', 0)
-    for asset, amount in balance.get('portfolio', {}).items():
+for ex, bal in st.session_state.user_balances.items():
+    for asset, amount in bal.get('portfolio', {}).items():
         price = get_price(st.session_state.exchanges.get(ex), asset) if st.session_state.exchanges.get(ex) else None
         if price:
             total_portfolio_value += amount * price
 col1, col2, col3 = st.columns(3)
-col1.metric("💰 Всего USDT (на всех биржах)", f"{total_usdt:.2f}")
-col2.metric("📦 Стоимость портфеля (все токены)", f"{total_portfolio_value:.2f}")
-col3.metric("📊 Всего сделок", st.session_state.user_data.get('trade_count',0))
+col1.metric("💰 Всего USDT", f"{total_usdt:.2f}")
+col2.metric("📦 Стоимость портфеля", f"{total_portfolio_value:.2f}")
+col3.metric("📊 Всего сделок", st.session_state.trade_count)
 
 c1,c2,c3,c4 = st.columns(4)
 with c1:
@@ -511,7 +551,7 @@ with c4:
 
 # ---------- ВКЛАДКИ ----------
 show_admin = is_admin(st.session_state.email)
-tabs_list = ["📊 Dashboard","📈 Графики","🔄 Арбитраж","📊 Доходность","📊 Статистика","💼 Балансы по биржам","💰 Вывод","📜 История","👤 Кабинет","💬 Чат"]
+tabs_list = ["📊 Dashboard","📈 Графики","🔄 Арбитраж","📊 Статистика","📈 Доходность по дням","💼 Балансы","💰 Вывод","📜 История","👤 Кабинет","💬 Чат"]
 if show_admin:
     tabs_list.append("👑 Админ-панель")
 tabs = st.tabs(tabs_list)
@@ -566,10 +606,13 @@ with tabs[2]:
             if st.button(f"Исполнить {opp['asset']} {opp['buy_exchange']}→{opp['sell_exchange']}", key=key):
                 profit = opp['net_profit']
                 if is_admin(st.session_state.email):
-                    st.session_state.user_data['total_profit'] += profit
-                    st.session_state.user_data['trade_count'] += 1
-                    st.session_state.user_data['history'].append(f"✅ {datetime.now().strftime('%H:%M:%S')} | {opp['asset']} | {opp['buy_exchange']}→{opp['sell_exchange']} | +{profit:.2f} USDT")
+                    st.session_state.total_profit += profit
+                    st.session_state.trade_count += 1
+                    st.session_state.user_history.append(f"✅ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {opp['asset']} | {opp['buy_exchange']}→{opp['sell_exchange']} | +{profit:.2f} USDT")
                     add_trade(st.session_state.user_id, st.session_state.current_mode, opp['asset'], 1, profit, opp['buy_exchange'], opp['sell_exchange'])
+                    update_demo_stats(st.session_state.user_id, profit)
+                    save_demo_history(st.session_state.user_id, st.session_state.user_history)
+                    supabase.table('users').update({'total_profit': st.session_state.total_profit, 'trade_count': st.session_state.trade_count}).eq('id', st.session_state.user_id).execute()
                     st.success(f"Сделка исполнена! +{profit:.2f} USDT")
                     st.rerun()
                 else:
@@ -577,31 +620,31 @@ with tabs[2]:
                     net = profit - admin_fee
                     reinvest = net * REINVEST_SHARE
                     fixed = net * FIXED_SHARE
-                    st.session_state.user_data['total_profit'] += profit
-                    st.session_state.user_data['trade_count'] += 1
-                    st.session_state.user_data['withdrawable_balance'] += fixed
-                    st.session_state.user_data['total_admin_fee_paid'] += admin_fee
-                    st.session_state.user_data['history'].append(f"✅ {datetime.now().strftime('%H:%M:%S')} | {opp['asset']} | {opp['buy_exchange']}→{opp['sell_exchange']} | +{profit:.2f} USDT")
+                    st.session_state.total_profit += profit
+                    st.session_state.trade_count += 1
+                    st.session_state.withdrawable_balance += fixed
+                    st.session_state.total_admin_fee_paid += admin_fee
+                    st.session_state.user_history.append(f"✅ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {opp['asset']} | {opp['buy_exchange']}→{opp['sell_exchange']} | +{profit:.2f} USDT")
                     add_trade(st.session_state.user_id, st.session_state.current_mode, opp['asset'], 1, profit, opp['buy_exchange'], opp['sell_exchange'])
+                    update_demo_stats(st.session_state.user_id, profit)
+                    save_demo_history(st.session_state.user_id, st.session_state.user_history)
+                    supabase.table('users').update({
+                        'total_profit': st.session_state.total_profit,
+                        'trade_count': st.session_state.trade_count,
+                        'withdrawable_balance': st.session_state.withdrawable_balance,
+                        'total_admin_fee_paid': st.session_state.total_admin_fee_paid
+                    }).eq('id', st.session_state.user_id).execute()
                     st.success(f"Сделка исполнена! +{profit:.2f} USDT (админу {admin_fee:.2f}, реинвест {reinvest:.2f}, вывод {fixed:.2f})")
                     st.rerun()
     else:
         st.info("Арбитражных возможностей не найдено. Попробуйте снизить пороги в админ-панели.")
 
-# TAB 3: Доходность
+# TAB 3: Статистика по токенам
 with tabs[3]:
-    st.subheader("Калькулятор ожидаемой доходности")
-    capital = st.number_input("Капитал (USDT)", min_value=100.0, value=10000.0, step=1000.0)
-    if st.button("Рассчитать", use_container_width=True):
-        exp_profit = capital * 0.008
-        st.markdown(f"<div class='profit-card'><b>Ожидаемая дневная доходность:</b><br>Прибыль в день: <b style='color:#00FF88;'>${exp_profit:.2f}</b><br>Доходность: 0.8%</div>", unsafe_allow_html=True)
-
-# TAB 4: Статистика
-with tabs[4]:
     st.subheader("📊 Статистика сделок по токенам")
     token_stats = {}
     total_profit_all = 0
-    for trade in st.session_state.user_data.get('history',[]):
+    for trade in st.session_state.user_history:
         if trade.startswith("✅"):
             try:
                 parts = trade.split("|")
@@ -627,12 +670,44 @@ with tabs[4]:
     else:
         st.info("Нет данных")
 
-# TAB 5: Балансы по биржам
+# TAB 4: Доходность по дням/неделям/месяцам
+with tabs[4]:
+    st.subheader("📈 Прибыль по периодам")
+    stats = st.session_state.user_stats
+    if stats:
+        # Преобразуем ключи в datetime для сортировки
+        days = {k:v for k,v in stats.items() if len(k)==10 and '-' in k}
+        weeks = {k:v for k,v in stats.items() if 'W' in k}
+        months = {k:v for k,v in stats.items() if len(k)==7 and '-' in k and 'W' not in k}
+        years = {k:v for k,v in stats.items() if len(k)==4}
+        if days:
+            df_days = pd.DataFrame([{"Дата":k,"Прибыль":v} for k,v in sorted(days.items())])
+            fig = px.bar(df_days, x="Дата", y="Прибыль", title="Прибыль по дням")
+            fig.update_layout(template="plotly_dark", height=400)
+            st.plotly_chart(fig, use_container_width=True)
+        if weeks:
+            df_weeks = pd.DataFrame([{"Неделя":k,"Прибыль":v} for k,v in sorted(weeks.items())])
+            fig = px.bar(df_weeks, x="Неделя", y="Прибыль", title="Прибыль по неделям")
+            fig.update_layout(template="plotly_dark", height=400)
+            st.plotly_chart(fig, use_container_width=True)
+        if months:
+            df_months = pd.DataFrame([{"Месяц":k,"Прибыль":v} for k,v in sorted(months.items())])
+            fig = px.bar(df_months, x="Месяц", y="Прибыль", title="Прибыль по месяцам")
+            fig.update_layout(template="plotly_dark", height=400)
+            st.plotly_chart(fig, use_container_width=True)
+        if years:
+            st.write("**Итог по годам:**")
+            for y, p in sorted(years.items()):
+                st.metric(y, f"+{p:.2f} USDT")
+    else:
+        st.info("Нет статистики")
+
+# TAB 5: Балансы
 with tabs[5]:
-    st.subheader("💼 Балансы USDT и портфель по каждой бирже")
+    st.subheader("💼 Балансы USDT и портфель по биржам")
     for ex in EXCHANGES:
         with st.expander(f"### {ex.upper()}"):
-            bal = st.session_state.user_data.get('balances', {}).get(ex, {})
+            bal = st.session_state.user_balances.get(ex, {})
             usdt = bal.get('USDT', 0)
             st.metric("USDT", f"{usdt:.2f}")
             portfolio = bal.get('portfolio', {})
@@ -645,17 +720,18 @@ with tabs[5]:
 # TAB 6: Вывод
 with tabs[6]:
     st.subheader("💰 Вывод средств")
-    st.write(f"**Доступно для вывода:** {st.session_state.user_data.get('withdrawable_balance', 0):.2f} USDT")
+    st.write(f"**Доступно для вывода:** {st.session_state.withdrawable_balance:.2f} USDT")
     weekday = datetime.now().strftime("%A")
     disabled = weekday not in ["Tuesday","Friday"]
     if disabled:
         st.warning("⏳ Вывод только по вторникам и пятницам")
-    max_wd = st.session_state.user_data.get('withdrawable_balance', 0)
+    max_wd = st.session_state.withdrawable_balance
     if max_wd >= 10:
         amt = st.number_input("Сумма вывода (USDT)", min_value=10.0, max_value=max_wd, step=10.0, disabled=disabled)
         if st.button("Запросить вывод", disabled=disabled) and amt and st.session_state.wallet_address:
             create_withdrawal_request(st.session_state.user_id, amt, st.session_state.wallet_address)
-            st.session_state.user_data['withdrawable_balance'] -= amt
+            st.session_state.withdrawable_balance -= amt
+            supabase.table('users').update({'withdrawable_balance': st.session_state.withdrawable_balance}).eq('id', st.session_state.user_id).execute()
             st.success("Заявка отправлена")
             st.rerun()
     else:
@@ -669,11 +745,12 @@ with tabs[6]:
 # TAB 7: История
 with tabs[7]:
     st.subheader("📜 История сделок")
-    if st.session_state.user_data.get('history'):
-        for trade in reversed(st.session_state.user_data['history'][-50:]):
+    if st.session_state.user_history:
+        for trade in reversed(st.session_state.user_history[-50:]):
             st.write(trade)
         if st.button("Очистить историю"):
-            st.session_state.user_data['history'] = []
+            st.session_state.user_history = []
+            save_demo_history(st.session_state.user_id, [])
             st.rerun()
     else:
         st.info("Нет сделок")
@@ -686,17 +763,15 @@ with tabs[8]:
     st.write(f"**Кошелёк:** {st.session_state.wallet_address if st.session_state.wallet_address else 'не указан'}")
     st.divider()
     colb1, colb2 = st.columns(2)
-    colb1.metric("Общая прибыль (USDT)", f"{st.session_state.user_data.get('total_profit',0):.2f}")
-    colb2.metric("Всего сделок", st.session_state.user_data.get('trade_count',0))
+    colb1.metric("Общая прибыль (USDT)", f"{st.session_state.total_profit:.2f}")
+    colb2.metric("Всего сделок", st.session_state.trade_count)
     st.divider()
     if st.button("Пополнить демо-счёт (добавить 1000 USDT на первую биржу)"):
-        balances = st.session_state.user_data.get('balances', {})
         first_ex = EXCHANGES[0]
-        if first_ex in balances:
-            balances[first_ex]['USDT'] = balances[first_ex].get('USDT', 0) + 1000
-            st.session_state.user_data['balances'] = balances
-            st.success("Добавлено 1000 USDT на биржу " + first_ex.upper())
-            st.rerun()
+        st.session_state.user_balances[first_ex]['USDT'] += 1000
+        save_demo_balances(st.session_state.user_id, st.session_state.user_balances)
+        st.success("Добавлено 1000 USDT на биржу " + first_ex.upper())
+        st.rerun()
 
 # TAB 9: Чат
 with tabs[9]:
@@ -741,7 +816,7 @@ with tabs[9]:
 if show_admin:
     with tabs[-1]:
         st.subheader("👑 Админ-панель")
-        a1,a2,a3,a4,a5,a6 = st.tabs(["👥 Участники","📊 Токены","⚙ Пороги","🔐 API ключи","📜 Все сделки","💰 Заявки"])
+        a1,a2,a3,a4,a5,a6,a7 = st.tabs(["👥 Участники","📊 Токены","⚙ Пороги","🔐 API ключи","📜 Все сделки","💰 Заявки","🔄 Сброс демо"])
         with a1:
             users = get_all_users_for_admin()
             if users:
@@ -767,7 +842,7 @@ if show_admin:
         with a3:
             st.write("### Настройка порогов арбитража")
             new_th = {}
-            new_th['min_spread_percent'] = st.slider("Минимальный чистый спред (%)", 0.005, 0.5, thresholds['min_spread_percent'], 0.005, format="%.3f")
+            new_th['min_spread_percent'] = st.slider("Минимальный чистый спред (%)", 0.0005, 0.5, thresholds['min_spread_percent'], 0.0005, format="%.4f")
             new_th['fee_percent'] = st.number_input("Комиссия тейкера (%)", min_value=0.0, max_value=0.5, value=thresholds['fee_percent'], step=0.01, format="%.2f")
             new_th['slippage_percent'] = st.number_input("Проскальзывание (%)", min_value=0.0, max_value=1.0, value=thresholds['slippage_percent'], step=0.05, format="%.2f")
             new_th['min_24h_volume_usdt'] = st.number_input("Минимальный 24h объём (USDT)", min_value=0, value=thresholds['min_24h_volume_usdt'], step=10000)
@@ -812,6 +887,16 @@ if show_admin:
                 if st.button(f"Выполнить", key=f"comp_{w['id']}"):
                     update_withdrawal_status(w['id'], 'completed', st.session_state.email)
                     st.rerun()
+        with a7:
+            st.warning("⚠️ Сброс демо-данных пользователя удалит все его сделки и вернёт начальные балансы.")
+            users_list = get_all_users_for_admin()
+            user_options = {u['email']: u['id'] for u in users_list}
+            sel_user = st.selectbox("Выберите пользователя для сброса", list(user_options.keys()))
+            if st.button("🔄 Сбросить демо-данные этого пользователя"):
+                uid = user_options[sel_user]
+                reset_demo_data(uid)
+                st.success(f"Данные пользователя {sel_user} сброшены.")
+                st.rerun()
 
 # ---------- АВТОМАТИЧЕСКИЙ АРБИТРАЖ ----------
 if st.session_state.bot_running and st.session_state.exchanges:
@@ -823,10 +908,13 @@ if st.session_state.bot_running and st.session_state.exchanges:
         profit = best['net_profit']
         if profit >= 0.08:
             if is_admin(st.session_state.email):
-                st.session_state.user_data['total_profit'] += profit
-                st.session_state.user_data['trade_count'] += 1
-                st.session_state.user_data['history'].append(f"✅ {datetime.now().strftime('%H:%M:%S')} | {best['asset']} | АВТО {best['buy_exchange']}→{best['sell_exchange']} | +{profit:.2f} USDT")
+                st.session_state.total_profit += profit
+                st.session_state.trade_count += 1
+                st.session_state.user_history.append(f"✅ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {best['asset']} | АВТО {best['buy_exchange']}→{best['sell_exchange']} | +{profit:.2f} USDT")
                 add_trade(st.session_state.user_id, st.session_state.current_mode, best['asset'], 1, profit, best['buy_exchange'], best['sell_exchange'])
+                update_demo_stats(st.session_state.user_id, profit)
+                save_demo_history(st.session_state.user_id, st.session_state.user_history)
+                supabase.table('users').update({'total_profit': st.session_state.total_profit, 'trade_count': st.session_state.trade_count}).eq('id', st.session_state.user_id).execute()
                 st.toast(f"🎯 Автосделка {best['asset']} +{profit:.2f} USDT", icon="💰")
                 send_telegram(f"🤖 Автосделка: {best['asset']} {best['buy_exchange']}→{best['sell_exchange']} +{profit:.2f} USDT")
                 st.rerun()
@@ -835,12 +923,20 @@ if st.session_state.bot_running and st.session_state.exchanges:
                 net = profit - admin_fee
                 reinvest = net * REINVEST_SHARE
                 fixed = net * FIXED_SHARE
-                st.session_state.user_data['total_profit'] += profit
-                st.session_state.user_data['trade_count'] += 1
-                st.session_state.user_data['withdrawable_balance'] += fixed
-                st.session_state.user_data['total_admin_fee_paid'] += admin_fee
-                st.session_state.user_data['history'].append(f"✅ {datetime.now().strftime('%H:%M:%S')} | {best['asset']} | АВТО {best['buy_exchange']}→{best['sell_exchange']} | +{profit:.2f} USDT")
+                st.session_state.total_profit += profit
+                st.session_state.trade_count += 1
+                st.session_state.withdrawable_balance += fixed
+                st.session_state.total_admin_fee_paid += admin_fee
+                st.session_state.user_history.append(f"✅ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {best['asset']} | АВТО {best['buy_exchange']}→{best['sell_exchange']} | +{profit:.2f} USDT")
                 add_trade(st.session_state.user_id, st.session_state.current_mode, best['asset'], 1, profit, best['buy_exchange'], best['sell_exchange'])
+                update_demo_stats(st.session_state.user_id, profit)
+                save_demo_history(st.session_state.user_id, st.session_state.user_history)
+                supabase.table('users').update({
+                    'total_profit': st.session_state.total_profit,
+                    'trade_count': st.session_state.trade_count,
+                    'withdrawable_balance': st.session_state.withdrawable_balance,
+                    'total_admin_fee_paid': st.session_state.total_admin_fee_paid
+                }).eq('id', st.session_state.user_id).execute()
                 st.toast(f"🎯 Автосделка {best['asset']} +{profit:.2f} USDT (вывод {fixed:.2f})", icon="💰")
                 send_telegram(f"🤖 Автосделка: {best['asset']} +{profit:.2f} USDT")
                 st.rerun()
