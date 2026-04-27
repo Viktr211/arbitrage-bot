@@ -58,10 +58,22 @@ st.markdown("""
 
 # ---------- КОНСТАНТЫ ----------
 EXCHANGES = ["kucoin", "hitbtc", "okx", "bingx", "bitget"]
-DEFAULT_ASSETS = ["ETH", "SOL", "LINK", "AAVE", "DOT", "ADA", "TON", "VET", "HBAR", "XTZ"]
+# Ваш список токенов
+DEFAULT_ASSETS = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "SUI", "HYPE", "TON"]
+# Начальный портфель (количество токенов, примерно 5000 USDT суммарно по текущим ценам – для простоты зададим фиксированные количества)
+# Чтобы не зависеть от цен, установим примерные количества: 0.01 BTC, 0.1 ETH, 1 SOL, 0.5 BNB, 100 XRP, 500 ADA, 0.5 AVAX, 2 LINK, 10 SUI, 1 HYPE, 5 TON.
 DEFAULT_PORTFOLIO = {
-    "ETH": 0.28, "SOL": 6.0, "LINK": 10.0, "AAVE": 1.2, "DOT": 12.0,
-    "ADA": 800.0, "TON": 12.0, "VET": 8000.0, "HBAR": 800.0, "XTZ": 10.0
+    "BTC": 0.01,
+    "ETH": 0.1,
+    "SOL": 1.0,
+    "BNB": 0.5,
+    "XRP": 100.0,
+    "ADA": 500.0,
+    "AVAX": 0.5,
+    "LINK": 2.0,
+    "SUI": 10.0,
+    "HYPE": 1.0,
+    "TON": 5.0
 }
 DEMO_USDT_PER_EXCHANGE = 5000
 ADMIN_COMMISSION = 0.22
@@ -104,16 +116,37 @@ def init_demo_data(user_id):
     supabase.table('demo_history').upsert({'user_id': user_id, 'history': json.dumps([])}).execute()
     supabase.table('demo_stats').upsert({'user_id': user_id, 'stats': json.dumps({})}).execute()
 
+def ensure_demo_balances(user_id):
+    """Гарантирует, что у пользователя есть balances для всех бирж, заполненные значениями по умолчанию, если их нет."""
+    balances = load_demo_balances(user_id)
+    changed = False
+    for ex in EXCHANGES:
+        if ex not in balances:
+            balances[ex] = {"USDT": DEMO_USDT_PER_EXCHANGE, "portfolio": DEFAULT_PORTFOLIO.copy()}
+            changed = True
+        else:
+            # если нет USDT или портфеля – добавляем
+            if 'USDT' not in balances[ex]:
+                balances[ex]['USDT'] = DEMO_USDT_PER_EXCHANGE
+                changed = True
+            if 'portfolio' not in balances[ex]:
+                balances[ex]['portfolio'] = DEFAULT_PORTFOLIO.copy()
+                changed = True
+    if changed:
+        save_demo_balances(user_id, balances)
+    return balances
+
 def load_demo_balances(user_id):
     res = supabase.table('demo_balances').select('balances').eq('user_id', user_id).execute()
     if res.data:
         balances = json.loads(res.data[0]['balances'])
-        # Гарантируем наличие всех бирж
+        # убедимся, что для каждой биржи есть структура (для старых пользователей)
         for ex in EXCHANGES:
             if ex not in balances:
                 balances[ex] = {"USDT": DEMO_USDT_PER_EXCHANGE, "portfolio": DEFAULT_PORTFOLIO.copy()}
         return balances
     else:
+        # если записи нет – создаём
         bal = {ex: {"USDT": DEMO_USDT_PER_EXCHANGE, "portfolio": DEFAULT_PORTFOLIO.copy()} for ex in EXCHANGES}
         supabase.table('demo_balances').insert({'user_id': user_id, 'balances': json.dumps(bal)}).execute()
         return bal
@@ -425,7 +458,6 @@ if 'logged_in' not in st.session_state:
     st.session_state.api_keys = {}
     st.session_state.chat_unread = 0
     st.session_state.viewed_user_id = None
-    # Инициализируем пустые переменные, чтобы избежать AttributeError
     st.session_state.user_balances = {}
     st.session_state.user_history = []
     st.session_state.user_stats = {}
@@ -477,8 +509,8 @@ if not st.session_state.logged_in:
                     st.session_state.email = user['email']
                     st.session_state.wallet_address = user.get('wallet_address','')
                     st.session_state.user_id = user['id']
-                    # Загружаем данные из БД
-                    st.session_state.user_balances = load_demo_balances(user['id'])
+                    # Принудительно инициализируем балансы для всех бирж (для старых пользователей)
+                    st.session_state.user_balances = ensure_demo_balances(user['id'])
                     st.session_state.user_history = load_demo_history(user['id'])
                     st.session_state.user_stats = load_demo_stats(user['id'])
                     st.session_state.total_profit = user.get('total_profit', 0)
@@ -504,7 +536,6 @@ with col_status:
         st.markdown('<div><span class="status-indicator status-stopped"></span> <b>ОСТАНОВЛЕН</b></div>', unsafe_allow_html=True)
 with col_logout:
     if st.button("🚪 Выйти"):
-        # Сохраняем данные перед выходом
         save_demo_balances(st.session_state.user_id, st.session_state.user_balances)
         save_demo_history(st.session_state.user_id, st.session_state.user_history)
         st.session_state.logged_in = False
@@ -715,7 +746,11 @@ with tabs[5]:
     st.subheader("💼 Балансы USDT и портфель по каждой бирже")
     for ex in EXCHANGES:
         with st.expander(f"### {ex.upper()}"):
-            bal = st.session_state.user_balances.get(ex, {})
+            # Убедимся, что биржа существует в user_balances
+            if ex not in st.session_state.user_balances:
+                st.session_state.user_balances[ex] = {"USDT": DEMO_USDT_PER_EXCHANGE, "portfolio": DEFAULT_PORTFOLIO.copy()}
+                save_demo_balances(st.session_state.user_id, st.session_state.user_balances)
+            bal = st.session_state.user_balances[ex]
             usdt = bal.get('USDT', 0)
             st.metric("USDT", f"{usdt:.2f}")
             portfolio = bal.get('portfolio', {})
@@ -724,7 +759,7 @@ with tabs[5]:
                 price = get_price(st.session_state.exchanges.get(ex), asset) if st.session_state.exchanges.get(ex) else None
                 value = amount * price if price else 0
                 st.write(f"{asset}: {amount:.6f} ≈ ${value:.2f}")
-            # Кнопка для ручного пополнения USDT на этой бирже
+            # Ручное пополнение USDT
             add_usdt = st.number_input(f"Пополнить USDT на {ex.upper()}", min_value=0.0, step=100.0, key=f"add_{ex}")
             if st.button(f"➕ Добавить {add_usdt} USDT", key=f"btn_{ex}"):
                 if add_usdt > 0:
@@ -732,11 +767,11 @@ with tabs[5]:
                     save_demo_balances(st.session_state.user_id, st.session_state.user_balances)
                     st.success(f"Добавлено {add_usdt} USDT на биржу {ex.upper()}")
                     st.rerun()
-            # Кнопка для ручного пополнения портфеля токенами (добавляем 10% от начального количества)
+            # Восстановление портфеля
             if st.button(f"🔄 Восстановить портфель токенов на {ex.upper()} (по умолчанию)", key=f"res_port_{ex}"):
                 st.session_state.user_balances[ex]['portfolio'] = DEFAULT_PORTFOLIO.copy()
                 save_demo_balances(st.session_state.user_id, st.session_state.user_balances)
-                st.success(f"Портфель токенов на {ex.upper()} восстановлен до начального")
+                st.success(f"Портфель токенов на {ex.upper()} восстановлен")
                 st.rerun()
 
 # TAB 6: Вывод
@@ -794,7 +829,7 @@ with tabs[8]:
             st.session_state.user_balances[first_ex] = {"USDT": DEMO_USDT_PER_EXCHANGE, "portfolio": DEFAULT_PORTFOLIO.copy()}
         st.session_state.user_balances[first_ex]['USDT'] += 1000
         save_demo_balances(st.session_state.user_id, st.session_state.user_balances)
-        st.success("Добавлено 1000 USDT на биржу " + first_ex.upper())
+        st.success(f"Добавлено 1000 USDT на биржу {first_ex.upper()}")
         st.rerun()
 
 # TAB 9: Чат
