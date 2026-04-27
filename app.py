@@ -73,14 +73,14 @@ DEFAULT_THRESHOLDS = {
     "min_spread_percent": 0.0005,
     "fee_percent": 0.1,
     "slippage_percent": 0.2,
-    "min_24h_volume_usdt": 50000,
+    "min_24h_volume_usdt": 0,      # отключаем фильтр объёма для теста
     "max_withdrawal_fee_percent": 30
 }
 
 def is_admin(email):
     return email in ADMIN_EMAILS
 
-# ---------- ФУНКЦИИ ДЛЯ РАБОТЫ С ДАННЫМИ (ВСЁ В ТАБЛИЦЕ users) ----------
+# ---------- ФУНКЦИИ SUPABASE ----------
 def get_user_by_email(email):
     res = supabase.table('users').select('*').eq('email', email).execute()
     return res.data[0] if res.data else None
@@ -368,8 +368,9 @@ def find_all_arbitrage_opportunities(exchanges, thresholds):
                 sell_price = prices[sell_ex][asset]
                 if sell_price <= buy_price:
                     continue
-                if volumes[buy_ex].get(asset, 0) < thresholds['min_24h_volume_usdt'] or volumes[sell_ex].get(asset, 0) < thresholds['min_24h_volume_usdt']:
-                    continue
+                if thresholds['min_24h_volume_usdt'] > 0:
+                    if volumes[buy_ex].get(asset, 0) < thresholds['min_24h_volume_usdt'] or volumes[sell_ex].get(asset, 0) < thresholds['min_24h_volume_usdt']:
+                        continue
                 spread_pct = (sell_price - buy_price) / buy_price * 100
                 net_spread = spread_pct - thresholds['fee_percent'] - thresholds['slippage_percent']
                 if net_spread <= thresholds['min_spread_percent']:
@@ -405,41 +406,54 @@ def get_historical_ohlcv(exchange, symbol, timeframe='1h', limit=100):
     except:
         return pd.DataFrame()
 
+# ---------- ИСПРАВЛЕННАЯ ФУНКЦИЯ ВЫПОЛНЕНИЯ СДЕЛКИ ----------
 def execute_trade(opp, user_id, mode):
-    """Исполняет сделку: обновляет балансы, историю, статистику, возвращает прибыль"""
     profit = opp['net_profit']
     buy_ex = opp['buy_exchange']
     sell_ex = opp['sell_exchange']
     asset = opp['asset']
-    # симуляция: просто добавляем прибыль на счёт (в демо-режиме)
-    # В реальном режиме здесь были бы ордера
+    
+    if profit <= 0:
+        return 0
+    
     if mode == "Демо":
-        # Обновляем глобальные переменные (хранятся в session_state)
-        st.session_state.total_profit += profit
-        st.session_state.trade_count += 1
-        # Для обычного пользователя добавляем в вывод, для админа – нет
-        if not is_admin(st.session_state.email):
+        if is_admin(st.session_state.email):
+            st.session_state.total_profit += profit
+            st.session_state.trade_count += 1
+            # Увеличиваем USDT на бирже продажи
+            if sell_ex in st.session_state.user_balances:
+                st.session_state.user_balances[sell_ex]['USDT'] += profit
+            else:
+                st.session_state.user_balances[sell_ex] = {"USDT": DEMO_USDT_PER_EXCHANGE + profit, "portfolio": DEFAULT_PORTFOLIO.copy()}
+        else:
             admin_fee = profit * ADMIN_COMMISSION
             net = profit - admin_fee
             reinvest = net * REINVEST_SHARE
             fixed = net * FIXED_SHARE
+            st.session_state.total_profit += profit
+            st.session_state.trade_count += 1
             st.session_state.withdrawable_balance += fixed
             st.session_state.total_admin_fee_paid += admin_fee
-        # Записываем историю
+            if sell_ex in st.session_state.user_balances:
+                st.session_state.user_balances[sell_ex]['USDT'] += reinvest
+            else:
+                st.session_state.user_balances[sell_ex] = {"USDT": DEMO_USDT_PER_EXCHANGE + reinvest, "portfolio": DEFAULT_PORTFOLIO.copy()}
+        
         history_entry = f"✅ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {asset} | {buy_ex}→{sell_ex} | +{profit:.2f} USDT"
         st.session_state.user_history.append(history_entry)
         save_demo_history(user_id, st.session_state.user_history)
-        # Обновляем статистику в БД
         update_demo_stats(user_id, profit)
-        # Обновляем поля total_profit и trade_count в таблице users
+        save_demo_balances(user_id, st.session_state.user_balances)
         supabase.table('users').update({
             'total_profit': st.session_state.total_profit,
             'trade_count': st.session_state.trade_count,
             'withdrawable_balance': st.session_state.withdrawable_balance,
-            'total_admin_fee_paid': st.session_state.total_admin_fee_paid
+            'total_admin_fee_paid': st.session_state.total_admin_fee_paid,
+            'demo_balances': json.dumps(st.session_state.user_balances),
+            'demo_history': json.dumps(st.session_state.user_history[-500:]),
+            'demo_stats': json.dumps(st.session_state.user_stats)
         }).eq('id', user_id).execute()
-        # Сохраняем балансы (если нужно – но в демо они не меняются)
-        save_demo_balances(user_id, st.session_state.user_balances)
+        add_trade(user_id, mode, asset, 1, profit, buy_ex, sell_ex)
         return profit
     return profit
 
@@ -447,20 +461,20 @@ def execute_trade(opp, user_id, mode):
 def background_arbitrage_loop():
     while True:
         try:
-            if st.session_state.get('bot_running', False):
-                time.sleep(8)  # проверяем каждые 8 секунд
+            if st.session_state.get('bot_running', False) and st.session_state.get('user_id') and st.session_state.get('exchanges'):
+                time.sleep(8)
                 thresholds = get_thresholds()
                 opps = find_all_arbitrage_opportunities(st.session_state.exchanges, thresholds)
-                if opps and st.session_state.user_id:
+                if opps:
                     best = opps[0]
                     profit = best['net_profit']
-                    if profit > 0.001:  # ПОРОГ СДЕЛКИ – ЛЮБАЯ ПОЛОЖИТЕЛЬНАЯ (0.001 USDT)
+                    if profit > 0.001:
                         execute_trade(best, st.session_state.user_id, st.session_state.current_mode)
                         send_telegram(f"🤖 Автосделка: {best['asset']} {best['buy_exchange']}→{best['sell_exchange']} +{profit:.2f} USDT")
             else:
                 time.sleep(5)
         except Exception as e:
-            print(f"Ошибка в фоновом потоке: {e}")
+            print(f"Фоновый поток ошибка: {e}")
             time.sleep(5)
 
 if 'background_thread_started' not in st.session_state:
@@ -630,7 +644,7 @@ if show_admin:
     tabs_list.append("👑 Админ-панель")
 tabs = st.tabs(tabs_list)
 
-# TAB 0: Dashboard (сокращён)
+# TAB 0: Dashboard
 with tabs[0]:
     st.subheader("📊 Текущие цены на биржах")
     for asset in get_available_tokens()[:5]:
@@ -677,11 +691,13 @@ with tabs[2]:
         for idx, opp in enumerate(opps[:10]):
             key = f"{opp['asset']}_{opp['buy_exchange']}_{opp['sell_exchange']}_{idx}"
             st.info(f"🎯 {opp['asset']}: купить на {opp['buy_exchange'].upper()} ${opp['buy_price']:.2f} → продать на {opp['sell_exchange'].upper()} ${opp['sell_price']:.2f} | +{opp['profit_usdt']:.2f} USDT (чистая: {opp['net_profit']:.2f})")
-            # Кнопка ручного исполнения
             if st.button(f"Исполнить вручную {opp['asset']} {opp['buy_exchange']}→{opp['sell_exchange']}", key=key):
                 profit = execute_trade(opp, st.session_state.user_id, st.session_state.current_mode)
-                st.success(f"Сделка исполнена! +{profit:.2f} USDT")
-                st.rerun()
+                if profit > 0:
+                    st.success(f"Сделка исполнена! +{profit:.2f} USDT")
+                    st.rerun()
+                else:
+                    st.error("Ошибка исполнения сделки")
     else:
         st.info("Арбитражных возможностей не найдено. Попробуйте снизить пороги в админ-панели.")
 
@@ -696,16 +712,11 @@ with tabs[3]:
                 parts = trade.split("|")
                 if len(parts)>=3:
                     token = parts[1].strip()
-                    profit = None
-                    for part in parts:
-                        if "+" in part and "USDT" in part:
-                            profit = float(part.split("+")[1].split()[0])
-                            break
-                    if profit:
-                        token_stats.setdefault(token,{'trades':0,'profit':0})
-                        token_stats[token]['trades']+=1
-                        token_stats[token]['profit']+=profit
-                        total_profit_all+=profit
+                    profit = float(parts[3].split("+")[1].split()[0])
+                    token_stats.setdefault(token,{'trades':0,'profit':0})
+                    token_stats[token]['trades']+=1
+                    token_stats[token]['profit']+=profit
+                    total_profit_all+=profit
             except: pass
     if token_stats:
         data = [{"Токен":t,"Сделок":d['trades'],"Прибыль":f"{d['profit']:.2f}","% общ.":f"{d['profit']/total_profit_all*100:.1f}%"} for t,d in sorted(token_stats.items(), key=lambda x:x[1]['profit'], reverse=True)]
@@ -960,4 +971,4 @@ if show_admin:
                 st.success(f"Данные {sel_user} сброшены")
                 st.rerun()
 
-st.caption(f"🚀 Сканируется {len(get_available_tokens())} токенов на {len(EXCHANGES)} биржах | Порог спреда: {thresholds['min_spread_percent']}% | Режим: {st.session_state.current_mode} | Авто-сделки включены (порог >0.001 USDT)")
+st.caption(f"🚀 Сканируется {len(get_available_tokens())} токенов на {len(EXCHANGES)} биржах | Порог спреда: {thresholds['min_spread_percent']}% | Режим: {st.session_state.current_mode}")
