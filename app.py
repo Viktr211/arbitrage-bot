@@ -12,7 +12,7 @@ import base64
 from supabase import create_client, Client
 import requests
 
-st.set_page_config(page_title="Арбитраж PRO 3.0 | 5 бирж", layout="wide", page_icon="🔄", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Накопительный арбитражный бот", layout="wide", page_icon="🔄", initial_sidebar_state="collapsed")
 
 # ---------- SUPABASE ----------
 SUPABASE_URL = st.secrets.get("SUPABASE_URL")
@@ -70,7 +70,7 @@ FIXED_SHARE = 0.50
 ADMIN_EMAILS = ["cb777899@gmail.com", "admin@arbitrage.com"]
 
 DEFAULT_THRESHOLDS = {
-    "min_spread_percent": 0.0005,   # 0.0005% (новый минимум)
+    "min_spread_percent": 0.0005,
     "fee_percent": 0.1,
     "slippage_percent": 0.2,
     "min_24h_volume_usdt": 50000,
@@ -86,7 +86,6 @@ def get_user_by_email(email):
     return res.data[0] if res.data else None
 
 def create_user(email, pwd_hash, full_name, country, city, phone, wallet):
-    # Создаём пользователя с пустыми полями для статистики
     data = {
         'email': email, 'password_hash': pwd_hash, 'full_name': full_name,
         'country': country, 'city': city, 'phone': phone, 'wallet_address': wallet,
@@ -95,13 +94,11 @@ def create_user(email, pwd_hash, full_name, country, city, phone, wallet):
     }
     res = supabase.table('users').insert(data).execute()
     user_id = res.data[0]['id']
-    # Инициализируем демо-данные
     init_demo_data(user_id)
     send_telegram(f"🆕 Новый пользователь: {full_name} ({email})")
     return user_id
 
 def init_demo_data(user_id):
-    """Создаёт записи в demo_balances, demo_history, demo_stats для пользователя"""
     balances = {ex: {"USDT": DEMO_USDT_PER_EXCHANGE, "portfolio": DEFAULT_PORTFOLIO.copy()} for ex in EXCHANGES}
     supabase.table('demo_balances').upsert({'user_id': user_id, 'balances': json.dumps(balances)}).execute()
     supabase.table('demo_history').upsert({'user_id': user_id, 'history': json.dumps([])}).execute()
@@ -138,7 +135,6 @@ def save_demo_stats(user_id, stats):
     supabase.table('demo_stats').upsert({'user_id': user_id, 'stats': json.dumps(stats)}).execute()
 
 def update_demo_stats(user_id, profit):
-    """Обновляет статистику по дням/неделям/месяцам"""
     stats = load_demo_stats(user_id)
     now = datetime.now()
     day_key = now.strftime("%Y-%m-%d")
@@ -258,7 +254,6 @@ def get_unread_count(user_id):
     return res.count or 0
 
 def reset_demo_data(user_id):
-    """Сброс демо-данных пользователя"""
     balances = {ex: {"USDT": DEMO_USDT_PER_EXCHANGE, "portfolio": DEFAULT_PORTFOLIO.copy()} for ex in EXCHANGES}
     supabase.table('demo_balances').upsert({'user_id': user_id, 'balances': json.dumps(balances)}).execute()
     supabase.table('demo_history').upsert({'user_id': user_id, 'history': json.dumps([])}).execute()
@@ -425,6 +420,15 @@ if 'logged_in' not in st.session_state:
     st.session_state.api_keys = {}
     st.session_state.chat_unread = 0
     st.session_state.viewed_user_id = None
+    # Данные пользователя (будут загружены при входе)
+    st.session_state.user_balances = {}
+    st.session_state.user_history = []
+    st.session_state.user_stats = {}
+    st.session_state.total_profit = 0
+    st.session_state.trade_count = 0
+    st.session_state.total_admin_fee_paid = 0
+    st.session_state.withdrawable_balance = 0
+    st.session_state.last_withdrawal_date = None
 
 if st.session_state.exchanges is None:
     with st.spinner("Подключение к 5 биржам..."):
@@ -435,7 +439,7 @@ thresholds = get_thresholds()
 
 # ---------- РЕГИСТРАЦИЯ / ВХОД ----------
 if not st.session_state.logged_in:
-    st.markdown('<h1 class="main-header">🔄 АРБИТРАЖ PRO 3.0 | 5 БИРЖ</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">🔄 НАКОПИТЕЛЬНЫЙ АРБИТРАЖНЫЙ БОТ</h1>', unsafe_allow_html=True)
     tab_reg, tab_login = st.tabs(["📝 Регистрация","🔑 Вход"])
     with tab_reg:
         with st.form("register_form"):
@@ -487,7 +491,7 @@ if not st.session_state.logged_in:
 # ---------- ОСНОВНОЙ ИНТЕРФЕЙС ----------
 col_logo, col_status, col_logout = st.columns([3,1,1])
 with col_logo:
-    st.markdown('<h1 class="main-header">🔄 АРБИТРАЖ PRO 3.0 | 5 БИРЖ</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">🔄 НАКОПИТЕЛЬНЫЙ АРБИТРАЖНЫЙ БОТ</h1>', unsafe_allow_html=True)
 with col_status:
     if st.session_state.bot_running:
         st.markdown('<div><span class="status-indicator status-running"></span> <b>РАБОТАЕТ 24/7</b></div>', unsafe_allow_html=True)
@@ -496,8 +500,9 @@ with col_status:
 with col_logout:
     if st.button("🚪 Выйти"):
         # Сохраняем данные перед выходом
-        save_demo_balances(st.session_state.user_id, st.session_state.user_balances)
-        save_demo_history(st.session_state.user_id, st.session_state.user_history)
+        if st.session_state.user_id:
+            save_demo_balances(st.session_state.user_id, st.session_state.user_balances)
+            save_demo_history(st.session_state.user_id, st.session_state.user_history)
         st.session_state.logged_in = False
         st.session_state.bot_running = False
         save_bot_status(False)
@@ -675,7 +680,6 @@ with tabs[4]:
     st.subheader("📈 Прибыль по периодам")
     stats = st.session_state.user_stats
     if stats:
-        # Преобразуем ключи в datetime для сортировки
         days = {k:v for k,v in stats.items() if len(k)==10 and '-' in k}
         weeks = {k:v for k,v in stats.items() if 'W' in k}
         months = {k:v for k,v in stats.items() if len(k)==7 and '-' in k and 'W' not in k}
