@@ -17,7 +17,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<h1 class="main-header">🚀 НАКОПИТЕЛЬНЫЙ АРБИТРАЖ PRO - Тест v8.4</h1>', unsafe_allow_html=True)
+st.markdown('<h1 class="main-header">🚀 НАКОПИТЕЛЬНЫЙ АРБИТРАЖ PRO - Тест v8.5</h1>', unsafe_allow_html=True)
 st.caption("OKX + KuCoin | 500 USDT | Мин. сделка 12 USDT | Сканирование 2.5 сек")
 
 # ====================== СЕССИЯ ======================
@@ -43,18 +43,12 @@ def init_exchanges():
         kucoin = ccxt.kucoin({'enableRateLimit': True})
         return {'okx': okx, 'kucoin': kucoin}
     except Exception as e:
-        st.error(f"Ошибка подключения бирж: {e}")
+        st.error(f"Ошибка подключения: {e}")
         return None
 
 if st.session_state.exchanges is None:
     with st.spinner("Подключение OKX и KuCoin..."):
         st.session_state.exchanges = init_exchanges()
-
-# Проверка подключения
-if st.session_state.exchanges:
-    st.success("✅ Биржи подключены: OKX + KuCoin")
-else:
-    st.error("❌ Не удалось подключить биржи")
 
 def get_price(exchange, symbol):
     try:
@@ -64,7 +58,7 @@ def get_price(exchange, symbol):
 
 # ====================== АРБИТРАЖ ======================
 def find_arbitrage_opportunity():
-    assets = ["BTC", "ETH", "SOL", "SUI", "TON", "XRP"]
+    assets = ["BTC", "ETH", "SOL", "SUI", "TON", "XRP", "ADA"]
     for asset in assets:
         okx_price = get_price(st.session_state.exchanges['okx'], asset)
         kucoin_price = get_price(st.session_state.exchanges['kucoin'], asset)
@@ -108,23 +102,47 @@ col1.metric("💰 Общая прибыль", f"{st.session_state.total_profit:.
 col2.metric("📊 Сделок", st.session_state.trade_count)
 col3.metric("Мин. сделка", "12 USDT")
 
-st.subheader("🔄 Арбитраж OKX ↔ KuCoin")
-if st.button("🔄 Проверить спреды"):
-    st.rerun()
+# ====================== ВКЛАДКИ ======================
+tabs = st.tabs(["📊 Dashboard", "🔄 Арбитраж", "📦 Портфель", "💰 Кошелёк", "📜 История"])
 
-opportunity = find_arbitrage_opportunity()
-if opportunity:
-    st.success(f"🎯 Найдена возможность! +{opportunity['profit_usdt']:.2f} USDT (спред {opportunity['spread_pct']:.2f}%)")
-    st.info(f"{opportunity['asset']} | Купить на KuCoin по ${opportunity['buy_price']:.2f} | Продать на OKX по ${opportunity['sell_price']:.2f}")
-else:
-    st.info("Пока нет выгодных спредов (сканирование каждые 2.5 сек)")
+with tabs[0]:
+    st.subheader("📊 Dashboard")
+    st.metric("💰 Общая прибыль", f"{st.session_state.total_profit:.2f} USDT")
+    st.metric("📊 Сделок", st.session_state.trade_count)
 
-st.subheader("📜 Последние сделки")
-if st.session_state.history:
-    for trade in reversed(st.session_state.history[-12:]):
-        st.write(trade)
-else:
-    st.info("Сделок пока нет")
+with tabs[1]:
+    st.subheader("🔄 Арбитраж OKX ↔ KuCoin")
+    if st.button("🔄 Проверить спреды"):
+        st.rerun()
+    
+    opportunity = find_arbitrage_opportunity()
+    if opportunity:
+        st.success(f"🎯 Найдена возможность! +{opportunity['profit_usdt']:.2f} USDT (спред {opportunity['spread_pct']:.2f}%)")
+        st.info(f"{opportunity['asset']} | Купить на KuCoin | Продать на OKX")
+    else:
+        st.info("Пока нет выгодных спредов (сканирование каждые 2.5 сек)")
+
+with tabs[2]:
+    st.subheader("📦 Портфель")
+    st.write("**OKX портфель**")
+    for asset, amount in st.session_state.portfolio_okx.items():
+        st.write(f"{asset}: {amount:.4f}")
+    st.write("**KuCoin портфель**")
+    for asset, amount in st.session_state.portfolio_kucoin.items():
+        st.write(f"{asset}: {amount:.4f}")
+
+with tabs[3]:
+    st.subheader("💰 Кошелёк")
+    st.metric("OKX баланс", f"{st.session_state.okx_balance:.2f} USDT")
+    st.metric("KuCoin баланс", f"{st.session_state.kucoin_balance:.2f} USDT")
+
+with tabs[4]:
+    st.subheader("📜 История сделок")
+    if st.session_state.history:
+        for trade in reversed(st.session_state.history[-15:]):
+            st.write(trade)
+    else:
+        st.info("Сделок пока нет")
 
 # ====================== РАБОТА БОТА ======================
 if st.session_state.bot_running:
@@ -145,4 +163,4 @@ if st.session_state.bot_running:
         st.toast(f"🎯 {asset} | +{profit:.2f} USDT", icon="💰")
         st.rerun()
 
-st.caption("Тестовая версия v8.4 | OKX + KuCoin")
+st.caption("Тестовая версия v8.5 | OKX + KuCoin")
