@@ -6,6 +6,7 @@ from datetime import datetime
 
 st.set_page_config(page_title="Накопительный Арбитраж PRO - Тест", layout="wide", page_icon="🚀")
 
+# ====================== СТИЛЬ ======================
 st.markdown("""
 <style>
     .stApp { background: linear-gradient(180deg, #001a33 0%, #003087 100%) !important; color: white !important; }
@@ -17,24 +18,19 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<h1 class="main-header">🚀 НАКОПИТЕЛЬНЫЙ АРБИТРАЖ PRO - Тест v8.1</h1>', unsafe_allow_html=True)
+st.markdown('<h1 class="main-header">🚀 НАКОПИТЕЛЬНЫЙ АРБИТРАЖ PRO - Тест v8.2</h1>', unsafe_allow_html=True)
 st.caption("OKX + KuCoin | 500 USDT | Мин. сделка 12 USDT | Сканирование 2.5 сек")
-
-# ====================== КОНФИГУРАЦИЯ ======================
-DEFAULT_ASSETS = ["BTC", "ETH", "SOL", "BNB", "XRP", "SUI", "TON", "HYPE"]
-MIN_TRADE_AMOUNT = 12.0   # минимальная сумма сделки в USDT
 
 # ====================== СЕССИЯ ======================
 for key, default in {
-    'logged_in': True,           # для теста сразу считаем авторизованным
     'bot_running': False,
     'total_profit': 0.0,
     'trade_count': 0,
     'history': [],
-    'okx_balance': 125.0,        # USDT на OKX
-    'kucoin_balance': 125.0,     # USDT на KuCoin
-    'portfolio_okx': {asset: 2.0 for asset in DEFAULT_ASSETS},
-    'portfolio_kucoin': {asset: 2.0 for asset in DEFAULT_ASSETS},
+    'okx_balance': 125.0,
+    'kucoin_balance': 125.0,
+    'portfolio_okx': {asset: 2.0 for asset in ["BTC", "ETH", "SOL", "SUI", "TON"]},
+    'portfolio_kucoin': {asset: 2.0 for asset in ["BTC", "ETH", "SOL", "SUI", "TON"]},
     'exchanges': None
 }.items():
     if key not in st.session_state:
@@ -43,15 +39,13 @@ for key, default in {
 # ====================== ПОДКЛЮЧЕНИЕ БИРЖ ======================
 @st.cache_resource
 def init_exchanges():
-    exchanges = {}
     try:
-        exchanges['okx'] = ccxt.okx({'enableRateLimit': True})
-        exchanges['kucoin'] = ccxt.kucoin({'enableRateLimit': True})
-        # Для теста можно включить sandbox, если нужно
-        # exchanges['kucoin'].set_sandbox_mode(True)
+        okx = ccxt.okx({'enableRateLimit': True})
+        kucoin = ccxt.kucoin({'enableRateLimit': True})
+        return {'okx': okx, 'kucoin': kucoin}
     except:
         st.error("Ошибка подключения бирж")
-    return exchanges
+        return None
 
 if st.session_state.exchanges is None:
     st.session_state.exchanges = init_exchanges()
@@ -64,19 +58,19 @@ def get_price(exchange, symbol):
 
 # ====================== АРБИТРАЖ ======================
 def find_arbitrage_opportunity():
-    for asset in DEFAULT_ASSETS:
+    assets = ["BTC", "ETH", "SOL", "SUI", "TON"]
+    for asset in assets:
         okx_price = get_price(st.session_state.exchanges['okx'], asset)
         kucoin_price = get_price(st.session_state.exchanges['kucoin'], asset)
         
         if not okx_price or not kucoin_price:
             continue
             
-        # Покупаем на дешёвой, продаём на дорогой
-        if kucoin_price < okx_price:
+        if kucoin_price < okx_price * 0.996:   # спред больше 0.4%
             spread = (okx_price - kucoin_price) / kucoin_price * 100
-            profit = (okx_price - kucoin_price) * 0.8   # после приблизительных комиссий
+            profit = (okx_price - kucoin_price) * 0.8   # после комиссий
             
-            if spread > 0.35 and profit > MIN_TRADE_AMOUNT:
+            if profit >= 12.0:
                 return {
                     'asset': asset,
                     'buy_exchange': 'kucoin',
@@ -88,8 +82,8 @@ def find_arbitrage_opportunity():
                 }
     return None
 
-# ====================== ГЛАВНЫЙ ИНТЕРФЕЙС ======================
-st.write(f"**OKX баланс:** {st.session_state.okx_balance:.2f} USDT | **KuCoin баланс:** {st.session_state.kucoin_balance:.2f} USDT")
+# ====================== ИНТЕРФЕЙС ======================
+st.write(f"**OKX:** {st.session_state.okx_balance:.2f} USDT | **KuCoin:** {st.session_state.kucoin_balance:.2f} USDT")
 
 # Статус
 status_color = "status-running" if st.session_state.bot_running else "status-stopped"
@@ -104,6 +98,32 @@ if c2.button("⏸ ПАУЗА", use_container_width=True):
 if c3.button("⏹ СТОП", use_container_width=True):
     st.session_state.bot_running = False
 
+# Главные метрики
+col1, col2, col3 = st.columns(3)
+col1.metric("💰 Общая прибыль", f"{st.session_state.total_profit:.2f} USDT")
+col2.metric("📊 Сделок", st.session_state.trade_count)
+col3.metric("Мин. сделка", "12 USDT")
+
+# Арбитраж
+st.subheader("🔄 Арбитраж OKX ↔ KuCoin")
+if st.button("🔄 Проверить спреды сейчас"):
+    st.rerun()
+
+opportunity = find_arbitrage_opportunity()
+if opportunity:
+    st.success(f"🎯 Найдена возможность! +{opportunity['profit_usdt']:.2f} USDT")
+    st.info(f"{opportunity['asset']} | Купить на {opportunity['buy_exchange'].upper()} по ${opportunity['buy_price']:.2f} | Продать на {opportunity['sell_exchange'].upper()} по ${opportunity['sell_price']:.2f}")
+else:
+    st.info("Пока нет выгодных спредов (проверка каждые 2.5 сек)")
+
+# История
+st.subheader("📜 Последние сделки")
+if st.session_state.history:
+    for trade in reversed(st.session_state.history[-10:]):
+        st.write(trade)
+else:
+    st.info("Сделок пока нет")
+
 # ====================== РАБОТА БОТА ======================
 if st.session_state.bot_running:
     time.sleep(2.5)   # сканирование каждые 2.5 секунды
@@ -114,25 +134,13 @@ if st.session_state.bot_running:
         profit = opportunity['profit_usdt']
         asset = opportunity['asset']
         
-        # Симулируем исполнение
         st.session_state.total_profit += profit
         st.session_state.trade_count += 1
         st.session_state.history.append(
-            f"✅ {datetime.now().strftime('%H:%M:%S')} | {asset} | Куплено на {opportunity['buy_exchange'].upper()} | "
-            f"Продано на {opportunity['sell_exchange'].upper()} | +{profit:.2f} USDT"
+            f"✅ {datetime.now().strftime('%H:%M:%S')} | {asset} | {opportunity['buy_exchange'].upper()} → {opportunity['sell_exchange'].upper()} | +{profit:.2f} USDT"
         )
         
-        st.toast(f"🎯 {asset} | +{profit:.2f} USDT", icon="💰")
+        st.toast(f"🎯 Сделка по {asset} | +{profit:.2f} USDT", icon="💰")
         st.rerun()
 
-# ====================== ИНФОРМАЦИЯ ======================
-st.subheader("📊 Текущие результаты теста")
-st.metric("💰 Общая прибыль", f"{st.session_state.total_profit:.2f} USDT")
-st.metric("📊 Количество сделок", st.session_state.trade_count)
-
-if st.session_state.history:
-    st.subheader("📜 Последние сделки")
-    for trade in reversed(st.session_state.history[-15:]):
-        st.write(trade)
-
-st.caption("Тестовая версия v8.1 | OKX + KuCoin | Мин. сделка 12 USDT | Сканирование 2.5 сек")
+st.caption("Тестовая версия v8.2 | OKX + KuCoin | Мин. сделка 12 USDT")
