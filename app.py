@@ -6,12 +6,13 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime, timedelta
+import threading
 import hashlib
 import base64
 from supabase import create_client, Client
 import requests
 
-st.set_page_config(page_title="Накопительный арбитражный бот", layout="wide", page_icon="🔄", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Накопительный арбитражный бот | АВТО", layout="wide", page_icon="🔄", initial_sidebar_state="collapsed")
 
 # ---------- SUPABASE ----------
 SUPABASE_URL = st.secrets.get("SUPABASE_URL")
@@ -75,6 +76,10 @@ DEFAULT_THRESHOLDS = {
     "min_24h_volume_usdt": 0,
     "max_withdrawal_fee_percent": 30
 }
+
+# НАСТРОЙКИ АВТОМАТИЧЕСКОГО РЕЖИМА
+SCAN_INTERVAL = 2.5          # секунд между автоматическими сделками
+MIN_AUTO_PROFIT = 0.08       # минимальная прибыль для авто-сделки (USDT)
 
 def is_admin(email):
     return email in ADMIN_EMAILS
@@ -307,7 +312,7 @@ def decrypt_api_key(encrypted):
         except:
             return ""
 
-# ---------- ПОДКЛЮЧЕНИЕ К БИРЖАМ (кэширование цен) ----------
+# ---------- ПОДКЛЮЧЕНИЕ К БИРЖАМ (с кэшированием) ----------
 @st.cache_resource
 def init_exchanges():
     exchanges = {}
@@ -404,7 +409,7 @@ def get_historical_ohlcv(exchange, symbol, timeframe='1h', limit=100):
     except:
         return pd.DataFrame()
 
-# ---------- ВЫПОЛНЕНИЕ СДЕЛКИ ----------
+# ---------- ИСПОЛНЕНИЕ СДЕЛКИ ----------
 def execute_trade(opp, user_id, mode):
     profit = opp['net_profit']
     buy_ex = opp['buy_exchange']
@@ -451,6 +456,25 @@ def execute_trade(opp, user_id, mode):
         return profit
     return profit
 
+# ---------- АВТОМАТИЧЕСКИЙ ЦИКЛ (фоновый поток) ----------
+def auto_trade_loop():
+    """Фоновый поток, который каждые SCAN_INTERVAL секунд ищет и исполняет лучшую сделку"""
+    while st.session_state.get('auto_trade_enabled', False):
+        try:
+            # Получаем возможности
+            opps = find_all_arbitrage_opportunities(st.session_state.exchanges, get_thresholds())
+            if opps:
+                best = opps[0]
+                if best['net_profit'] >= MIN_AUTO_PROFIT:
+                    profit = execute_trade(best, st.session_state.user_id, st.session_state.current_mode)
+                    if profit > 0:
+                        msg = f"🤖 АВТОСДЕЛКА: {best['asset']} {best['buy_exchange']}→{best['sell_exchange']} +{profit:.2f} USDT"
+                        send_telegram(msg)
+            time.sleep(SCAN_INTERVAL)
+        except Exception as e:
+            st.session_state.user_history.append(f"⚠️ Ошибка авто-цикла: {e}")
+            time.sleep(5)
+
 # ---------- СЕССИЯ ----------
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
@@ -459,6 +483,7 @@ if 'logged_in' not in st.session_state:
     st.session_state.wallet_address = ''
     st.session_state.exchanges = None
     st.session_state.bot_running = False
+    st.session_state.auto_trade_enabled = False
     st.session_state.exchange_status = {}
     st.session_state.current_mode = "Демо"
     st.session_state.user_id = None
@@ -483,7 +508,7 @@ thresholds = get_thresholds()
 
 # ---------- РЕГИСТРАЦИЯ / ВХОД ----------
 if not st.session_state.logged_in:
-    st.markdown('<h1 class="main-header">🔄 Накопительный арбитражный бот</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">🔄 Накопительный арбитражный бот | АВТО</h1>', unsafe_allow_html=True)
     tab_reg, tab_login = st.tabs(["📝 Регистрация","🔑 Вход"])
     with tab_reg:
         with st.form("register_form"):
@@ -534,12 +559,14 @@ if not st.session_state.logged_in:
 # ---------- ОСНОВНОЙ ИНТЕРФЕЙС ----------
 col_logo, col_status, col_logout = st.columns([3,1,1])
 with col_logo:
-    st.markdown('<h1 class="main-header">🔄 Накопительный арбитражный бот</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">🔄 Накопительный арбитражный бот | АВТО</h1>', unsafe_allow_html=True)
 with col_status:
-    if st.session_state.bot_running:
-        st.markdown('<div><span class="status-indicator status-running"></span> <b>РАБОТАЕТ 24/7</b></div>', unsafe_allow_html=True)
+    if st.session_state.auto_trade_enabled:
+        st.markdown('<div><span class="status-indicator status-running"></span> <b>АВТО-ТОРГОВЛЯ АКТИВНА</b></div>', unsafe_allow_html=True)
+    elif st.session_state.bot_running:
+        st.markdown('<div><span class="status-indicator status-running"></span> <b>БОТ ЗАПУЩЕН (ручной режим)</b></div>', unsafe_allow_html=True)
     else:
-        st.markdown('<div><span class="status-indicator status-stopped"></span> <b>ОСТАНОВЛЕН (нажмите СТАРТ для авто-режима)</b></div>', unsafe_allow_html=True)
+        st.markdown('<div><span class="status-indicator status-stopped"></span> <b>ОСТАНОВЛЕН</b></div>', unsafe_allow_html=True)
 with col_logout:
     if st.button("🚪 Выйти"):
         save_demo_balances(st.session_state.user_id, st.session_state.user_balances)
@@ -553,7 +580,6 @@ st.write(f"🔌 **Биржи:** {', '.join([ex.upper() for ex in EXCHANGES])}")
 st.write(f"🪙 **Токены:** {', '.join(get_available_tokens())}")
 st.divider()
 
-# Подсчёт общего USDT
 total_usdt = sum(bal.get('USDT',0) for bal in st.session_state.user_balances.values())
 total_portfolio_value = 0
 for ex, bal in st.session_state.user_balances.items():
@@ -566,22 +592,32 @@ col1.metric("💰 Всего USDT", f"{total_usdt:.2f}")
 col2.metric("📦 Стоимость портфеля", f"{total_portfolio_value:.2f}")
 col3.metric("📊 Всего сделок", st.session_state.trade_count)
 
-c1,c2,c3,c4 = st.columns(4)
+c1, c2, c3, c4 = st.columns(4)
 with c1:
     st.markdown('<div class="green-button">', unsafe_allow_html=True)
-    if st.button("▶ СТАРТ", use_container_width=True):
-        st.session_state.bot_running = True
-        st.rerun()
+    if st.button("▶ СТАРТ (авто)", use_container_width=True):
+        if not st.session_state.exchanges:
+            st.session_state.exchanges, _ = init_exchanges()
+        if st.session_state.user_id:
+            st.session_state.bot_running = True
+            st.session_state.auto_trade_enabled = True
+            # Запускаем фоновый поток, если ещё не запущен или умер
+            if 'auto_thread' not in st.session_state or not st.session_state.auto_thread.is_alive():
+                st.session_state.auto_thread = threading.Thread(target=auto_trade_loop, daemon=True)
+                st.session_state.auto_thread.start()
+            st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 with c2:
     st.markdown('<div class="yellow-button">', unsafe_allow_html=True)
-    if st.button("⏸ ПАУЗА", use_container_width=True):
+    if st.button("⏸ ПАУЗА (остановить авто)", use_container_width=True):
+        st.session_state.auto_trade_enabled = False
         st.session_state.bot_running = False
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 with c3:
     st.markdown('<div class="red-button">', unsafe_allow_html=True)
-    if st.button("⏹ СТОП", use_container_width=True):
+    if st.button("⏹ СТОП (полная остановка)", use_container_width=True):
+        st.session_state.auto_trade_enabled = False
         st.session_state.bot_running = False
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
@@ -597,7 +633,7 @@ if show_admin:
     tabs_list.append("👑 Админ-панель")
 tabs = st.tabs(tabs_list)
 
-# TAB 0: Dashboard
+# ---------- TAB 0: DASHBOARD ----------
 with tabs[0]:
     st.subheader("📊 Текущие цены на биржах")
     for asset in get_available_tokens()[:5]:
@@ -612,7 +648,7 @@ with tabs[0]:
                     st.metric(ex.upper(), "❌")
         st.divider()
 
-# TAB 1: Графики
+# ---------- TAB 1: ГРАФИКИ ----------
 with tabs[1]:
     st.subheader("📈 Японские свечи")
     col_a, col_b = st.columns(2)
@@ -631,25 +667,13 @@ with tabs[1]:
         else:
             st.warning("Нет данных")
 
-# TAB 2: Арбитраж
+# ---------- TAB 2: АРБИТРАЖ ----------
 with tabs[2]:
-    st.subheader("🔍 Арбитражные возможности")
+    st.subheader("🔍 Арбитражные возможности (авто-торговля активна)")
     if st.button("🔄 Обновить", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
     opps = find_all_arbitrage_opportunities(st.session_state.exchanges, thresholds)
-    
-    # Кнопка авто-исполнения лучшей сделки
-    if opps:
-        col_auto, _ = st.columns([1,3])
-        with col_auto:
-            if st.button("🔥 Исполнить лучшую сделку (авто)", use_container_width=True):
-                profit = execute_trade(opps[0], st.session_state.user_id, st.session_state.current_mode)
-                if profit > 0:
-                    st.success(f"Сделка исполнена! +{profit:.2f} USDT")
-                    st.rerun()
-                else:
-                    st.error("Ошибка исполнения")
     if opps:
         st.success(f"Найдено {len(opps)} возможностей")
         for idx, opp in enumerate(opps[:10]):
@@ -665,7 +689,7 @@ with tabs[2]:
     else:
         st.info("Арбитражных возможностей не найдено. Попробуйте снизить пороги в админ-панели.")
 
-# TAB 3: Статистика по токенам
+# ---------- TAB 3: СТАТИСТИКА ПО ТОКЕНАМ ----------
 with tabs[3]:
     st.subheader("📊 Статистика сделок по токенам")
     token_stats = {}
@@ -691,7 +715,7 @@ with tabs[3]:
     else:
         st.info("Нет данных")
 
-# TAB 4: Доходность по дням
+# ---------- TAB 4: ДОХОДНОСТЬ ПО ДНЯМ ----------
 with tabs[4]:
     st.subheader("📈 Прибыль по периодам")
     stats = st.session_state.user_stats
@@ -722,7 +746,7 @@ with tabs[4]:
     else:
         st.info("Нет статистики")
 
-# TAB 5: Балансы по биржам
+# ---------- TAB 5: БАЛАНСЫ ПО БИРЖАМ ----------
 with tabs[5]:
     st.subheader("💼 Балансы USDT и портфель по каждой бирже")
     for ex in EXCHANGES:
@@ -752,7 +776,7 @@ with tabs[5]:
                 st.success(f"Портфель токенов на {ex.upper()} восстановлен")
                 st.rerun()
 
-# TAB 6: Вывод
+# ---------- TAB 6: ВЫВОД ----------
 with tabs[6]:
     st.subheader("💰 Вывод средств")
     st.write(f"**Доступно для вывода:** {st.session_state.withdrawable_balance:.2f} USDT")
@@ -777,7 +801,7 @@ with tabs[6]:
         supabase.table('users').update({'wallet_address': wallet_input}).eq('email', st.session_state.email).execute()
         st.success("Сохранено")
 
-# TAB 7: История
+# ---------- TAB 7: ИСТОРИЯ ----------
 with tabs[7]:
     st.subheader("📜 История сделок")
     if st.session_state.user_history:
@@ -790,7 +814,7 @@ with tabs[7]:
     else:
         st.info("Нет сделок")
 
-# TAB 8: Кабинет
+# ---------- TAB 8: ЛИЧНЫЙ КАБИНЕТ ----------
 with tabs[8]:
     st.subheader("👤 Личный кабинет")
     st.write(f"**Имя:** {st.session_state.username}")
@@ -810,7 +834,7 @@ with tabs[8]:
         st.success("Добавлено 1000 USDT на биржу " + first_ex.upper())
         st.rerun()
 
-# TAB 9: Чат
+# ---------- TAB 9: ЧАТ ----------
 with tabs[9]:
     st.subheader("💬 Чат с поддержкой")
     if is_admin(st.session_state.email):
@@ -935,4 +959,4 @@ if show_admin:
                 st.success(f"Данные {sel_user} сброшены")
                 st.rerun()
 
-st.caption(f"🚀 Сканируется {len(get_available_tokens())} токенов на {len(EXCHANGES)} биржах | Порог спреда: {thresholds['min_spread_percent']}% | Режим: {st.session_state.current_mode}")
+st.caption(f"🚀 Сканируется {len(get_available_tokens())} токенов на {len(EXCHANGES)} биржах | Порог спреда: {thresholds['min_spread_percent']}% | Режим: {st.session_state.current_mode} | Авто-сделки: {SCAN_INTERVAL} сек")
