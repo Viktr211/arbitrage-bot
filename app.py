@@ -52,13 +52,12 @@ st.markdown("""
 
 # ---------- НАСТРОЙКИ ----------
 EXCHANGES = ["kucoin", "bybit", "hitbtc"]
-DEFAULT_ASSETS = ["ETH", "SOL", "LINK", "AAVE", "DOT", "ADA", "TON", "VET", "HBAR", "XTZ"]
-
+DEFAULT_ASSETS = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "SUI", "HYPE", "TON"]  # полный список
 DEMO_USDT_PER_EXCHANGE = 125.0
 DEFAULT_PORTFOLIO = {
-    "ETH": 0.085, "SOL": 1.9, "LINK": 4.6, "AAVE": 0.85, "DOT": 6.9,
-    "ADA": 340.0, "TON": 3.5, "VET": 2600.0, "HBAR": 520.0, "XTZ": 7.5
-}
+    "BTC": 0.002, "ETH": 0.085, "SOL": 1.9, "BNB": 0.22, "XRP": 280.0,
+    "ADA": 340.0, "AVAX": 1.6, "LINK": 4.6, "SUI": 50.0, "HYPE": 3.0, "TON": 3.5
+}  # примерно 125 USDT суммарной стоимости (усреднённо)
 
 ADMIN_COMMISSION = 0.22
 REINVEST_SHARE = 0.50
@@ -615,6 +614,9 @@ with c4:
         st.rerun()
 
 if st.button("🔄 Обновить данные", use_container_width=True):
+    # Принудительно перезагружаем данные из Supabase
+    user = supabase.table('users').select('*').eq('id', st.session_state.user_id).execute().data[0]
+    st.session_state.user_data = load_user_mode_data(user, "Демо")
     st.rerun()
 
 # ---------- ВКЛАДКИ ----------
@@ -900,10 +902,13 @@ if show_admin:
                     update_withdrawal_status(w['id'], 'completed', st.session_state.email)
                     st.rerun()
         with a6:
-            st.warning("Сбросить балансы текущего пользователя до 125 USDT + портфель на каждой бирже (очистит историю сделок).")
+            st.warning("Сброс балансов текущего пользователя до 125 USDT + портфель на каждой бирже (очистит историю сделок).")
             if st.button("🔄 Сбросить мои балансы до 125 USDT + портфель"):
                 reset_demo_balances_to_target(st.session_state.user_id)
-                st.success("Балансы сброшены! Перезагрузите страницу.")
+                # Принудительно перезагружаем данные
+                user = supabase.table('users').select('*').eq('id', st.session_state.user_id).execute().data[0]
+                st.session_state.user_data = load_user_mode_data(user, "Демо")
+                st.success("Балансы сброшены! Страница будет обновлена.")
                 st.rerun()
 
 st.caption(f"🚀 Сканируется {len(get_available_tokens())} токенов на {len(connected)} биржах | Авто-интервал: 3 сек | Режим: {st.session_state.current_mode}")
