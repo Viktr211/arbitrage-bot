@@ -14,7 +14,6 @@ import requests
 
 st.set_page_config(page_title="Арбитраж PRO | Три биржи", layout="wide", page_icon="🚀", initial_sidebar_state="collapsed")
 
-# ---------- SUPABASE ----------
 SUPABASE_URL = st.secrets.get("SUPABASE_URL")
 SUPABASE_KEY = st.secrets.get("SUPABASE_KEY")
 if not SUPABASE_URL or not SUPABASE_KEY:
@@ -22,7 +21,6 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     st.stop()
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ---------- TELEGRAM ----------
 TELEGRAM_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID")
 def send_telegram(msg):
@@ -33,7 +31,6 @@ def send_telegram(msg):
         except:
             pass
 
-# ---------- СТИЛИ ----------
 st.markdown("""
 <style>
     .stApp { background: linear-gradient(180deg, #001a33 0%, #003087 100%) !important; color: white; }
@@ -50,49 +47,43 @@ st.markdown("""
     .token-card { background: rgba(0,100,200,0.2); border-radius: 10px; padding: 8px; margin: 4px; text-align: center; }
     .profit-card { background: rgba(0,255,100,0.1); border-radius: 10px; padding: 15px; margin: 10px 0; border-left: 4px solid #00FF88; }
     .stTabs [data-baseweb="tab-list"] { flex-wrap: wrap !important; gap: 4px; }
-    .api-warning { background: #ffaa0022; border-left: 4px solid #FFAA00; padding: 10px; border-radius: 8px; margin: 10px 0; }
-    .api-success { background: #00ff8822; border-left: 4px solid #00FF88; padding: 10px; border-radius: 8px; margin: 10px 0; }
 </style>
 """, unsafe_allow_html=True)
 
-# ---------- КОНСТАНТЫ ----------
-# Три равноправные биржи (можно заменить)
-EXCHANGES = ["kucoin", "bybit", "okx"]
+# ---------- НАСТРОЙКИ ----------
+EXCHANGES = ["kucoin", "bybit", "hitbtc"]   # три биржи
 DEFAULT_ASSETS = ["ETH", "SOL", "LINK", "AAVE", "DOT", "ADA", "TON", "VET", "HBAR", "XTZ"]
-DEMO_USDT_PER_EXCHANGE = 125           # 125 USDT на каждой бирже
-DEMO_PORTFOLIO_VALUE = 125             # токенов на 125 USDT на каждой бирже
+DEMO_USDT_PER_EXCHANGE = 125
 DEFAULT_PORTFOLIO = {
     "ETH": 0.085, "SOL": 1.9, "LINK": 4.6, "AAVE": 0.85, "DOT": 6.9,
     "ADA": 340.0, "TON": 3.5, "VET": 2600.0, "HBAR": 520.0, "XTZ": 7.5
-}  # примерные количества, суммарная стоимость ~125 USDT (при ценах ETH ~1700, SOL ~65 и т.д.)
-
+}
 ADMIN_COMMISSION = 0.22
 REINVEST_SHARE = 0.50
 FIXED_SHARE = 0.50
 ADMIN_EMAILS = ["cb777899@gmail.com", "admin@arbitrage.com"]
 
-MIN_SPREAD_PERCENT = 0.1
-FEE_PERCENT = 0.1
-SLIPPAGE_PERCENT = 0.2
-MIN_24H_VOLUME_USDT = 200000
-MAX_WITHDRAWAL_FEE_PERCENT = 15
+# МИНИМАЛЬНЫЕ ПОРОГИ
+MIN_SPREAD_PERCENT = 0.001
+FEE_PERCENT = 0.01
+SLIPPAGE_PERCENT = 0.01
+MIN_24H_VOLUME_USDT = 0
+MAX_WITHDRAWAL_FEE_PERCENT = 100
 
 def is_admin(email):
     return email in ADMIN_EMAILS
 
-# ---------- ФУНКЦИИ SUPABASE (упрощены) ----------
+# ---------- SUPABASE ФУНКЦИИ ----------
 def get_user_by_email(email):
     res = supabase.table('users').select('*').eq('email', email).execute()
     return res.data[0] if res.data else None
 
 def create_user(email, pwd_hash, full_name, country, city, phone, wallet):
-    initial_balances = {
-        ex: {"USDT": DEMO_USDT_PER_EXCHANGE, "portfolio": DEFAULT_PORTFOLIO.copy()} for ex in EXCHANGES
-    }
+    initial_balances = {ex: {"USDT": DEMO_USDT_PER_EXCHANGE, "portfolio": DEFAULT_PORTFOLIO.copy()} for ex in EXCHANGES}
     data = {
         'email': email, 'password_hash': pwd_hash, 'full_name': full_name,
         'country': country, 'city': city, 'phone': phone, 'wallet_address': wallet,
-        'registration_status': 'approved',   # сразу одобрен
+        'registration_status': 'approved',
         'trade_balance': 0, 'withdrawable_balance': 0, 'total_profit': 0, 'trade_count': 0, 'total_admin_fee_paid': 0,
         'demo_balances': json.dumps(initial_balances),
         'demo_history': json.dumps([]),
@@ -253,12 +244,6 @@ def get_target_portfolio():
 def set_target_portfolio(portfolio):
     set_config('portfolio', portfolio)
 
-def get_demo_usdt_reserves():
-    return {}
-
-def update_demo_usdt_reserve(exchange, amount):
-    pass
-
 def get_messages(user_id=None, limit=50):
     if user_id:
         res = supabase.table('messages').select('*').eq('user_id', user_id).order('created_at', desc=True).limit(limit).execute()
@@ -346,9 +331,6 @@ def get_24h_volume(exchange, symbol):
     except:
         return 0
 
-def get_withdrawal_fee(exchange, asset):
-    return 0.0
-
 # ---------- БАЛАНСЫ И ОРДЕРА (демо) ----------
 def get_balance(exchange_name, asset):
     if asset == 'USDT':
@@ -368,7 +350,6 @@ def update_balance(exchange_name, asset, delta):
     save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
 
 def place_order(exchange, symbol, side, amount, price=None):
-    # В демо-режиме просто имитируем
     return (f"demo_{int(time.time())}", price or 0, amount, 0.0)
 
 def execute_arbitrage_trade(opp):
@@ -388,9 +369,9 @@ def execute_arbitrage_trade(opp):
     if token_sell < amount:
         return None
 
-    # Имитируем ордера
-    _, exec_buy, _, _ = place_order(st.session_state.exchanges[buy_ex], f"{asset}/USDT", 'buy', amount, buy_price)
-    _, exec_sell, _, _ = place_order(st.session_state.exchanges[sell_ex], f"{asset}/USDT", 'sell', amount, sell_price)
+    # Имитация ордеров
+    _, _, _, _ = place_order(st.session_state.exchanges[buy_ex], f"{asset}/USDT", 'buy', amount, buy_price)
+    _, _, _, _ = place_order(st.session_state.exchanges[sell_ex], f"{asset}/USDT", 'sell', amount, sell_price)
 
     update_balance(buy_ex, 'USDT', -buy_cost)
     update_balance(buy_ex, asset, +amount)
@@ -410,7 +391,6 @@ def find_all_arbitrage_opportunities():
     if not st.session_state.exchanges:
         return opportunities
     tokens = get_available_tokens()
-    # Получаем цены только для тех бирж, которые есть в exchanges
     prices = {}
     for ex_name, ex in st.session_state.exchanges.items():
         prices[ex_name] = {}
@@ -418,7 +398,6 @@ def find_all_arbitrage_opportunities():
             price = get_price(ex, asset)
             if price:
                 prices[ex_name][asset] = price
-    # Перебираем только те биржи, для которых есть цены
     exchange_names = list(prices.keys())
     for buy_ex in exchange_names:
         for sell_ex in exchange_names:
@@ -438,7 +417,7 @@ def find_all_arbitrage_opportunities():
                 profit_before = sell_price - buy_price - (buy_price * (FEE_PERCENT/100) + sell_price * (FEE_PERCENT/100))
                 if profit_before <= 0:
                     continue
-                net_profit = profit_before  # без комиссии вывода
+                net_profit = profit_before
                 if net_profit <= 0:
                     continue
                 opportunities.append({
@@ -461,12 +440,6 @@ def get_historical_ohlcv(exchange, symbol, timeframe='1h', limit=100):
         return df
     except:
         return pd.DataFrame()
-
-def get_thresholds():
-    return {}
-
-def get_user_data():
-    return st.session_state.user_data
 
 def save_user_mode_data(user_id, mode, data):
     if mode == "Демо":
@@ -503,7 +476,7 @@ def load_user_mode_data(user, mode):
     else:
         return {}
 
-# ---------- ФОНОВЫЙ ПОТОК ДЛЯ АВТО-СДЕЛОК ----------
+# ---------- ФОНОВЫЙ ПОТОК (интервал 3 секунды) ----------
 def background_arbitrage_loop():
     while True:
         try:
@@ -514,10 +487,10 @@ def background_arbitrage_loop():
                     profit = best['net_profit_after_withdrawal']
                     if profit > 0:
                         execute_arbitrage_trade(best)
-                time.sleep(8)
+                time.sleep(3)   # сканирование каждые 3 секунды
             else:
                 time.sleep(5)
-        except:
+        except Exception as e:
             time.sleep(5)
 
 if 'background_thread_started' not in st.session_state:
@@ -674,7 +647,7 @@ if show_admin:
     tabs_list.append("👑 Админ-панель")
 tabs = st.tabs(tabs_list)
 
-# TAB 0: Dashboard
+# Вкладка 0: Dashboard
 with tabs[0]:
     st.subheader("📊 Статус сканирования")
     tokens = get_available_tokens()
@@ -695,7 +668,7 @@ with tabs[0]:
     if st.session_state.bot_running:
         st.info(f"🟢 Бот сканирует **{len(tokens)}** токенов на **{len(connected)}** биржах")
 
-# TAB 1: Графики
+# Вкладка 1: Графики
 with tabs[1]:
     st.subheader("📈 Японские свечи")
     col_a, col_b = st.columns(2)
@@ -716,10 +689,10 @@ with tabs[1]:
     else:
         st.warning("Биржа не подключена")
 
-# TAB 2: Арбитраж
+# Вкладка 2: Арбитраж
 with tabs[2]:
     st.subheader("🔍 Арбитражные возможности")
-    if st.button("🔄 Обновить", use_container_width=True):
+    if st.button("🔄 Обновить"):
         st.cache_data.clear()
         st.rerun()
     opps = find_all_arbitrage_opportunities()
@@ -738,7 +711,7 @@ with tabs[2]:
     else:
         st.info("Арбитражных возможностей не найдено")
 
-# TAB 3: Доходность
+# Вкладка 3: Доходность
 with tabs[3]:
     st.subheader("Калькулятор ожидаемой доходности")
     capital = st.number_input("Капитал (USDT)", min_value=100.0, value=10000.0, step=1000.0)
@@ -746,7 +719,7 @@ with tabs[3]:
         exp_profit = capital * 0.008
         st.markdown(f"<div class='profit-card'><b>Ожидаемая дневная доходность:</b><br>Прибыль в день: <b style='color:#00FF88;'>${exp_profit:.2f}</b><br>Доходность: 0.8%</div>", unsafe_allow_html=True)
 
-# TAB 4: Статистика по токенам
+# Вкладка 4: Статистика по токенам
 with tabs[4]:
     st.subheader("📊 Статистика по токенам")
     token_stats = {}
@@ -777,7 +750,7 @@ with tabs[4]:
     else:
         st.info("Нет данных")
 
-# TAB 5: Портфель
+# Вкладка 5: Портфель
 with tabs[5]:
     st.subheader("📦 Портфель токенов")
     total = 0
@@ -793,7 +766,7 @@ with tabs[5]:
             st.write(f"{asset}: {amount:.6f}")
     st.metric("💰 Общая стоимость портфеля", f"${total:,.2f}")
 
-# TAB 6: Кошелёк
+# Вкладка 6: Кошелёк
 with tabs[6]:
     st.subheader("💰 Кошелёк и вывод")
     st.write(f"**Доступно для вывода:** {st.session_state.user_data.get('withdrawable_balance',0):.2f} USDT")
@@ -820,7 +793,7 @@ with tabs[6]:
         supabase.table('users').update({'wallet_address': wallet_input}).eq('email', st.session_state.email).execute()
         st.success("Сохранено")
 
-# TAB 7: История
+# Вкладка 7: История
 with tabs[7]:
     st.subheader("📜 История сделок")
     if st.session_state.user_data.get('history'):
@@ -833,7 +806,7 @@ with tabs[7]:
     else:
         st.info("Нет сделок")
 
-# TAB 8: Личный кабинет
+# Вкладка 8: Личный кабинет
 with tabs[8]:
     st.subheader("👤 Личный кабинет")
     st.write(f"**Имя:** {st.session_state.username}")
@@ -861,7 +834,7 @@ with tabs[8]:
         st.success("Заявка отправлена")
         st.rerun()
 
-# TAB 9: Чат
+# Вкладка 9: Чат
 with tabs[9]:
     st.subheader("💬 Чат с поддержкой")
     if is_admin(st.session_state.email):
@@ -904,7 +877,7 @@ with tabs[9]:
 if show_admin:
     with tabs[-1]:
         st.subheader("👑 Админ-панель")
-        a1,a2,a3,a4,a5,a6 = st.tabs(["👥 Участники","📊 Токены","🔐 API ключи","📜 Все сделки","💰 Заявки","⚙ Демо-резервы"])
+        a1, a2, a3, a4, a5, a6 = st.tabs(["👥 Участники","📊 Токены","🔐 API ключи","📜 Все сделки","💰 Заявки","⚙ Демо-резервы"])
         with a1:
             users = get_all_users_for_admin()
             if users:
@@ -973,5 +946,4 @@ if show_admin:
         with a6:
             st.write("Настройка начальных демо-резервов (не используется для трёх бирж)")
 
-# ---------- АВТОМАТИЧЕСКИЙ АРБИТРАЖ (уже запущен в фоне) ----------
 st.caption(f"🚀 Сканируется {len(get_available_tokens())} токенов на {len(connected)} биржах | Режим: {st.session_state.current_mode}")
