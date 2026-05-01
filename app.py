@@ -1,4 +1,3 @@
-python
 import streamlit as st
 import time
 import json
@@ -15,6 +14,7 @@ from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(page_title="Накопительный арбитражный бот | АВТО", layout="wide", page_icon="🔄", initial_sidebar_state="collapsed")
 
+# ==================== SUPABASE ====================
 SUPABASE_URL = st.secrets.get("SUPABASE_URL")
 SUPABASE_KEY = st.secrets.get("SUPABASE_KEY")
 if not SUPABASE_URL or not SUPABASE_KEY:
@@ -32,6 +32,7 @@ def send_telegram(msg):
         except:
             pass
 
+# ==================== СТИЛИ ====================
 st.markdown("""
 <style>
     .stApp { background: linear-gradient(180deg, #001a33 0%, #003087 100%) !important; color: white; }
@@ -51,7 +52,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ====================== КОНСТАНТЫ ======================
+# ==================== КОНСТАНТЫ ====================
 EXCHANGES = ["kucoin", "hitbtc", "okx", "bingx", "bitget"]
 DEFAULT_ASSETS = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "SUI", "HYPE", "TON"]
 DEFAULT_PORTFOLIO = {
@@ -72,13 +73,13 @@ DEFAULT_THRESHOLDS = {
     "max_withdrawal_fee_percent": 30
 }
 
-SCAN_INTERVAL = 3          # секунд между авто-сделками
-MIN_AUTO_PROFIT = 0.01     # минимальная прибыль для авто-сделки (USDT)
+SCAN_INTERVAL = 3
+MIN_AUTO_PROFIT = 0.01
 
 def is_admin(email):
     return email in ADMIN_EMAILS
 
-# ====================== ФУНКЦИИ SUPABASE ======================
+# ==================== ФУНКЦИИ SUPABASE ====================
 def get_user_by_email(email):
     res = supabase.table('users').select('*').eq('email', email).execute()
     return res.data[0] if res.data else None
@@ -284,7 +285,7 @@ def reset_demo_data(user_id):
     }).eq('id', user_id).execute()
     send_telegram(f"🔄 Демо-данные пользователя {user_id} сброшены")
 
-# ---------- ШИФРОВАНИЕ ----------
+# ==================== ШИФРОВАНИЕ ====================
 ENCRYPTION_KEY = hashlib.sha256("arbitrage_secret_key_2024".encode()).digest()
 def encrypt_api_key(key):
     if not key: return ""
@@ -306,7 +307,7 @@ def decrypt_api_key(encrypted):
         except:
             return ""
 
-# ---------- ПОДКЛЮЧЕНИЕ К БИРЖАМ ----------
+# ==================== ПОДКЛЮЧЕНИЕ К БИРЖАМ ====================
 @st.cache_resource
 def init_exchanges():
     exchanges = {}
@@ -389,7 +390,7 @@ def get_historical_ohlcv(exchange, symbol, timeframe='1h', limit=100):
     except:
         return pd.DataFrame()
 
-# ---------- ИСПОЛНЕНИЕ СДЕЛКИ ----------
+# ==================== ИСПОЛНЕНИЕ СДЕЛКИ ====================
 def execute_trade(opp, user_id, mode):
     profit = opp['net_profit']
     buy_ex = opp['buy_exchange']
@@ -436,7 +437,7 @@ def execute_trade(opp, user_id, mode):
         return profit
     return profit
 
-# ====================== ИНИЦИАЛИЗАЦИЯ СЕССИИ ======================
+# ==================== СЕССИЯ ====================
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.username = None
@@ -466,7 +467,7 @@ if st.session_state.exchanges is None:
 
 thresholds = get_thresholds()
 
-# ---------- РЕГИСТРАЦИЯ / ВХОД ----------
+# ==================== РЕГИСТРАЦИЯ / ВХОД ====================
 if not st.session_state.logged_in:
     st.markdown('<h1 class="main-header">🔄 Накопительный арбитражный бот | АВТО</h1>', unsafe_allow_html=True)
     tab_reg, tab_login = st.tabs(["📝 Регистрация","🔑 Вход"])
@@ -516,7 +517,7 @@ if not st.session_state.logged_in:
                     st.error("Неверный email или пароль")
     st.stop()
 
-# ---------- АВТО-СДЕЛКИ ЧЕРЕЗ АВТООБНОВЛЕНИЕ (НАДЁЖНО) ----------
+# ==================== АВТО-ТОРГОВЛЯ ====================
 if st.session_state.auto_trade_enabled:
     st_autorefresh(interval=SCAN_INTERVAL * 1000, key="auto_trade_refresh")
     if st.session_state.exchanges and st.session_state.user_id:
@@ -532,9 +533,9 @@ if st.session_state.auto_trade_enabled:
                         st.session_state.auto_trade_log.append(f"{datetime.now().strftime('%H:%M:%S')} {best['asset']} {best['buy_exchange']}→{best['sell_exchange']} +{profit:.2f}")
                         send_telegram(f"🤖 {best['asset']} {best['buy_exchange']}→{best['sell_exchange']} +{profit:.2f} USDT")
         except Exception as e:
-            pass  # Игнорируем ошибки, чтобы интерфейс не ломался
+            pass
 
-# ---------- ОСНОВНОЙ ИНТЕРФЕЙС ----------
+# ==================== ОСНОВНОЙ ИНТЕРФЕЙС ====================
 col_logo, col_status, col_logout = st.columns([3, 1, 1])
 with col_logo:
     st.markdown('<h1 class="main-header">🔄 Накопительный арбитражный бот | АВТО</h1>', unsafe_allow_html=True)
@@ -613,14 +614,14 @@ with st.expander("📋 Лог авто-сделок (последние собы
     else:
         st.info("Нет сообщений")
 
-# ---------- ВКЛАДКИ ----------
+# ==================== ВКЛАДКИ ====================
 show_admin = is_admin(st.session_state.email)
 tabs_list = ["📊 Dashboard", "📈 Графики", "🔄 Арбитраж", "📊 Статистика", "📈 Доходность по дням", "💼 Балансы", "💰 Вывод", "📜 История", "👤 Кабинет", "💬 Чат"]
 if show_admin:
     tabs_list.append("👑 Админ-панель")
 tabs = st.tabs(tabs_list)
 
-# ----- Вкладка 0 Dashboard -----
+# ----- Вкладка 0: Dashboard -----
 with tabs[0]:
     st.subheader("📊 Текущие цены на биржах")
     for asset in get_available_tokens()[:5]:
@@ -635,7 +636,7 @@ with tabs[0]:
                     st.metric(ex.upper(), "❌")
         st.divider()
 
-# ----- Вкладка 1 Графики -----
+# ----- Вкладка 1: Графики -----
 with tabs[1]:
     st.subheader("📈 Японские свечи")
     col_a, col_b = st.columns(2)
@@ -654,7 +655,7 @@ with tabs[1]:
         else:
             st.warning("Нет данных")
 
-# ----- Вкладка 2 Арбитраж (только информация, без ручных кнопок) -----
+# ----- Вкладка 2: Арбитраж (только мониторинг) -----
 with tabs[2]:
     st.subheader("🔍 Арбитражные возможности (авто-торговля активна)")
     if st.button("🔄 Обновить", use_container_width=True):
@@ -668,7 +669,7 @@ with tabs[2]:
     else:
         st.info("Арбитражных возможностей не найдено. Попробуйте снизить пороги в админ-панели.")
 
-# ----- Вкладка 3 Статистика по токенам -----
+# ----- Вкладка 3: Статистика по токенам -----
 with tabs[3]:
     st.subheader("📊 Статистика сделок по токенам")
     token_stats = {}
@@ -687,7 +688,7 @@ with tabs[3]:
             except:
                 pass
     if token_stats:
-        data = [{"Токен": t, "Сделок": d['trades'], "Прибыль": f"{d['profit']:.2f}", "% общ.": f"{d['profit'] / total_profit_all * 100:.1f}%"} for t, d in sorted(token_stats.items(), key=lambda x: x[1]['profit'], reverse=True)]
+        data = [{"Токен": t, "Сделок": d['trades'], "Прибыль": f"{d['profit']:.2f}", "% общ.": f"{d['profit']/total_profit_all*100:.1f}%"} for t, d in sorted(token_stats.items(), key=lambda x: x[1]['profit'], reverse=True)]
         st.dataframe(pd.DataFrame(data), use_container_width=True, hide_index=True)
         fig = px.pie(pd.DataFrame([{"Токен": t, "Прибыль": d['profit']} for t, d in token_stats.items()]), values='Прибыль', names='Токен', title="Доля прибыли")
         fig.update_layout(template="plotly_dark", height=450)
@@ -695,15 +696,15 @@ with tabs[3]:
     else:
         st.info("Нет данных")
 
-# ----- Вкладка 4 Доходность по дням -----
+# ----- Вкладка 4: Доходность по дням -----
 with tabs[4]:
     st.subheader("📈 Прибыль по периодам")
     stats = st.session_state.user_stats
     if stats:
-        days = {k: v for k, v in stats.items() if len(k) == 10 and '-' in k}
+        days = {k: v for k, v in stats.items() if len(k)==10 and '-' in k}
         weeks = {k: v for k, v in stats.items() if 'W' in k}
-        months = {k: v for k, v in stats.items() if len(k) == 7 and '-' in k and 'W' not in k}
-        years = {k: v for k, v in stats.items() if len(k) == 4}
+        months = {k: v for k, v in stats.items() if len(k)==7 and '-' in k and 'W' not in k}
+        years = {k: v for k, v in stats.items() if len(k)==4}
         if days:
             df_days = pd.DataFrame([{"Дата": k, "Прибыль": v} for k, v in sorted(days.items())])
             fig = px.bar(df_days, x="Дата", y="Прибыль", title="Прибыль по дням")
@@ -726,7 +727,7 @@ with tabs[4]:
     else:
         st.info("Нет статистики")
 
-# ----- Вкладка 5 Балансы по биржам -----
+# ----- Вкладка 5: Балансы по биржам -----
 with tabs[5]:
     st.subheader("💼 Балансы USDT и портфель по каждой бирже")
     for ex in EXCHANGES:
@@ -748,7 +749,7 @@ with tabs[5]:
                     st.success(f"Добавлено {add_usdt} USDT на биржу {ex.upper()}")
                     st.rerun()
 
-# ----- Вкладка 6 Вывод -----
+# ----- Вкладка 6: Вывод -----
 with tabs[6]:
     st.subheader("💰 Вывод средств")
     st.write(f"**Доступно для вывода:** {st.session_state.withdrawable_balance:.2f} USDT")
@@ -773,7 +774,7 @@ with tabs[6]:
         supabase.table('users').update({'wallet_address': wallet_input}).eq('email', st.session_state.email).execute()
         st.success("Сохранено")
 
-# ----- Вкладка 7 История -----
+# ----- Вкладка 7: История -----
 with tabs[7]:
     st.subheader("📜 История сделок")
     if st.session_state.user_history:
@@ -786,7 +787,7 @@ with tabs[7]:
     else:
         st.info("Нет сделок")
 
-# ----- Вкладка 8 Личный кабинет -----
+# ----- Вкладка 8: Личный кабинет -----
 with tabs[8]:
     st.subheader("👤 Личный кабинет")
     st.write(f"**Имя:** {st.session_state.username}")
@@ -806,7 +807,7 @@ with tabs[8]:
         st.success("Добавлено 1000 USDT на биржу " + first_ex.upper())
         st.rerun()
 
-# ----- Вкладка 9 Чат -----
+# ----- Вкладка 9: Чат -----
 with tabs[9]:
     st.subheader("💬 Чат с поддержкой")
     if is_admin(st.session_state.email):
@@ -855,7 +856,7 @@ if show_admin:
             if users:
                 df = pd.DataFrame([{
                     "Email": u['email'], "Имя": u['full_name'], "Статус": u['registration_status'],
-                    "Прибыль": f"${u.get('total_profit', 0):.2f}", "Сделок": u.get('trade_count', 0)
+                    "Прибыль": f"${u.get('total_profit',0):.2f}", "Сделок": u.get('trade_count',0)
                 } for u in users])
                 st.dataframe(df, use_container_width=True, hide_index=True)
                 emails = {u['email']: u['id'] for u in users}
