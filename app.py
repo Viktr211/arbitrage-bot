@@ -68,7 +68,7 @@ ADMIN_EMAILS = ["cb777899@gmail.com", "admin@arbitrage.com"]
 MIN_SPREAD_PERCENT = 0.001   # 0.001%
 FEE_PERCENT = 0.01           # 0.01%
 SLIPPAGE_PERCENT = 0.01      # 0.01%
-TRADE_PERCENT = 15           # 15% от доступных средств
+TRADE_PERCENT = 50           # 50% от доступных средств
 MIN_TRADE_USDT = 10.0        # минимальная сделка 10 USDT
 
 def is_admin(email):
@@ -76,7 +76,6 @@ def is_admin(email):
 
 # ---------- ФУНКЦИИ ДЛЯ СБРОСА БАЛАНСОВ ----------
 def reset_demo_balances_to_target(user_id):
-    """Перезаписывает demo_balances на целевые 125 USDT + портфель на каждой бирже, обнуляет историю и статистику"""
     target_balances = {ex: {"USDT": DEMO_USDT_PER_EXCHANGE, "portfolio": DEFAULT_PORTFOLIO.copy()} for ex in EXCHANGES}
     supabase.table('users').update({
         'demo_balances': json.dumps(target_balances),
@@ -317,7 +316,6 @@ def update_balance(exchange_name, asset, delta):
     save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
 
 def place_order(exchange, symbol, side, amount, price=None):
-    # Имитация ордера (демо)
     return (f"demo_{int(time.time())}", price or 0, amount, 0.0)
 
 def execute_arbitrage_trade(opp, log_list):
@@ -328,29 +326,25 @@ def execute_arbitrage_trade(opp, log_list):
     sell_price = opp['sell_price']
     expected_profit = opp['net_profit_after_withdrawal']
 
-    # Доступные средства
     usdt_buy = get_balance(buy_ex, 'USDT')
     token_sell = get_balance(sell_ex, asset)
     token_sell_value = token_sell * sell_price
 
-    # Сумма сделки: 15% от USDT и 15% от стоимости токенов (берём минимум)
     trade_usdt = min(usdt_buy * (TRADE_PERCENT / 100.0), token_sell_value * (TRADE_PERCENT / 100.0))
     if trade_usdt < MIN_TRADE_USDT:
-        log_list.append(f"❌ Не исполнена {asset} {buy_ex}→{sell_ex}: сумма сделки {trade_usdt:.2f} USDT меньше {MIN_TRADE_USDT}")
+        log_list.append(f"❌ {asset} {buy_ex}→{sell_ex}: сумма {trade_usdt:.2f} USDT < {MIN_TRADE_USDT}")
         return None
     amount = trade_usdt / buy_price
     buy_cost = amount * buy_price
     sell_proceeds = amount * sell_price
 
-    # Проверка ещё раз (на случай, если за время расчёта балансы изменились)
     if usdt_buy < buy_cost:
-        log_list.append(f"❌ Не исполнена {asset}: недостаточно USDT на {buy_ex}")
+        log_list.append(f"❌ {asset}: недостаточно USDT на {buy_ex} (нужно {buy_cost:.2f}, есть {usdt_buy:.2f})")
         return None
     if token_sell < amount:
-        log_list.append(f"❌ Не исполнена {asset}: недостаточно токенов на {sell_ex}")
+        log_list.append(f"❌ {asset}: недостаточно токенов на {sell_ex} (нужно {amount:.4f}, есть {token_sell:.4f})")
         return None
 
-    # Исполняем
     place_order(st.session_state.exchanges[buy_ex], f"{asset}/USDT", 'buy', amount, buy_price)
     place_order(st.session_state.exchanges[sell_ex], f"{asset}/USDT", 'sell', amount, sell_price)
 
@@ -367,7 +361,7 @@ def execute_arbitrage_trade(opp, log_list):
     save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
     update_demo_stats(st.session_state.user_id, real_profit)
     add_trade(st.session_state.user_id, st.session_state.current_mode, asset, amount, real_profit, buy_ex, sell_ex)
-    log_list.append(f"✅ Сделка: {asset} {buy_ex}→{sell_ex} | сумма {trade_usdt:.2f} USDT | прибыль {real_profit:.4f} USDT")
+    log_list.append(f"✅ Сделка: {asset} {buy_ex}→{sell_ex} | {trade_usdt:.2f} USDT | +{real_profit:.4f} USDT")
     return real_profit
 
 def find_all_arbitrage_opportunities():
@@ -458,9 +452,8 @@ def load_user_mode_data(user, mode):
     else:
         return {}
 
-# ---------- ФОНОВОЙ ПОТОК (интервал 3 секунды) ----------
+# ---------- ФОНОВОЙ ПОТОК ----------
 def background_arbitrage_loop():
-    log_list = []
     while True:
         try:
             if st.session_state.get('bot_running', False):
@@ -469,14 +462,12 @@ def background_arbitrage_loop():
                     best = opps[0]
                     profit = best['net_profit_after_withdrawal']
                     if profit > 0:
-                        execute_arbitrage_trade(best, log_list)
-                    else:
-                        pass
+                        execute_arbitrage_trade(best, st.session_state.auto_log)
                 time.sleep(3)
             else:
                 time.sleep(5)
         except Exception as e:
-            log_list.append(f"⚠️ Ошибка фонового потока: {e}")
+            st.session_state.auto_log.append(f"⚠️ Ошибка фонового потока: {e}")
             time.sleep(5)
 
 if 'background_thread_started' not in st.session_state:
