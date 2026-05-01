@@ -82,10 +82,7 @@ MIN_AUTO_PROFIT = 0.08     # минимальная прибыль для авт
 def is_admin(email):
     return email in ADMIN_EMAILS
 
-# ---------- ФУНКЦИИ SUPABASE (ваши, я их сократил, но вы можете вставить полные) ----------
-# Для краткости я оставлю реализации, которые использовались в последнем рабочем коде.
-# Если какие-то функции отличаются – замените на свои.
-
+# ---------- ФУНКЦИИ SUPABASE (полные) ----------
 def get_user_by_email(email):
     res = supabase.table('users').select('*').eq('email', email).execute()
     return res.data[0] if res.data else None
@@ -457,9 +454,8 @@ def execute_trade(opp, user_id, mode):
         return profit
     return profit
 
-# ---------- ФОНОВОЙ ПОТОК ДЛЯ АВТО-СДЕЛОК (без ошибок) ----------
+# ---------- ФОНОВЫЙ ПОТОК ДЛЯ АВТО-СДЕЛОК ----------
 def start_auto_trade():
-    """Запускает фоновый поток, если он ещё не запущен."""
     if 'auto_trade_thread' not in st.session_state or st.session_state.auto_trade_thread is None or not st.session_state.auto_trade_thread.is_alive():
         st.session_state.stop_auto_trade = False
         def worker():
@@ -472,7 +468,13 @@ def start_auto_trade():
                         if best['net_profit'] >= MIN_AUTO_PROFIT:
                             profit = execute_trade(best, st.session_state.user_id, st.session_state.current_mode)
                             if profit > 0:
-                                send_telegram(f"🤖 АВТОСДЕЛКА: {best['asset']} {best['buy_exchange']}→{best['sell_exchange']} +{profit:.2f} USDT")
+                                msg = f"🤖 АВТОСДЕЛКА: {best['asset']} {best['buy_exchange']}→{best['sell_exchange']} +{profit:.2f} USDT"
+                                send_telegram(msg)
+                                if 'auto_trade_log' not in st.session_state:
+                                    st.session_state.auto_trade_log = []
+                                st.session_state.auto_trade_log.append(f"{datetime.now().strftime('%H:%M:%S')} {msg}")
+                                if len(st.session_state.auto_trade_log) > 20:
+                                    st.session_state.auto_trade_log.pop(0)
                     time.sleep(SCAN_INTERVAL)
                 except Exception as e:
                     print(f"Ошибка в фоновом потоке: {e}")
@@ -482,7 +484,6 @@ def start_auto_trade():
         st.session_state.auto_trade_thread = thread
 
 def stop_auto_trade():
-    """Останавливает фоновый поток."""
     st.session_state.stop_auto_trade = True
     if 'auto_trade_thread' in st.session_state and st.session_state.auto_trade_thread:
         st.session_state.auto_trade_thread = None
@@ -512,6 +513,7 @@ if 'logged_in' not in st.session_state:
     st.session_state.withdrawable_balance = 0
     st.session_state.last_withdrawal_date = None
     st.session_state.auto_trade_thread = None
+    st.session_state.auto_trade_log = []
 
 if st.session_state.exchanges is None:
     with st.spinner("Подключение к биржам..."):
@@ -570,7 +572,7 @@ if not st.session_state.logged_in:
                     st.error("Неверный email или пароль")
     st.stop()
 
-# ---------- ОСНОВНОЙ ИНТЕРФЕЙС ----------
+# ---------- ОСНОВНОЙ ИНТЕРФЕЙС (ВСЕ ВКЛАДКИ) ----------
 col_logo, col_status, col_logout = st.columns([3, 1, 1])
 with col_logo:
     st.markdown('<h1 class="main-header">🔄 Накопительный арбитражный бот | АВТО</h1>', unsafe_allow_html=True)
@@ -594,6 +596,7 @@ st.write(f"🔌 **Биржи:** {', '.join([ex.upper() for ex in EXCHANGES])}")
 st.write(f"🪙 **Токены:** {', '.join(get_available_tokens())}")
 st.divider()
 
+# Балансы
 total_usdt = sum(bal.get('USDT', 0) for bal in st.session_state.user_balances.values())
 total_portfolio_value = 0
 for ex, bal in st.session_state.user_balances.items():
@@ -606,6 +609,7 @@ col1.metric("💰 Всего USDT", f"{total_usdt:.2f}")
 col2.metric("📦 Стоимость портфеля", f"{total_portfolio_value:.2f}")
 col3.metric("📊 Всего сделок", st.session_state.trade_count)
 
+# Кнопки управления
 c1, c2, c3, c4 = st.columns(4)
 with c1:
     st.markdown('<div class="green-button">', unsafe_allow_html=True)
@@ -637,22 +641,33 @@ with c4:
         st.session_state.current_mode = new_mode
         st.rerun()
 
-# Кнопка ручного обновления данных (чтобы видеть свежую статистику)
+# Кнопка обновления данных
 if st.button("🔄 Обновить данные", use_container_width=True):
+    st.session_state.user_balances = ensure_demo_balances(st.session_state.user_id)
+    st.session_state.user_history = load_demo_history(st.session_state.user_id)
+    st.session_state.user_stats = load_demo_stats(st.session_state.user_id)
+    user_data = supabase.table('users').select('total_profit,trade_count,withdrawable_balance').eq('id', st.session_state.user_id).execute().data[0]
+    st.session_state.total_profit = user_data['total_profit']
+    st.session_state.trade_count = user_data['trade_count']
+    st.session_state.withdrawable_balance = user_data['withdrawable_balance']
     st.rerun()
 
-# ---------- ВКЛАДКИ (полностью из вашего исходного кода) ----------
-# Чтобы не раздувать сообщение, вставьте сюда все свои вкладки (Dashboard, Графики, Арбитраж, Статистика, Доходность, Балансы, Вывод, История, Кабинет, Чат, Админ-панель).
-# Они должны быть точно такими же, как в вашем прошлом рабочем коде, но с заменой MAIN_EXCHANGE на st.session_state.get('main_exchange')? В вашем текущем коде нет MAIN_EXCHANGE, всё нормально.
-# Ниже я приведу лишь пример вкладки "Арбитраж" – остальные скопируйте из своего старого файла.
+# Лог авто-сделок
+with st.expander("📋 Лог последних авто-сделок"):
+    if st.session_state.auto_trade_log:
+        for log in st.session_state.auto_trade_log[-20:]:
+            st.text(log)
+    else:
+        st.info("Авто-сделки ещё не совершались. Запустите бота и подождите.")
 
+# ВКЛАДКИ
 show_admin = is_admin(st.session_state.email)
 tabs_list = ["📊 Dashboard", "📈 Графики", "🔄 Арбитраж", "📊 Статистика", "📈 Доходность по дням", "💼 Балансы", "💰 Вывод", "📜 История", "👤 Кабинет", "💬 Чат"]
 if show_admin:
     tabs_list.append("👑 Админ-панель")
 tabs = st.tabs(tabs_list)
 
-# TAB 0: Dashboard (вставьте ваш код)
+# ---------- TAB 0: Dashboard ----------
 with tabs[0]:
     st.subheader("📊 Текущие цены на биржах")
     for asset in get_available_tokens()[:5]:
@@ -667,7 +682,7 @@ with tabs[0]:
                     st.metric(ex.upper(), "❌")
         st.divider()
 
-# TAB 1: Графики (вставьте ваш код)
+# ---------- TAB 1: Графики ----------
 with tabs[1]:
     st.subheader("📈 Японские свечи")
     col_a, col_b = st.columns(2)
@@ -686,7 +701,7 @@ with tabs[1]:
         else:
             st.warning("Нет данных")
 
-# TAB 2: Арбитраж (с ручными кнопками)
+# ---------- TAB 2: Арбитраж ----------
 with tabs[2]:
     st.subheader("🔍 Арбитражные возможности (авто-торговля в фоне)")
     if st.button("🔄 Обновить", use_container_width=True):
@@ -708,7 +723,260 @@ with tabs[2]:
     else:
         st.info("Арбитражных возможностей не найдено. Попробуйте снизить пороги в админ-панели.")
 
-# Остальные вкладки (Статистика, Доходность, Балансы, Вывод, История, Кабинет, Чат, Админ-панель) вставьте из своего рабочего кода.
-# Они не менялись, просто скопируйте их сюда.
+# ---------- TAB 3: Статистика по токенам ----------
+with tabs[3]:
+    st.subheader("📊 Статистика сделок по токенам")
+    token_stats = {}
+    total_profit_all = 0
+    for trade in st.session_state.user_history:
+        if trade.startswith("✅"):
+            try:
+                parts = trade.split("|")
+                if len(parts) >= 3:
+                    token = parts[1].strip()
+                    profit = float(parts[3].split("+")[1].split()[0])
+                    token_stats.setdefault(token, {'trades': 0, 'profit': 0})
+                    token_stats[token]['trades'] += 1
+                    token_stats[token]['profit'] += profit
+                    total_profit_all += profit
+            except:
+                pass
+    if token_stats:
+        data = [{"Токен": t, "Сделок": d['trades'], "Прибыль": f"{d['profit']:.2f}", "% общ.": f"{d['profit'] / total_profit_all * 100:.1f}%"} for t, d in sorted(token_stats.items(), key=lambda x: x[1]['profit'], reverse=True)]
+        st.dataframe(pd.DataFrame(data), use_container_width=True, hide_index=True)
+        fig = px.pie(pd.DataFrame([{"Токен": t, "Прибыль": d['profit']} for t, d in token_stats.items()]), values='Прибыль', names='Токен', title="Доля прибыли")
+        fig.update_layout(template="plotly_dark", height=450)
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Нет данных")
+
+# ---------- TAB 4: Доходность по дням ----------
+with tabs[4]:
+    st.subheader("📈 Прибыль по периодам")
+    stats = st.session_state.user_stats
+    if stats:
+        days = {k: v for k, v in stats.items() if len(k) == 10 and '-' in k}
+        weeks = {k: v for k, v in stats.items() if 'W' in k}
+        months = {k: v for k, v in stats.items() if len(k) == 7 and '-' in k and 'W' not in k}
+        years = {k: v for k, v in stats.items() if len(k) == 4}
+        if days:
+            df_days = pd.DataFrame([{"Дата": k, "Прибыль": v} for k, v in sorted(days.items())])
+            fig = px.bar(df_days, x="Дата", y="Прибыль", title="Прибыль по дням")
+            fig.update_layout(template="plotly_dark", height=400)
+            st.plotly_chart(fig, use_container_width=True)
+        if weeks:
+            df_weeks = pd.DataFrame([{"Неделя": k, "Прибыль": v} for k, v in sorted(weeks.items())])
+            fig = px.bar(df_weeks, x="Неделя", y="Прибыль", title="Прибыль по неделям")
+            fig.update_layout(template="plotly_dark", height=400)
+            st.plotly_chart(fig, use_container_width=True)
+        if months:
+            df_months = pd.DataFrame([{"Месяц": k, "Прибыль": v} for k, v in sorted(months.items())])
+            fig = px.bar(df_months, x="Месяц", y="Прибыль", title="Прибыль по месяцам")
+            fig.update_layout(template="plotly_dark", height=400)
+            st.plotly_chart(fig, use_container_width=True)
+        if years:
+            st.write("**Итог по годам:**")
+            for y, p in sorted(years.items()):
+                st.metric(y, f"+{p:.2f} USDT")
+    else:
+        st.info("Нет статистики")
+
+# ---------- TAB 5: Балансы по биржам ----------
+with tabs[5]:
+    st.subheader("💼 Балансы USDT и портфель по каждой бирже")
+    for ex in EXCHANGES:
+        with st.expander(f"### {ex.upper()}"):
+            bal = st.session_state.user_balances.get(ex, {})
+            usdt = bal.get('USDT', 0)
+            st.metric("USDT", f"{usdt:.2f}")
+            portfolio = bal.get('portfolio', {})
+            st.write("**Портфель токенов:**")
+            for asset, amount in portfolio.items():
+                price = get_price(ex, asset)
+                value = amount * price if price else 0
+                st.write(f"{asset}: {amount:.6f} ≈ ${value:.2f}")
+
+# ---------- TAB 6: Вывод ----------
+with tabs[6]:
+    st.subheader("💰 Вывод средств")
+    st.write(f"**Доступно для вывода:** {st.session_state.withdrawable_balance:.2f} USDT")
+    weekday = datetime.now().strftime("%A")
+    disabled = weekday not in ["Tuesday", "Friday"]
+    if disabled:
+        st.warning("⏳ Вывод только по вторникам и пятницам")
+    max_wd = st.session_state.withdrawable_balance
+    if max_wd >= 10:
+        amt = st.number_input("Сумма вывода (USDT)", min_value=10.0, max_value=max_wd, step=10.0, disabled=disabled)
+        if st.button("Запросить вывод", disabled=disabled) and amt and st.session_state.wallet_address:
+            create_withdrawal_request(st.session_state.user_id, amt, st.session_state.wallet_address)
+            st.session_state.withdrawable_balance -= amt
+            supabase.table('users').update({'withdrawable_balance': st.session_state.withdrawable_balance}).eq('id', st.session_state.user_id).execute()
+            st.success("Заявка отправлена")
+            st.rerun()
+    else:
+        st.warning(f"Недостаточно средств (доступно {max_wd:.2f}, мин 10)")
+    wallet_input = st.text_input("Адрес кошелька (USDT)", value=st.session_state.wallet_address)
+    if st.button("Сохранить адрес"):
+        st.session_state.wallet_address = wallet_input
+        supabase.table('users').update({'wallet_address': wallet_input}).eq('email', st.session_state.email).execute()
+        st.success("Сохранено")
+
+# ---------- TAB 7: История ----------
+with tabs[7]:
+    st.subheader("📜 История сделок")
+    if st.session_state.user_history:
+        for trade in reversed(st.session_state.user_history[-50:]):
+            st.write(trade)
+        if st.button("Очистить историю"):
+            st.session_state.user_history = []
+            save_demo_history(st.session_state.user_id, [])
+            st.rerun()
+    else:
+        st.info("Нет сделок")
+
+# ---------- TAB 8: Кабинет ----------
+with tabs[8]:
+    st.subheader("👤 Личный кабинет")
+    st.write(f"**Имя:** {st.session_state.username}")
+    st.write(f"**Email:** {st.session_state.email}")
+    st.write(f"**Кошелёк:** {st.session_state.wallet_address if st.session_state.wallet_address else 'не указан'}")
+    st.divider()
+    colb1, colb2 = st.columns(2)
+    colb1.metric("Общая прибыль (USDT)", f"{st.session_state.total_profit:.2f}")
+    colb2.metric("Всего сделок", st.session_state.trade_count)
+    st.divider()
+    if st.button("Пополнить демо-счёт (добавить 1000 USDT на первую биржу)"):
+        first_ex = EXCHANGES[0]
+        if first_ex not in st.session_state.user_balances:
+            st.session_state.user_balances[first_ex] = {"USDT": DEMO_USDT_PER_EXCHANGE, "portfolio": DEFAULT_PORTFOLIO.copy()}
+        st.session_state.user_balances[first_ex]['USDT'] += 1000
+        save_demo_balances(st.session_state.user_id, st.session_state.user_balances)
+        st.success("Добавлено 1000 USDT на биржу " + first_ex.upper())
+        st.rerun()
+
+# ---------- TAB 9: Чат ----------
+with tabs[9]:
+    st.subheader("💬 Чат с поддержкой")
+    if is_admin(st.session_state.email):
+        msgs = get_messages(limit=100)
+        for msg in msgs:
+            uname = msg.get('user_name', 'Пользователь')
+            uemail = msg.get('user_email', '')
+            st.markdown(f"**{uname}** ({uemail}) - {msg['created_at'][:16]}")
+            st.write(msg['message'])
+            if not msg.get('is_admin_reply', False):
+                reply = st.text_input(f"Ответ", key=f"rep_{msg['id']}")
+                if st.button("Отправить", key=f"send_{msg['id']}") and reply:
+                    add_message(msg['user_id'], uemail, uname, reply, is_admin_reply=True, reply_to=msg['id'])
+                    st.success("Ответ отправлен")
+                    st.rerun()
+            st.divider()
+        with st.expander("📢 Объявление всем"):
+            broadcast = st.text_area("Текст")
+            if st.button("Отправить всем") and broadcast:
+                for u in get_all_users_for_admin():
+                    add_message(u['id'], u['email'], u['full_name'], f"[ОБЪЯВЛЕНИЕ] {broadcast}", is_admin_reply=True)
+                st.success("Отправлено всем")
+    else:
+        user_msg = st.text_area("Ваше сообщение")
+        if st.button("Отправить") and user_msg:
+            add_message(st.session_state.user_id, st.session_state.email, st.session_state.username, user_msg)
+            st.success("Сообщение отправлено")
+            st.rerun()
+        st.divider()
+        st.write("История обращений")
+        for msg in get_messages(user_id=st.session_state.user_id, limit=30):
+            if msg.get('is_admin_reply'):
+                st.info(f"📢 **Администратор:** {msg['message']} _({msg['created_at'][:16]})_")
+            else:
+                st.write(f"📤 **Вы:** {msg['message']} _({msg['created_at'][:16]})_")
+        mark_messages_read(st.session_state.user_id)
+        st.session_state.chat_unread = 0
+
+# ---------- АДМИН-ПАНЕЛЬ ----------
+if show_admin:
+    with tabs[-1]:
+        st.subheader("👑 Админ-панель")
+        a1, a2, a3, a4, a5, a6, a7 = st.tabs(["👥 Участники", "📊 Токены", "⚙ Пороги", "🔐 API ключи", "📜 Все сделки", "💰 Заявки", "🔄 Сброс демо"])
+        with a1:
+            users = get_all_users_for_admin()
+            if users:
+                df = pd.DataFrame([{
+                    "Email": u['email'], "Имя": u['full_name'], "Статус": u['registration_status'],
+                    "Прибыль": f"${u.get('total_profit', 0):.2f}", "Сделок": u.get('trade_count', 0)
+                } for u in users])
+                st.dataframe(df, use_container_width=True, hide_index=True)
+                emails = {u['email']: u['id'] for u in users}
+                sel = st.selectbox("Выберите пользователя для просмотра", list(emails.keys()))
+                if sel:
+                    if st.button(f"Смотреть страницу пользователя {sel}"):
+                        st.session_state.viewed_user_id = emails[sel]
+                        st.rerun()
+        with a2:
+            cur_tokens = get_available_tokens()
+            new_tokens = st.text_input("Список токенов через запятую", value=", ".join(cur_tokens))
+            if st.button("Сохранить токены"):
+                tlist = [t.strip().upper() for t in new_tokens.split(",") if t.strip()]
+                if tlist:
+                    set_available_tokens(tlist)
+                    st.rerun()
+        with a3:
+            st.write("### Настройка порогов")
+            new_th = {}
+            new_th['min_spread_percent'] = st.slider("Мин. чистый спред (%)", 0.0005, 0.5, thresholds['min_spread_percent'], 0.0005, format="%.4f")
+            new_th['fee_percent'] = st.number_input("Комиссия тейкера (%)", 0.0, 0.5, thresholds['fee_percent'], 0.01, format="%.2f")
+            new_th['slippage_percent'] = st.number_input("Проскальзывание (%)", 0.0, 1.0, thresholds['slippage_percent'], 0.05, format="%.2f")
+            new_th['min_24h_volume_usdt'] = st.number_input("Мин. 24h объём (USDT)", 0, 1000000, thresholds['min_24h_volume_usdt'], 10000)
+            new_th['max_withdrawal_fee_percent'] = st.number_input("Макс. комиссия вывода (% от прибыли)", 0, 100, thresholds['max_withdrawal_fee_percent'], 5)
+            if st.button("Сохранить"):
+                set_thresholds(new_th)
+                st.success("Пороги обновлены. Перезагрузите страницу.")
+                st.rerun()
+        with a4:
+            api_keys = get_all_api_keys()
+            for ex in EXCHANGES:
+                with st.expander(f"🔑 {ex.upper()}"):
+                    cur = api_keys.get(ex, {})
+                    cur_api = decrypt_api_key(cur.get('api_key', ''))
+                    cur_sec = decrypt_api_key(cur.get('secret_key', ''))
+                    new_api = st.text_input(f"API Key", value=cur_api, type="password", key=f"api_{ex}")
+                    new_sec = st.text_input(f"Secret Key", value=cur_sec, type="password", key=f"sec_{ex}")
+                    col1, col2 = st.columns(2)
+                    if col1.button(f"Проверить {ex.upper()}", key=f"test_{ex}"):
+                        if new_api and new_sec:
+                            try:
+                                ex_cls = getattr(ccxt, ex)
+                                test_ex = ex_cls({'apiKey': new_api, 'secret': new_sec, 'enableRateLimit': True})
+                                test_ex.fetch_balance()
+                                st.success("Ключи действительны")
+                            except Exception as e:
+                                st.error(f"Ошибка: {str(e)[:100]}")
+                    if col2.button(f"Сохранить {ex.upper()}", key=f"save_{ex}"):
+                        save_api_key(ex, new_api, new_sec, st.session_state.email)
+                        st.session_state.api_keys = get_all_api_keys()
+                        st.success("Сохранено")
+                        st.rerun()
+        with a5:
+            trades = get_all_trades(200)
+            if trades:
+                df = pd.DataFrame([{"Пользователь": t.get('users', {}).get('email', ''), "Токен": t['asset'], "Прибыль": f"${t['profit']:.2f}", "Время": t['trade_time']} for t in trades])
+                st.dataframe(df, use_container_width=True, hide_index=True)
+        with a6:
+            pend = get_pending_withdrawals()
+            for w in pend:
+                st.write(f"{w.get('users', {}).get('email', '')} — {w['amount']} USDT (клиент получит {w['user_receives']:.2f})")
+                if st.button(f"Выполнить", key=f"comp_{w['id']}"):
+                    update_withdrawal_status(w['id'], 'completed', st.session_state.email)
+                    st.rerun()
+        with a7:
+            st.warning("Сброс демо-данных пользователя")
+            users_list = get_all_users_for_admin()
+            user_options = {u['email']: u['id'] for u in users_list}
+            sel_user = st.selectbox("Выберите пользователя", list(user_options.keys()))
+            if st.button("Сбросить демо-данные"):
+                uid = user_options[sel_user]
+                reset_demo_data(uid)
+                st.success(f"Данные {sel_user} сброшены")
+                st.rerun()
 
 st.caption(f"🚀 Сканируется {len(get_available_tokens())} токенов на {len(EXCHANGES)} биржах | Авто-интервал: {SCAN_INTERVAL} сек | Режим: {st.session_state.current_mode}")
