@@ -51,8 +51,9 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------- НАСТРОЙКИ ----------
-EXCHANGES = ["kucoin", "bybit", "okx"]        # заменяем hitbtc на okx
-DEFAULT_ASSETS = ["ETH", "SOL", "LINK", "AAVE", "DOT", "ADA", "TON", "VET", "HBAR", "XTZ"]   # только те, что в портфеле
+EXCHANGES = ["kucoin", "okx", "hitbtc"]
+DEFAULT_ASSETS = ["ETH", "SOL", "LINK", "AAVE", "DOT", "ADA", "TON", "VET", "HBAR", "XTZ"]
+
 DEMO_USDT_PER_EXCHANGE = 125.0
 DEFAULT_PORTFOLIO = {
     "ETH": 0.085, "SOL": 1.9, "LINK": 4.6, "AAVE": 0.85, "DOT": 6.9,
@@ -64,16 +65,17 @@ REINVEST_SHARE = 0.50
 FIXED_SHARE = 0.50
 ADMIN_EMAILS = ["cb777899@gmail.com", "admin@arbitrage.com"]
 
-MIN_SPREAD_PERCENT = 0.001
-FEE_PERCENT = 0.01
-SLIPPAGE_PERCENT = 0.01
-TRADE_PERCENT = 0.5          # 50% от доступных USDT на бирже покупки
+MIN_SPREAD_PERCENT = 0.001   # 0.001%
+FEE_PERCENT = 0.01           # 0.01%
+SLIPPAGE_PERCENT = 0.01      # 0.01%
+TRADE_PERCENT = 15           # 15% от доступных средств
+MIN_TRADE_USDT = 10.0        # минимальная сделка 10 USDT
 
 def is_admin(email):
     return email in ADMIN_EMAILS
 
-# ---------- ФУНКЦИИ ДЛЯ ПРИНУДИТЕЛЬНОГО СБРОСА БАЛАНСОВ ----------
-def reset_my_balances(user_id):
+# ---------- ФУНКЦИИ ДЛЯ СБРОСА БАЛАНСОВ ----------
+def reset_demo_balances_to_target(user_id):
     """Перезаписывает demo_balances на целевые 125 USDT + портфель на каждой бирже, обнуляет историю и статистику"""
     target_balances = {ex: {"USDT": DEMO_USDT_PER_EXCHANGE, "portfolio": DEFAULT_PORTFOLIO.copy()} for ex in EXCHANGES}
     supabase.table('users').update({
@@ -85,8 +87,6 @@ def reset_my_balances(user_id):
         'withdrawable_balance': 0,
         'total_admin_fee_paid': 0
     }).eq('id', user_id).execute()
-    # Обновляем session_state
-    st.session_state.user_data = load_user_mode_data(supabase.table('users').select('*').eq('id', user_id).execute().data[0], "Демо")
     return target_balances
 
 # ---------- SUPABASE ФУНКЦИИ ----------
@@ -317,32 +317,40 @@ def update_balance(exchange_name, asset, delta):
     save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
 
 def place_order(exchange, symbol, side, amount, price=None):
-    # Демо-ордера
+    # Имитация ордера (демо)
     return (f"demo_{int(time.time())}", price or 0, amount, 0.0)
 
-def execute_arbitrage_trade(opp):
+def execute_arbitrage_trade(opp, log_list):
     buy_ex = opp['buy_exchange']
     sell_ex = opp['sell_exchange']
     asset = opp['asset']
     buy_price = opp['buy_price']
     sell_price = opp['sell_price']
+    expected_profit = opp['net_profit_after_withdrawal']
 
+    # Доступные средства
     usdt_buy = get_balance(buy_ex, 'USDT')
     token_sell = get_balance(sell_ex, asset)
+    token_sell_value = token_sell * sell_price
 
-    # Используем 50% от USDT на покупке
-    trade_usdt = usdt_buy * TRADE_PERCENT
-    # Но не более стоимости токенов на продаже
-    max_trade_usdt = min(trade_usdt, token_sell * sell_price)
-    if max_trade_usdt < 5.0:
+    # Сумма сделки: 15% от USDT и 15% от стоимости токенов (берём минимум)
+    trade_usdt = min(usdt_buy * (TRADE_PERCENT / 100.0), token_sell_value * (TRADE_PERCENT / 100.0))
+    if trade_usdt < MIN_TRADE_USDT:
+        log_list.append(f"❌ Не исполнена {asset} {buy_ex}→{sell_ex}: сумма сделки {trade_usdt:.2f} USDT меньше {MIN_TRADE_USDT}")
         return None
-    amount = max_trade_usdt / buy_price
+    amount = trade_usdt / buy_price
     buy_cost = amount * buy_price
     sell_proceeds = amount * sell_price
 
-    if usdt_buy < buy_cost or token_sell < amount:
+    # Проверка ещё раз (на случай, если за время расчёта балансы изменились)
+    if usdt_buy < buy_cost:
+        log_list.append(f"❌ Не исполнена {asset}: недостаточно USDT на {buy_ex}")
+        return None
+    if token_sell < amount:
+        log_list.append(f"❌ Не исполнена {asset}: недостаточно токенов на {sell_ex}")
         return None
 
+    # Исполняем
     place_order(st.session_state.exchanges[buy_ex], f"{asset}/USDT", 'buy', amount, buy_price)
     place_order(st.session_state.exchanges[sell_ex], f"{asset}/USDT", 'sell', amount, sell_price)
 
@@ -359,6 +367,7 @@ def execute_arbitrage_trade(opp):
     save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
     update_demo_stats(st.session_state.user_id, real_profit)
     add_trade(st.session_state.user_id, st.session_state.current_mode, asset, amount, real_profit, buy_ex, sell_ex)
+    log_list.append(f"✅ Сделка: {asset} {buy_ex}→{sell_ex} | сумма {trade_usdt:.2f} USDT | прибыль {real_profit:.4f} USDT")
     return real_profit
 
 def find_all_arbitrage_opportunities():
@@ -435,30 +444,23 @@ def save_user_mode_data(user_id, mode, data):
 def load_user_mode_data(user, mode):
     if mode == "Демо":
         bal = json.loads(user.get('demo_balances', '{}')) if user.get('demo_balances') else {}
-        # Если структура старая (с портфелем внутри каждой биржи), преобразуем
-        if isinstance(bal, dict) and any(isinstance(v, dict) and 'portfolio' in v for v in bal.values()):
-            # Это уже новый формат
-            usdt_reserves = {ex: bal[ex].get('USDT', 0) for ex in EXCHANGES if ex in bal}
-            portfolio = bal.get(list(bal.keys())[0], {}).get('portfolio', DEFAULT_PORTFOLIO) if bal else DEFAULT_PORTFOLIO
-        else:
-            usdt_reserves = bal.get('usdt_reserves', {ex: DEMO_USDT_PER_EXCHANGE for ex in EXCHANGES})
-            portfolio = bal.get('portfolio', DEFAULT_PORTFOLIO)
         return {
             'trade_balance': 0,
             'withdrawable_balance': user.get('withdrawable_balance', 0),
             'total_profit': user.get('total_profit', 0),
             'trade_count': user.get('trade_count', 0),
             'total_admin_fee_paid': user.get('total_admin_fee_paid', 0),
-            'portfolio': portfolio,
-            'usdt_reserves': usdt_reserves,
+            'portfolio': bal.get('portfolio', DEFAULT_PORTFOLIO),
+            'usdt_reserves': bal.get('usdt_reserves', {ex: DEMO_USDT_PER_EXCHANGE for ex in EXCHANGES}),
             'history': json.loads(user.get('demo_history', '[]')),
             'stats': json.loads(user.get('demo_stats', '{}'))
         }
     else:
         return {}
 
-# ---------- ФОНОВЫЙ ПОТОК ----------
+# ---------- ФОНОВОЙ ПОТОК (интервал 3 секунды) ----------
 def background_arbitrage_loop():
+    log_list = []
     while True:
         try:
             if st.session_state.get('bot_running', False):
@@ -467,11 +469,14 @@ def background_arbitrage_loop():
                     best = opps[0]
                     profit = best['net_profit_after_withdrawal']
                     if profit > 0:
-                        execute_arbitrage_trade(best)
+                        execute_arbitrage_trade(best, log_list)
+                    else:
+                        pass
                 time.sleep(3)
             else:
                 time.sleep(5)
         except Exception as e:
+            log_list.append(f"⚠️ Ошибка фонового потока: {e}")
             time.sleep(5)
 
 if 'background_thread_started' not in st.session_state:
@@ -505,6 +510,7 @@ if 'logged_in' not in st.session_state:
     st.session_state.user_id = None
     st.session_state.api_keys = {}
     st.session_state.chat_unread = 0
+    st.session_state.auto_log = []
 
 if st.session_state.exchanges is None:
     with st.spinner("Подключение к биржам..."):
@@ -913,10 +919,17 @@ if show_admin:
                     update_withdrawal_status(w['id'], 'completed', st.session_state.email)
                     st.rerun()
         with a6:
-            st.warning("Сбросить балансы текущего пользователя до 125 USDT + портфель на каждой бирже (очистит историю сделок).")
+            st.warning("Сброс балансов текущего пользователя до целевых 125 USDT + портфель (очистит историю сделок и прибыль).")
             if st.button("🔄 Сбросить мои балансы до 125 USDT + портфель"):
-                reset_my_balances(st.session_state.user_id)
-                st.success("Балансы сброшены! Перезагрузите страницу.")
+                reset_demo_balances_to_target(st.session_state.user_id)
+                st.success("Балансы сброшены! Перезагрузите страницу (нажмите 'R' или F5).")
                 st.rerun()
+
+with st.expander("📋 Лог авто-торговли (последние 20 событий)"):
+    if 'auto_log' in st.session_state and st.session_state.auto_log:
+        for log in st.session_state.auto_log[-20:]:
+            st.text(log)
+    else:
+        st.info("Нет событий. Запустите бота.")
 
 st.caption(f"🚀 Сканируется {len(get_available_tokens())} токенов на {len(connected)} биржах | Авто-интервал: 3 сек | Режим: {st.session_state.current_mode}")
