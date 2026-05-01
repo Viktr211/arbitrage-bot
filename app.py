@@ -68,13 +68,13 @@ ADMIN_EMAILS = ["cb777899@gmail.com", "admin@arbitrage.com"]
 MIN_SPREAD_PERCENT = 0.001
 FEE_PERCENT = 0.01
 SLIPPAGE_PERCENT = 0.01
-TRADE_PERCENT = 50
+TRADE_PERCENT = 50          # 50% от доступного капитала на сделку
 MIN_TRADE_USDT = 10.0
 
 def is_admin(email):
     return email in ADMIN_EMAILS
 
-# ---------- ФУНКЦИИ ДЛЯ СБРОСА ----------
+# ---------- ФУНКЦИИ ДЛЯ СБРОСА БАЛАНСОВ ----------
 def reset_demo_balances_to_target(user_id):
     target_balances = {ex: {"USDT": DEMO_USDT_PER_EXCHANGE, "portfolio": DEFAULT_PORTFOLIO.copy()} for ex in EXCHANGES}
     supabase.table('users').update({
@@ -88,7 +88,7 @@ def reset_demo_balances_to_target(user_id):
     }).eq('id', user_id).execute()
     return target_balances
 
-# ---------- SUPABASE БАЗОВЫЕ ФУНКЦИИ ----------
+# ---------- SUPABASE ФУНКЦИИ ----------
 def get_user_by_email(email):
     res = supabase.table('users').select('*').eq('email', email).execute()
     return res.data[0] if res.data else None
@@ -184,7 +184,9 @@ def update_withdrawal_status(wid, status, admin_email):
     if status == 'completed':
         w = supabase.table('withdrawals').select('user_id, amount, admin_fee').eq('id', wid).execute()
         if w.data:
-            uid = w.data[0]['user_id']; amt = w.data[0['amount']; fee = w.data[0]['admin_fee']
+            uid = w.data[0]['user_id']
+            amt = w.data[0]['amount']
+            fee = w.data[0]['admin_fee']
             user = supabase.table('users').select('withdrawable_balance, total_admin_fee_paid').eq('id', uid).execute()
             if user.data:
                 new_bal = user.data[0]['withdrawable_balance'] - amt
@@ -361,7 +363,7 @@ def execute_arbitrage_trade(opp, log_list):
     save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
     update_demo_stats(st.session_state.user_id, real_profit)
     add_trade(st.session_state.user_id, st.session_state.current_mode, asset, amount, real_profit, buy_ex, sell_ex)
-    log_list.append(f"✅ Сделка: {asset} {buy_ex}→{sell_ex} | сумма {trade_usdt:.2f} USDT | +{real_profit:.4f} USDT")
+    log_list.append(f"✅ Сделка: {asset} {buy_ex}→{sell_ex} | {trade_usdt:.2f} USDT | +{real_profit:.4f} USDT")
     return real_profit
 
 def find_all_arbitrage_opportunities():
@@ -452,7 +454,7 @@ def load_user_mode_data(user, mode):
     else:
         return {}
 
-# ---------- ФОНОВОЙ ПОТОК (передаём лог) ----------
+# ---------- ФОНОВОЙ ПОТОК ----------
 def background_arbitrage_loop():
     while True:
         try:
