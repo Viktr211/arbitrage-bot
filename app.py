@@ -54,54 +54,40 @@ st.markdown("""
 EXCHANGES = ["kucoin", "bybit", "hitbtc"]
 DEFAULT_ASSETS = ["ETH", "SOL", "LINK", "AAVE", "DOT", "ADA", "TON", "VET", "HBAR", "XTZ"]
 
-# Целевые начальные балансы: 125 USDT + токены на 125 USDT на каждой бирже
 DEMO_USDT_PER_EXCHANGE = 125.0
 DEFAULT_PORTFOLIO = {
     "ETH": 0.085, "SOL": 1.9, "LINK": 4.6, "AAVE": 0.85, "DOT": 6.9,
     "ADA": 340.0, "TON": 3.5, "VET": 2600.0, "HBAR": 520.0, "XTZ": 7.5
-}  # суммарная стоимость ~125 USDT при текущих ценах (примерно)
+}
 
 ADMIN_COMMISSION = 0.22
 REINVEST_SHARE = 0.50
 FIXED_SHARE = 0.50
 ADMIN_EMAILS = ["cb777899@gmail.com", "admin@arbitrage.com"]
 
-# МИНИМАЛЬНЫЕ ПОРОГИ
 MIN_SPREAD_PERCENT = 0.001
 FEE_PERCENT = 0.01
 SLIPPAGE_PERCENT = 0.01
-MIN_24H_VOLUME_USDT = 0
-MAX_WITHDRAWAL_FEE_PERCENT = 100
 
 def is_admin(email):
     return email in ADMIN_EMAILS
 
 # ---------- ФУНКЦИИ ДЛЯ ПРИНУДИТЕЛЬНОГО СБРОСА БАЛАНСОВ ----------
 def reset_demo_balances_to_target(user_id):
-    """Перезаписывает demo_balances на целевые 125 USDT + портфель на каждой бирже"""
-    target = {ex: {"USDT": DEMO_USDT_PER_EXCHANGE, "portfolio": DEFAULT_PORTFOLIO.copy()} for ex in EXCHANGES}
-    supabase.table('users').update({'demo_balances': json.dumps(target)}).eq('id', user_id).execute()
-    return target
+    """Перезаписывает demo_balances на целевые 125 USDT + портфель на каждой бирже, обнуляет историю и статистику"""
+    target_balances = {ex: {"USDT": DEMO_USDT_PER_EXCHANGE, "portfolio": DEFAULT_PORTFOLIO.copy()} for ex in EXCHANGES}
+    supabase.table('users').update({
+        'demo_balances': json.dumps(target_balances),
+        'demo_history': json.dumps([]),
+        'demo_stats': json.dumps({}),
+        'total_profit': 0,
+        'trade_count': 0,
+        'withdrawable_balance': 0,
+        'total_admin_fee_paid': 0
+    }).eq('id', user_id).execute()
+    return target_balances
 
-def ensure_target_balances(user_id):
-    """Проверяет и принудительно устанавливает целевые балансы, если они отличаются"""
-    current = load_demo_balances(user_id)
-    need_reset = False
-    for ex in EXCHANGES:
-        if ex not in current:
-            need_reset = True
-            break
-        if current[ex].get('USDT', 0) != DEMO_USDT_PER_EXCHANGE:
-            need_reset = True
-            break
-        if current[ex].get('portfolio', {}) != DEFAULT_PORTFOLIO:
-            need_reset = True
-            break
-    if need_reset:
-        return reset_demo_balances_to_target(user_id)
-    return current
-
-# ---------- SUPABASE ФУНКЦИИ (базовые) ----------
+# ---------- SUPABASE ФУНКЦИИ ----------
 def get_user_by_email(email):
     res = supabase.table('users').select('*').eq('email', email).execute()
     return res.data[0] if res.data else None
@@ -124,8 +110,7 @@ def create_user(email, pwd_hash, full_name, country, city, phone, wallet):
 def load_demo_balances(user_id):
     res = supabase.table('users').select('demo_balances').eq('id', user_id).execute()
     if res.data and res.data[0].get('demo_balances'):
-        balances = json.loads(res.data[0]['demo_balances'])
-        return balances
+        return json.loads(res.data[0]['demo_balances'])
     else:
         return {ex: {"USDT": DEMO_USDT_PER_EXCHANGE, "portfolio": DEFAULT_PORTFOLIO.copy()} for ex in EXCHANGES}
 
@@ -268,19 +253,6 @@ def get_unread_count(user_id):
     res = supabase.table('messages').select('id', count='exact').eq('user_id', user_id).eq('is_read', False).eq('is_admin_reply', True).execute()
     return res.count or 0
 
-def reset_demo_data(user_id):
-    balances = {ex: {"USDT": DEMO_USDT_PER_EXCHANGE, "portfolio": DEFAULT_PORTFOLIO.copy()} for ex in EXCHANGES}
-    supabase.table('users').update({
-        'demo_balances': json.dumps(balances),
-        'demo_history': json.dumps([]),
-        'demo_stats': json.dumps({}),
-        'total_profit': 0,
-        'trade_count': 0,
-        'withdrawable_balance': 0,
-        'total_admin_fee_paid': 0
-    }).eq('id', user_id).execute()
-    send_telegram(f"🔄 Демо-данные пользователя {user_id} сброшены")
-
 # ---------- ШИФРОВАНИЕ ----------
 ENCRYPTION_KEY = hashlib.sha256("arbitrage_secret_key_2024".encode()).digest()
 def encrypt_api_key(key):
@@ -324,7 +296,7 @@ def get_price(exchange, symbol):
     except:
         return None
 
-# ---------- БАЛАНСЫ ДЛЯ ДЕМО (в session_state) ----------
+# ---------- БАЛАНСЫ ДЛЯ ДЕМО ----------
 def get_balance(exchange_name, asset):
     if asset == 'USDT':
         return st.session_state.user_data.get('usdt_reserves', {}).get(exchange_name, 0.0)
@@ -343,11 +315,9 @@ def update_balance(exchange_name, asset, delta):
     save_user_mode_data(st.session_state.user_id, st.session_state.current_mode, st.session_state.user_data)
 
 def place_order(exchange, symbol, side, amount, price=None):
-    # В демо-режиме просто имитируем
     return (f"demo_{int(time.time())}", price or 0, amount, 0.0)
 
 def execute_arbitrage_trade(opp):
-    """Исполняет сделку с адаптивной суммой (20% от USDT на покупку, но не более доступных токенов на продажу)"""
     buy_ex = opp['buy_exchange']
     sell_ex = opp['sell_exchange']
     asset = opp['asset']
@@ -357,11 +327,9 @@ def execute_arbitrage_trade(opp):
 
     usdt_buy = get_balance(buy_ex, 'USDT')
     token_sell = get_balance(sell_ex, asset)
-
-    # Определяем максимальную сумму сделки: минимум из 20% USDT на покупке и стоимости токенов на продаже
     max_trade_usdt = min(usdt_buy * 0.2, token_sell * sell_price)
     if max_trade_usdt < 5.0:
-        return None  # слишком мало для сделки
+        return None
     amount = max_trade_usdt / buy_price
     buy_cost = amount * buy_price
     sell_proceeds = amount * sell_price
@@ -369,17 +337,14 @@ def execute_arbitrage_trade(opp):
     if usdt_buy < buy_cost or token_sell < amount:
         return None
 
-    # Имитация ордеров
     place_order(st.session_state.exchanges[buy_ex], f"{asset}/USDT", 'buy', amount, buy_price)
     place_order(st.session_state.exchanges[sell_ex], f"{asset}/USDT", 'sell', amount, sell_price)
 
-    # Обновляем балансы
     update_balance(buy_ex, 'USDT', -buy_cost)
     update_balance(buy_ex, asset, +amount)
     update_balance(sell_ex, asset, -amount)
     update_balance(sell_ex, 'USDT', +sell_proceeds)
 
-    # Прибыль (уже рассчитана в opp, но пересчитаем для точности)
     real_profit = sell_proceeds - buy_cost
     st.session_state.user_data['total_profit'] += real_profit
     st.session_state.user_data['trade_count'] += 1
@@ -478,7 +443,7 @@ def load_user_mode_data(user, mode):
     else:
         return {}
 
-# ---------- ФОНОВЫЙ ПОТОК ДЛЯ АВТО-СДЕЛОК (интервал 3 секунды) ----------
+# ---------- ФОНОВЫЙ ПОТОК (интервал 3 секунды) ----------
 def background_arbitrage_loop():
     while True:
         try:
@@ -526,7 +491,6 @@ if 'logged_in' not in st.session_state:
     st.session_state.user_id = None
     st.session_state.api_keys = {}
     st.session_state.chat_unread = 0
-    st.session_state.force_reset_done = False   # для однократного сброса при входе
 
 if st.session_state.exchanges is None:
     with st.spinner("Подключение к биржам..."):
@@ -569,14 +533,8 @@ if not st.session_state.logged_in:
                         st.session_state.email = user['email']
                         st.session_state.wallet_address = user.get('wallet_address','')
                         st.session_state.user_id = user['id']
-                        # Принудительно сбрасываем балансы до целевых (125 USDT + портфель)
-                        target_balances = ensure_target_balances(user['id'])
+                        # Загружаем данные
                         st.session_state.user_data = load_user_mode_data(user,"Демо")
-                        # Перезаписываем балансы в session_state из целевых
-                        st.session_state.user_data['usdt_reserves'] = target_balances.get('usdt_reserves', {ex: DEMO_USDT_PER_EXCHANGE for ex in EXCHANGES})
-                        st.session_state.user_data['portfolio'] = target_balances.get('portfolio', DEFAULT_PORTFOLIO)
-                        # Сохраняем целевые балансы в Supabase
-                        save_demo_balances(user['id'], target_balances)
                         st.session_state.chat_unread = get_unread_count(user['id'])
                         st.success(f"Добро пожаловать, {st.session_state.username}!")
                         st.rerun()
@@ -656,18 +614,16 @@ with c4:
         st.session_state.current_mode = "Демо"
         st.rerun()
 
-# Кнопка ручного обновления данных (на случай, если нужно увидеть свежие балансы)
 if st.button("🔄 Обновить данные", use_container_width=True):
     st.rerun()
 
-# ---------- ВКЛАДКИ (меню) ----------
+# ---------- ВКЛАДКИ ----------
 show_admin = is_admin(st.session_state.email)
 tabs_list = ["📊 Dashboard","📈 Графики","🔄 Арбитраж (мониторинг)","📊 Статистика","📈 Доходность","📦 Портфель","💰 Кошелёк","📜 История","👤 Кабинет","💬 Чат"]
 if show_admin:
     tabs_list.append("👑 Админ-панель")
 tabs = st.tabs(tabs_list)
 
-# Вкладки (содержимое такое же, как в предыдущей версии, но без ручных кнопок во вкладке "Арбитраж")
 with tabs[0]:
     st.subheader("📊 Статус сканирования")
     tokens = get_available_tokens()
@@ -683,7 +639,7 @@ with tabs[0]:
                     else:
                         st.markdown(f"<div class='token-card'><b>{asset}</b><br>❌</div>", unsafe_allow_html=True)
     if st.session_state.bot_running:
-        st.info(f"🟢 Бот сканирует **{len(tokens)}** токенов на **{len(connected)}** биржах каждые 3 секунды. Авто-сделки исполняются при нахождении положительной прибыли.")
+        st.info(f"🟢 Бот сканирует **{len(tokens)}** токенов на **{len(connected)}** биржах каждые 3 секунды.")
 
 with tabs[1]:
     st.subheader("📈 Японские свечи")
@@ -873,10 +829,11 @@ with tabs[9]:
         mark_messages_read(st.session_state.user_id)
         st.session_state.chat_unread = 0
 
+# ---------- АДМИН-ПАНЕЛЬ ----------
 if show_admin:
     with tabs[-1]:
         st.subheader("👑 Админ-панель")
-        a1, a2, a3, a4, a5, a6 = st.tabs(["👥 Участники","📊 Токены","🔐 API ключи","📜 Все сделки","💰 Заявки","⚙ Демо-резервы"])
+        a1, a2, a3, a4, a5, a6 = st.tabs(["👥 Участники","📊 Токены","🔐 API ключи","📜 Все сделки","💰 Заявки","⚙ Сброс балансов"])
         with a1:
             users = get_all_users_for_admin()
             if users:
@@ -943,6 +900,10 @@ if show_admin:
                     update_withdrawal_status(w['id'], 'completed', st.session_state.email)
                     st.rerun()
         with a6:
-            st.write("Настройка начальных демо-резервов (не используется для трёх бирж)")
+            st.warning("Сбросить балансы текущего пользователя до 125 USDT + портфель на каждой бирже (очистит историю сделок).")
+            if st.button("🔄 Сбросить мои балансы до 125 USDT + портфель"):
+                reset_demo_balances_to_target(st.session_state.user_id)
+                st.success("Балансы сброшены! Перезагрузите страницу.")
+                st.rerun()
 
 st.caption(f"🚀 Сканируется {len(get_available_tokens())} токенов на {len(connected)} биржах | Авто-интервал: 3 сек | Режим: {st.session_state.current_mode}")
