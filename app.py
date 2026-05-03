@@ -6,14 +6,15 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime, timedelta
+import threading
 import hashlib
 import base64
 from supabase import create_client, Client
 import requests
-from streamlit_autorefresh import st_autorefresh
 
-st.set_page_config(page_title="Арбитражный бот | Авто-сделки", layout="wide", page_icon="🔄", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Арбитражный бот | Профессиональная версия", layout="wide", page_icon="🚀", initial_sidebar_state="collapsed")
 
+# ---------- SUPABASE ----------
 SUPABASE_URL = st.secrets.get("SUPABASE_URL")
 SUPABASE_KEY = st.secrets.get("SUPABASE_KEY")
 if not SUPABASE_URL or not SUPABASE_KEY:
@@ -21,6 +22,7 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     st.stop()
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# ---------- TELEGRAM (опционально) ----------
 TELEGRAM_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "")
 def send_telegram(msg):
@@ -50,22 +52,23 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ---------- КОНСТАНТЫ ----------
 EXCHANGES = ["kucoin", "okx", "hitbtc"]
 DEFAULT_ASSETS = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "SUI", "HYPE", "TON"]
 ADMIN_EMAILS = ["cb777899@gmail.com", "admin@arbitrage.com"]
 
-# ----- НАСТРОЙКИ (можно менять прямо здесь) -----
-MIN_SPREAD_PERCENT = 0.001      # 0.001%
+# Параметры арбитража (вы можете менять их прямо здесь)
+MIN_SPREAD_PERCENT = 0.001      # 0.001% минимальный чистый спред
 FEE_PERCENT = 0.01              # 0.01% комиссия тейкера
 SLIPPAGE_PERCENT = 0.01         # 0.01% проскальзывание
-TRADE_PERCENT = 100             # 100% от доступных средств (для теста)
-MIN_TRADE_USDT = 0.5            # минимальная сделка 0.5 USDT
-SCAN_INTERVAL = 5               # секунд между авто-сделками
+TRADE_PERCENT = 50              # 50% от доступных средств
+MIN_TRADE_USDT = 5.0            # минимальная сумма сделки 5 USDT
+SCAN_INTERVAL = 5               # секунд между сканированиями
 
 def is_admin(email):
     return email in ADMIN_EMAILS
 
-# ---------- ФУНКЦИИ SUPABASE ----------
+# ---------- ФУНКЦИИ SUPABASE (хранение балансов, истории, статистики) ----------
 def get_user_by_email(email):
     res = supabase.table('users').select('*').eq('email', email).execute()
     return res.data[0] if res.data else None
@@ -199,6 +202,7 @@ def add_message(user_id, user_email, user_name, message, is_admin_reply=False, r
         'user_id': user_id, 'user_email': user_email, 'user_name': user_name,
         'message': message, 'is_admin_reply': is_admin_reply, 'reply_to': reply_to
     }).execute()
+    send_telegram(f"📩 Сообщение от {user_name}: {message[:100]}")
 
 def mark_messages_read(user_id):
     supabase.table('messages').update({'is_read': True}).eq('user_id', user_id).eq('is_read', False).eq('is_admin_reply', True).execute()
@@ -207,6 +211,7 @@ def get_unread_count(user_id):
     res = supabase.table('messages').select('id', count='exact').eq('user_id', user_id).eq('is_read', False).eq('is_admin_reply', True).execute()
     return res.count or 0
 
+# ---------- ШИФРОВАНИЕ ----------
 ENCRYPTION_KEY = hashlib.sha256("arbitrage_secret_key_2024".encode()).digest()
 def encrypt_api_key(key):
     if not key: return ""
@@ -228,6 +233,7 @@ def decrypt_api_key(encrypted):
         except:
             return ""
 
+# ---------- ПОДКЛЮЧЕНИЕ К БИРЖАМ ----------
 @st.cache_resource
 def init_exchanges():
     exchanges, status = {}, {}
@@ -237,8 +243,8 @@ def init_exchanges():
             ex.fetch_ticker('BTC/USDT')
             exchanges[ex_name] = ex
             status[ex_name] = "connected"
-        except:
-            status[ex_name] = "error"
+        except Exception as e:
+            status[ex_name] = f"error: {str(e)[:30]}"
     return exchanges, status
 
 def get_price(exchange, symbol):
@@ -315,8 +321,6 @@ def find_opportunities():
     return opportunities
 
 def execute_trade(opp):
-    # Принудительная запись в лог для отладки
-    st.session_state.auto_log.append(f"🚀 Попытка исполнить сделку {opp['asset']} {opp['buy_ex']}→{opp['sell_ex']}")
     buy_ex = opp['buy_ex']
     sell_ex = opp['sell_ex']
     asset = opp['asset']
@@ -328,22 +332,17 @@ def execute_trade(opp):
     token_sell_value = token_sell * sell_price
 
     trade_usdt = min(usdt_buy * (TRADE_PERCENT / 100.0), token_sell_value * (TRADE_PERCENT / 100.0))
-    st.session_state.auto_log.append(f"🔍 USDT на {buy_ex}={usdt_buy:.2f}, токенов {asset} на {sell_ex}={token_sell:.6f}, trade_usdt={trade_usdt:.2f}")
     if trade_usdt < MIN_TRADE_USDT:
-        st.session_state.auto_log.append(f"❌ {asset} {buy_ex}→{sell_ex}: сумма {trade_usdt:.2f} USDT < {MIN_TRADE_USDT}")
         return None
     amount = trade_usdt / buy_price
     buy_cost = amount * buy_price
     sell_proceeds = amount * sell_price
 
     if usdt_buy < buy_cost:
-        st.session_state.auto_log.append(f"❌ {asset}: не хватает USDT на {buy_ex} (нужно {buy_cost:.2f}, есть {usdt_buy:.2f})")
         return None
     if token_sell < amount:
-        st.session_state.auto_log.append(f"❌ {asset}: не хватает токенов на {sell_ex} (нужно {amount:.4f}, есть {token_sell:.4f})")
         return None
 
-    # Исполняем сделку
     update_balance(buy_ex, 'USDT', -buy_cost)
     update_balance(buy_ex, asset, +amount)
     update_balance(sell_ex, asset, -amount)
@@ -361,8 +360,46 @@ def execute_trade(opp):
         'total_profit': st.session_state.total_profit,
         'trade_count': st.session_state.trade_count
     }).eq('id', st.session_state.user_id).execute()
-    st.session_state.auto_log.append(f"✅ {asset} {buy_ex}→{sell_ex} | {trade_usdt:.2f} USDT | +{real_profit:.2f} USDT")
+    # Записываем в лог-файл
+    with open("bot_log.txt", "a") as f:
+        f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {asset} | {buy_ex}→{sell_ex} | +{real_profit:.2f} USDT\n")
     return real_profit
+
+# ---------- ФОНОВЫЙ ПОТОК ----------
+def background_arbitrage_loop():
+    while True:
+        try:
+            if st.session_state.get('bot_running', False):
+                opps = find_opportunities()
+                if opps:
+                    best = opps[0]
+                    if best['profit'] > 0:
+                        execute_trade(best)
+                time.sleep(SCAN_INTERVAL)
+            else:
+                time.sleep(5)
+        except Exception as e:
+            with open("error_log.txt", "a") as f:
+                f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {e}\n")
+            time.sleep(5)
+
+if 'background_thread_started' not in st.session_state:
+    threading.Thread(target=background_arbitrage_loop, daemon=True).start()
+    st.session_state.background_thread_started = True
+
+# ---------- ЗАГРУЗКА/СОХРАНЕНИЕ СОСТОЯНИЯ ----------
+BOT_STATUS_FILE = "bot_status.json"
+def save_bot_status(status):
+    try:
+        with open(BOT_STATUS_FILE,'w') as f:
+            json.dump({'bot_running':status}, f)
+    except: pass
+def load_bot_status():
+    try:
+        with open(BOT_STATUS_FILE,'r') as f:
+            return json.load(f).get('bot_running', False)
+    except:
+        return False
 
 # ---------- СЕССИЯ ----------
 if 'logged_in' not in st.session_state:
@@ -371,7 +408,7 @@ if 'logged_in' not in st.session_state:
     st.session_state.email = None
     st.session_state.wallet_address = ''
     st.session_state.exchanges = None
-    st.session_state.auto_trade_enabled = False
+    st.session_state.bot_running = load_bot_status()
     st.session_state.exchange_status = {}
     st.session_state.current_mode = "Демо"
     st.session_state.user_id = None
@@ -384,7 +421,6 @@ if 'logged_in' not in st.session_state:
     st.session_state.trade_count = 0
     st.session_state.total_admin_fee_paid = 0
     st.session_state.withdrawable_balance = 0
-    st.session_state.auto_log = []
 
 if st.session_state.exchanges is None:
     with st.spinner("Подключение к биржам..."):
@@ -393,7 +429,7 @@ if st.session_state.exchanges is None:
 
 # ---------- РЕГИСТРАЦИЯ / ВХОД ----------
 if not st.session_state.logged_in:
-    st.markdown('<h1 class="main-header">🔄 Арбитражный бот | Авто-сделки</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">🚀 Арбитражный бот | Профессиональная версия</h1>', unsafe_allow_html=True)
     tab_reg, tab_login = st.tabs(["📝 Регистрация","🔑 Вход"])
     with tab_reg:
         with st.form("register_form"):
@@ -443,29 +479,16 @@ if not st.session_state.logged_in:
                     st.error("Неверный email или пароль")
     st.stop()
 
-# ---------- АВТО-СДЕЛКИ (автообновление) ----------
-if st.session_state.auto_trade_enabled:
-    st_autorefresh(interval=SCAN_INTERVAL * 1000, key="auto_refresh")
-    if st.session_state.exchanges and st.session_state.user_id and st.session_state.user_balances:
-        opportunities = find_opportunities()
-        if opportunities:
-            best = opportunities[0]
-            st.session_state.auto_log.append(f"🔍 Найдено {len(opportunities)} возможностей, лучшая: {best['asset']} {best['buy_ex']}→{best['sell_ex']} прибыль {best['profit']:.4f} USDT")
-            if best['profit'] > 0:
-                execute_trade(best)
-        else:
-            st.session_state.auto_log.append("ℹ️ Нет арбитражных возможностей")
-
 # ---------- ОСНОВНОЙ ИНТЕРФЕЙС ----------
 if st.session_state.user_id:
     save_balances(st.session_state.user_id, st.session_state.user_balances)
 
 col_logo, col_status, col_logout = st.columns([3,1,1])
 with col_logo:
-    st.markdown('<h1 class="main-header">🔄 Арбитражный бот | Авто-сделки</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">🚀 Арбитражный бот | Профессиональная версия</h1>', unsafe_allow_html=True)
 with col_status:
-    if st.session_state.auto_trade_enabled:
-        st.markdown('<div><span class="status-indicator status-running"></span> <b>АВТО-СДЕЛКИ АКТИВНЫ</b></div>', unsafe_allow_html=True)
+    if st.session_state.bot_running:
+        st.markdown('<div><span class="status-indicator status-running"></span> <b>БОТ АКТИВЕН (сканирует в фоне)</b></div>', unsafe_allow_html=True)
     else:
         st.markdown('<div><span class="status-indicator status-stopped"></span> <b>ОСТАНОВЛЕН</b></div>', unsafe_allow_html=True)
 with col_logout:
@@ -473,7 +496,8 @@ with col_logout:
         save_balances(st.session_state.user_id, st.session_state.user_balances)
         save_history(st.session_state.user_id, st.session_state.user_history)
         st.session_state.logged_in = False
-        st.session_state.auto_trade_enabled = False
+        st.session_state.bot_running = False
+        save_bot_status(False)
         st.rerun()
 
 st.markdown(f'<div class="user-info">👤 {st.session_state.username} | 📧 {st.session_state.email}</div>', unsafe_allow_html=True)
@@ -497,14 +521,16 @@ col3.metric("📊 Всего сделок", st.session_state.trade_count)
 c1,c2,c3 = st.columns(3)
 with c1:
     st.markdown('<div class="green-button">', unsafe_allow_html=True)
-    if st.button("▶ СТАРТ (авто)", use_container_width=True):
-        st.session_state.auto_trade_enabled = True
+    if st.button("▶ СТАРТ", use_container_width=True):
+        st.session_state.bot_running = True
+        save_bot_status(True)
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 with c2:
     st.markdown('<div class="red-button">', unsafe_allow_html=True)
     if st.button("⏹ СТОП", use_container_width=True):
-        st.session_state.auto_trade_enabled = False
+        st.session_state.bot_running = False
+        save_bot_status(False)
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 with c3:
@@ -514,12 +540,14 @@ with c3:
 if st.button("🔄 Обновить данные", use_container_width=True):
     st.rerun()
 
-with st.expander("📋 Лог авто-торговли (последние 20 событий, сохраняется между сессиями)"):
-    if st.session_state.auto_log:
-        for log in st.session_state.auto_log[-20:]:
-            st.text(log)
-    else:
-        st.info("Нет событий. Запустите бота (СТАРТ).")
+with st.expander("📋 Лог авто-торговли (последние события)"):
+    try:
+        with open("bot_log.txt", "r") as f:
+            lines = f.readlines()[-30:]
+            for line in lines:
+                st.text(line.strip())
+    except:
+        st.info("Нет событий. Запустите бота и подождите.")
 
 # ---------- ВКЛАДКИ ----------
 show_admin = is_admin(st.session_state.email)
@@ -543,8 +571,8 @@ with tabs[0]:
                 else:
                     st.metric(ex.upper(), "❌")
         st.divider()
-    if st.session_state.auto_trade_enabled:
-        st.info(f"🟢 Бот сканирует **{len(tokens)}** токенов на **{len(connected)}** биржах")
+    if st.session_state.bot_running:
+        st.info(f"🟢 Бот сканирует **{len(tokens)}** токенов на **{len(connected)}** биржах каждые {SCAN_INTERVAL} сек")
 
 # Вкладка 1: Графики
 with tabs[1]:
@@ -567,9 +595,9 @@ with tabs[1]:
         except:
             st.warning("Нет данных")
 
-# Вкладка 2: Арбитраж
+# Вкладка 2: Арбитраж (только мониторинг)
 with tabs[2]:
-    st.subheader("🔍 Арбитражные возможности")
+    st.subheader("🔍 Арбитражные возможности (мониторинг)")
     if st.button("🔄 Обновить", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
@@ -608,7 +636,7 @@ with tabs[3]:
     else:
         st.info("Нет данных")
 
-# Вкладка 4: Доходность
+# Вкладка 4: Доходность по дням
 with tabs[4]:
     st.subheader("📈 Прибыль по периодам")
     stats = st.session_state.user_stats
@@ -703,7 +731,7 @@ with tabs[6]:
     st.subheader("💰 Вывод средств")
     st.write(f"**Доступно для вывода:** {st.session_state.withdrawable_balance:.2f} USDT")
     weekday = datetime.now().strftime("%A")
-    disabled = weekday not in ["Tuesday","Friday"]
+    disabled = weekday not in ["Tuesday", "Friday"]
     if disabled:
         st.warning("⏳ Вывод только по вторникам и пятницам")
     max_wd = st.session_state.withdrawable_balance
@@ -864,6 +892,6 @@ if show_admin:
                     st.rerun()
         with a6:
             st.write("Настройки арбитража (изменяются в коде)")
-            st.info(f"Спред: {MIN_SPREAD_PERCENT}%, комиссия: {FEE_PERCENT}%, проскальзывание: {SLIPPAGE_PERCENT}%, процент сделки: {TRADE_PERCENT}%, мин. сумма: {MIN_TRADE_USDT} USDT")
+            st.info(f"Мин. спред: {MIN_SPREAD_PERCENT}%, комиссия: {FEE_PERCENT}%, проскальзывание: {SLIPPAGE_PERCENT}%, процент сделки: {TRADE_PERCENT}%, мин. сумма: {MIN_TRADE_USDT} USDT")
 
-st.caption(f"🚀 Сканируется {len(get_available_tokens())} токенов на {len(connected)} биржах | Авто-интервал: {SCAN_INTERVAL} сек | Режим: {st.session_state.current_mode}")
+st.caption(f"🚀 Сканируется {len(get_available_tokens())} токенов на {len(connected)} биржах | Интервал: {SCAN_INTERVAL} сек | Режим: {st.session_state.current_mode}")
