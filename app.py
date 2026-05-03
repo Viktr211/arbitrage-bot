@@ -247,7 +247,7 @@ def get_price(exchange, symbol):
     except:
         return None
 
-# ---------- ИСПРАВЛЕННЫЕ ФУНКЦИИ БАЛАНСОВ ----------
+# ---------- БАЛАНСЫ (с поддержкой уменьшения) ----------
 def get_balance(exchange_name, asset):
     bal = st.session_state.user_balances.get(exchange_name, {})
     if asset == 'USDT':
@@ -256,10 +256,9 @@ def get_balance(exchange_name, asset):
         return bal.get('portfolio', {}).get(asset, 0.0)
 
 def update_balance(exchange_name, asset, delta):
-    # Гарантируем, что биржа существует
+    # Гарантируем структуру
     if exchange_name not in st.session_state.user_balances:
         st.session_state.user_balances[exchange_name] = {"USDT": 0.0, "portfolio": {a: 0.0 for a in DEFAULT_ASSETS}}
-    # Гарантируем, что USDT и portfolio есть
     if 'USDT' not in st.session_state.user_balances[exchange_name]:
         st.session_state.user_balances[exchange_name]['USDT'] = 0.0
     if 'portfolio' not in st.session_state.user_balances[exchange_name]:
@@ -660,10 +659,10 @@ with tabs[4]:
     else:
         st.info("Нет статистики")
 
-# TAB 5: Балансы (ручное управление)
+# TAB 5: Балансы (с возможностью добавлять и вычитать)
 with tabs[5]:
     st.subheader("💼 Управление балансами по биржам")
-    st.info("Здесь вы можете вручную добавлять USDT и токены на каждую биржу. После добавления нажмите 'Обновить данные' выше.")
+    st.info("Здесь вы можете вручную добавлять или вычитать USDT и токены на каждой бирже. Для вычитания используйте кнопку «➖». Баланс не может стать отрицательным.")
     for ex in EXCHANGES:
         with st.expander(f"### {ex.upper()}"):
             bal = st.session_state.user_balances.get(ex, {})
@@ -675,24 +674,48 @@ with tabs[5]:
                 price = get_price(st.session_state.exchanges.get(ex), asset) if st.session_state.exchanges.get(ex) else None
                 value = amount * price if price else 0
                 st.write(f"{asset}: {amount:.6f} ≈ ${value:.2f}")
-            # Добавление USDT
-            add_usdt = st.number_input(f"Добавить USDT на {ex.upper()}", min_value=0.0, step=100.0, key=f"add_usdt_{ex}")
-            if st.button(f"➕ Добавить {add_usdt} USDT", key=f"btn_usdt_{ex}"):
-                if add_usdt > 0:
-                    update_balance(ex, 'USDT', add_usdt)
-                    st.success(f"Добавлено {add_usdt} USDT на биржу {ex.upper()}")
-                    st.rerun()
-            # Добавление токенов
-            st.write("**Добавить токены:**")
+            # Управление USDT
+            st.write("**Изменить USDT:**")
+            col_usdt1, col_usdt2, col_usdt3 = st.columns([2,1,1])
+            with col_usdt1:
+                usdt_amount = st.number_input(f"Сумма USDT", min_value=0.0, step=10.0, key=f"usdt_amt_{ex}", format="%.2f")
+            with col_usdt2:
+                if st.button(f"➕ Добавить USDT", key=f"add_usdt_{ex}"):
+                    if usdt_amount > 0:
+                        update_balance(ex, 'USDT', usdt_amount)
+                        st.success(f"Добавлено {usdt_amount} USDT на биржу {ex.upper()}")
+                        st.rerun()
+            with col_usdt3:
+                if st.button(f"➖ Вычесть USDT", key=f"sub_usdt_{ex}"):
+                    if usdt_amount > 0 and usdt >= usdt_amount:
+                        update_balance(ex, 'USDT', -usdt_amount)
+                        st.success(f"Вычтено {usdt_amount} USDT с биржи {ex.upper()}")
+                        st.rerun()
+                    elif usdt_amount > 0 and usdt < usdt_amount:
+                        st.error(f"Недостаточно USDT на бирже {ex.upper()} (доступно {usdt:.2f})")
+            # Управление токенами
+            st.write("**Изменить токены:**")
             cols = st.columns(3)
             for i, asset in enumerate(get_available_tokens()):
                 with cols[i % 3]:
-                    amount = st.number_input(f"{asset}", min_value=0.0, step=0.01, key=f"add_{ex}_{asset}", format="%.6f")
-                    if st.button(f"➕ Добавить {asset}", key=f"btn_{ex}_{asset}"):
-                        if amount > 0:
-                            update_balance(ex, asset, amount)
-                            st.success(f"Добавлено {amount} {asset} на биржу {ex.upper()}")
-                            st.rerun()
+                    current_amount = portfolio.get(asset, 0.0)
+                    st.write(f"**{asset}:** {current_amount:.6f}")
+                    amount = st.number_input(f"Количество {asset}", min_value=0.0, step=0.01, key=f"amt_{ex}_{asset}", format="%.6f")
+                    col_add, col_sub = st.columns(2)
+                    with col_add:
+                        if st.button(f"➕ Добавить", key=f"add_{ex}_{asset}"):
+                            if amount > 0:
+                                update_balance(ex, asset, amount)
+                                st.success(f"Добавлено {amount} {asset} на биржу {ex.upper()}")
+                                st.rerun()
+                    with col_sub:
+                        if st.button(f"➖ Вычесть", key=f"sub_{ex}_{asset}"):
+                            if amount > 0 and current_amount >= amount:
+                                update_balance(ex, asset, -amount)
+                                st.success(f"Вычтено {amount} {asset} с биржи {ex.upper()}")
+                                st.rerun()
+                            elif amount > 0 and current_amount < amount:
+                                st.error(f"Недостаточно {asset} на бирже {ex.upper()} (доступно {current_amount:.6f})")
             st.divider()
 
 # TAB 6: Вывод
