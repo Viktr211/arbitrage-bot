@@ -68,8 +68,8 @@ ADMIN_EMAILS = ["cb777899@gmail.com", "admin@arbitrage.com"]
 MIN_SPREAD_PERCENT = 0.001
 FEE_PERCENT = 0.01
 SLIPPAGE_PERCENT = 0.01
-TRADE_PERCENT = 50          # 50% от доступного капитала на сделку
-MIN_TRADE_USDT = 10.0
+TRADE_PERCENT = 50           # 50% от средств
+MIN_TRADE_USDT = 5.0         # минимальная сделка 5 USDT
 
 def is_admin(email):
     return email in ADMIN_EMAILS
@@ -88,7 +88,7 @@ def reset_demo_balances_to_target(user_id):
     }).eq('id', user_id).execute()
     return target_balances
 
-# ---------- SUPABASE ФУНКЦИИ ----------
+# ---------- SUPABASE ФУНКЦИИ (с исправленной синтаксической ошибкой) ----------
 def get_user_by_email(email):
     res = supabase.table('users').select('*').eq('email', email).execute()
     return res.data[0] if res.data else None
@@ -346,7 +346,6 @@ def execute_arbitrage_trade(opp, log_list):
         log_list.append(f"❌ {asset}: недостаточно токенов на {sell_ex} (нужно {amount:.4f}, есть {token_sell:.4f})")
         return None
 
-    # Имитация ордеров
     place_order(st.session_state.exchanges[buy_ex], f"{asset}/USDT", 'buy', amount, buy_price)
     place_order(st.session_state.exchanges[sell_ex], f"{asset}/USDT", 'sell', amount, sell_price)
 
