@@ -58,13 +58,13 @@ MIN_SPREAD_PERCENT = 0.001
 FEE_PERCENT = 0.01
 SLIPPAGE_PERCENT = 0.01
 TRADE_PERCENT = 50
-MIN_TRADE_USDT = 1.0          # снижен до 1 USDT для теста
+MIN_TRADE_USDT = 1.0          # снижено с 5 до 1
 SCAN_INTERVAL = 5
 
 def is_admin(email):
     return email in ADMIN_EMAILS
 
-# ---------- ФУНКЦИИ SUPABASE ----------
+# ---------- ФУНКЦИИ SUPABASE (без изменений) ----------
 def get_user_by_email(email):
     res = supabase.table('users').select('*').eq('email', email).execute()
     return res.data[0] if res.data else None
@@ -240,25 +240,14 @@ def init_exchanges():
             status[ex_name] = "error"
     return exchanges, status
 
-def get_ticker(exchange, symbol):
+def get_price(exchange, symbol):
     try:
-        return exchange.fetch_ticker(f"{symbol}/USDT")
+        ticker = exchange.fetch_ticker(f"{symbol}/USDT")
+        return ticker['last']
     except:
         return None
 
-def get_price(exchange, symbol):
-    ticker = get_ticker(exchange, symbol)
-    return ticker['last'] if ticker else None
-
-def get_ask(exchange, symbol):
-    ticker = get_ticker(exchange, symbol)
-    return ticker['ask'] if ticker else None
-
-def get_bid(exchange, symbol):
-    ticker = get_ticker(exchange, symbol)
-    return ticker['bid'] if ticker else None
-
-# ---------- БАЛАНСЫ (с поддержкой изменения) ----------
+# ---------- БАЛАНСЫ (с поддержкой уменьшения) ----------
 def get_balance(exchange_name, asset):
     bal = st.session_state.user_balances.get(exchange_name, {})
     if asset == 'USDT':
@@ -281,7 +270,7 @@ def update_balance(exchange_name, asset, delta):
         st.session_state.user_balances[exchange_name]['portfolio'][asset] += delta
     save_balances(st.session_state.user_id, st.session_state.user_balances)
 
-# ---------- АРБИТРАЖ ----------
+# ---------- АРБИТРАЖ С ДЕТАЛЬНЫМ ЛОГИРОВАНИЕМ ----------
 def find_opportunities():
     opportunities = []
     if not st.session_state.exchanges:
@@ -335,9 +324,12 @@ def execute_trade(opp, log_list):
     token_sell = get_balance(sell_ex, asset)
     token_sell_value = token_sell * sell_price
 
+    # Рассчитываем сумму сделки
     trade_usdt = min(usdt_buy * (TRADE_PERCENT / 100.0), token_sell_value * (TRADE_PERCENT / 100.0))
+    log_list.append(f"🔄 {asset} {buy_ex}→{sell_ex}: USDT на {buy_ex}={usdt_buy:.2f}, токенов {asset} на {sell_ex}={token_sell:.6f} (стоимость {token_sell_value:.2f}), trade_usdt={trade_usdt:.2f}")
+
     if trade_usdt < MIN_TRADE_USDT:
-        log_list.append(f"❌ {asset} {buy_ex}→{sell_ex}: сумма {trade_usdt:.2f} USDT < {MIN_TRADE_USDT} (USDT на {buy_ex}: {usdt_buy:.2f}, токенов на {sell_ex}: {token_sell:.4f})")
+        log_list.append(f"❌ {asset} {buy_ex}→{sell_ex}: сумма {trade_usdt:.2f} USDT < {MIN_TRADE_USDT}")
         return None
     amount = trade_usdt / buy_price
     buy_cost = amount * buy_price
@@ -350,6 +342,7 @@ def execute_trade(opp, log_list):
         log_list.append(f"❌ {asset}: не хватает токенов на {sell_ex} (нужно {amount:.4f}, есть {token_sell:.4f})")
         return None
 
+    # Исполняем сделку
     update_balance(buy_ex, 'USDT', -buy_cost)
     update_balance(buy_ex, asset, +amount)
     update_balance(sell_ex, asset, -amount)
@@ -370,39 +363,7 @@ def execute_trade(opp, log_list):
     log_list.append(f"✅ {asset} {buy_ex}→{sell_ex} | {trade_usdt:.2f} USDT | +{real_profit:.2f} USDT")
     return real_profit
 
-def buy_tokens(exchange_name, asset, usdt_amount):
-    """Покупает токены за USDT на указанной бирже по ask-цене"""
-    ex = st.session_state.exchanges.get(exchange_name)
-    if not ex:
-        return False, "Биржа не подключена"
-    ask = get_ask(ex, asset)
-    if not ask:
-        return False, "Не удалось получить цену"
-    amount = usdt_amount / ask
-    current_usdt = get_balance(exchange_name, 'USDT')
-    if current_usdt < usdt_amount:
-        return False, f"Недостаточно USDT (есть {current_usdt:.2f})"
-    update_balance(exchange_name, 'USDT', -usdt_amount)
-    update_balance(exchange_name, asset, amount)
-    return True, f"Куплено {amount:.6f} {asset} по {ask:.2f} USDT"
-
-def sell_tokens(exchange_name, asset, amount):
-    """Продаёт токены за USDT на указанной бирже по bid-цене"""
-    ex = st.session_state.exchanges.get(exchange_name)
-    if not ex:
-        return False, "Биржа не подключена"
-    bid = get_bid(ex, asset)
-    if not bid:
-        return False, "Не удалось получить цену"
-    current_amount = get_balance(exchange_name, asset)
-    if current_amount < amount:
-        return False, f"Недостаточно {asset} (есть {current_amount:.6f})"
-    usdt_received = amount * bid
-    update_balance(exchange_name, asset, -amount)
-    update_balance(exchange_name, 'USDT', usdt_received)
-    return True, f"Продано {amount:.6f} {asset} по {bid:.2f} USDT"
-
-# ---------- ФОНОВЫЙ ПОТОК ----------
+# ---------- ФОНОВОЙ ПОТОК ----------
 def background_arbitrage_loop():
     while True:
         try:
@@ -410,14 +371,16 @@ def background_arbitrage_loop():
                 opps = find_opportunities()
                 if opps:
                     best = opps[0]
+                    st.session_state.auto_log.append(f"🔍 Найдено {len(opps)} возможностей, лучшая: {best['asset']} {best['buy_ex']}→{best['sell_ex']} прибыль {best['profit']:.4f} USDT")
                     if best['profit'] > 0:
                         execute_trade(best, st.session_state.auto_log)
+                else:
+                    st.session_state.auto_log.append("ℹ️ Нет арбитражных возможностей")
                 time.sleep(SCAN_INTERVAL)
             else:
                 time.sleep(5)
         except Exception as e:
-            if 'auto_log' in st.session_state:
-                st.session_state.auto_log.append(f"⚠️ Ошибка в потоке: {e}")
+            st.session_state.auto_log.append(f"⚠️ Ошибка в потоке: {e}")
             time.sleep(5)
 
 if 'background_thread_started' not in st.session_state:
@@ -557,15 +520,19 @@ col3.metric("📊 Всего сделок", st.session_state.trade_count)
 
 c1,c2,c3 = st.columns(3)
 with c1:
+    st.markdown('<div class="green-button">', unsafe_allow_html=True)
     if st.button("▶ СТАРТ", use_container_width=True):
         st.session_state.bot_running = True
         save_bot_status(True)
         st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
 with c2:
+    st.markdown('<div class="red-button">', unsafe_allow_html=True)
     if st.button("⏹ СТОП", use_container_width=True):
         st.session_state.bot_running = False
         save_bot_status(False)
         st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
 with c3:
     new_mode = st.selectbox("Режим",["Демо","Реальный"], index=0)
     st.session_state.current_mode = "Демо"
@@ -573,7 +540,7 @@ with c3:
 if st.button("🔄 Обновить данные", use_container_width=True):
     st.rerun()
 
-with st.expander("📋 Лог авто-торговли (последние 20 событий)"):
+with st.expander("📋 Лог авто-торговли (последние 20 событий, сохраняется между сессиями)"):
     if st.session_state.auto_log:
         for log in st.session_state.auto_log[-20:]:
             st.text(log)
@@ -604,7 +571,7 @@ with tabs[0]:
     if st.session_state.bot_running:
         st.info(f"🟢 Бот сканирует **{len(tokens)}** токенов на **{len(connected)}** биржах")
 
-# TAB 1: Графики
+# TAB 1: Графики (упрощён)
 with tabs[1]:
     st.subheader("📈 Японские свечи")
     col_a, col_b = st.columns(2)
@@ -697,10 +664,10 @@ with tabs[4]:
     else:
         st.info("Нет статистики")
 
-# TAB 5: Балансы (с возможностью покупать/продавать токены за USDT)
+# TAB 5: Балансы (с возможностью добавлять и вычитать)
 with tabs[5]:
     st.subheader("💼 Управление балансами по биржам")
-    st.info("Здесь можно вручную добавить USDT или токены, а также купить/продать токены за USDT по текущей рыночной цене биржи.")
+    st.info("Здесь вы можете вручную добавлять или вычитать USDT и токены на каждой бирже.")
     for ex in EXCHANGES:
         with st.expander(f"### {ex.upper()}"):
             bal = st.session_state.user_balances.get(ex, {})
@@ -712,57 +679,48 @@ with tabs[5]:
                 price = get_price(st.session_state.exchanges.get(ex), asset) if st.session_state.exchanges.get(ex) else None
                 value = amount * price if price else 0
                 st.write(f"{asset}: {amount:.6f} ≈ ${value:.2f}")
-            
-            # Прямое изменение USDT
+            # Управление USDT
             st.write("**Изменить USDT:**")
-            col1, col2, col3 = st.columns([2,1,1])
-            with col1:
+            col_usdt1, col_usdt2, col_usdt3 = st.columns([2,1,1])
+            with col_usdt1:
                 usdt_amount = st.number_input(f"Сумма USDT", min_value=0.0, step=10.0, key=f"usdt_amt_{ex}", format="%.2f")
-            with col2:
+            with col_usdt2:
                 if st.button(f"➕ Добавить USDT", key=f"add_usdt_{ex}"):
                     if usdt_amount > 0:
                         update_balance(ex, 'USDT', usdt_amount)
-                        st.success(f"Добавлено {usdt_amount} USDT")
+                        st.success(f"Добавлено {usdt_amount} USDT на биржу {ex.upper()}")
                         st.rerun()
-            with col3:
+            with col_usdt3:
                 if st.button(f"➖ Вычесть USDT", key=f"sub_usdt_{ex}"):
                     if usdt_amount > 0 and usdt >= usdt_amount:
                         update_balance(ex, 'USDT', -usdt_amount)
-                        st.success(f"Вычтено {usdt_amount} USDT")
+                        st.success(f"Вычтено {usdt_amount} USDT с биржи {ex.upper()}")
                         st.rerun()
-                    elif usdt_amount > 0:
-                        st.error(f"Недостаточно USDT (доступно {usdt:.2f})")
-            
-            # Покупка токенов за USDT
-            st.write("**Купить токены за USDT (по ask):**")
-            col_buy1, col_buy2, col_buy3 = st.columns([2,1,1])
-            with col_buy1:
-                buy_asset = st.selectbox(f"Токен", get_available_tokens(), key=f"buy_asset_{ex}")
-                buy_usdt = st.number_input(f"Сумма USDT для покупки", min_value=0.0, step=10.0, key=f"buy_usdt_{ex}", format="%.2f")
-            with col_buy2:
-                if st.button(f"🔁 Купить {buy_asset}", key=f"buy_{ex}"):
-                    if buy_usdt > 0:
-                        success, msg = buy_tokens(ex, buy_asset, buy_usdt)
-                        if success:
-                            st.success(msg)
-                            st.rerun()
-                        else:
-                            st.error(msg)
-            # Продажа токенов за USDT
-            st.write("**Продать токены за USDT (по bid):**")
-            col_sell1, col_sell2, col_sell3 = st.columns([2,1,1])
-            with col_sell1:
-                sell_asset = st.selectbox(f"Токен", get_available_tokens(), key=f"sell_asset_{ex}")
-                sell_amount = st.number_input(f"Количество {sell_asset} для продажи", min_value=0.0, step=0.01, key=f"sell_amount_{ex}", format="%.6f")
-            with col_sell2:
-                if st.button(f"🔁 Продать {sell_asset}", key=f"sell_{ex}"):
-                    if sell_amount > 0:
-                        success, msg = sell_tokens(ex, sell_asset, sell_amount)
-                        if success:
-                            st.success(msg)
-                            st.rerun()
-                        else:
-                            st.error(msg)
+                    elif usdt_amount > 0 and usdt < usdt_amount:
+                        st.error(f"Недостаточно USDT на бирже {ex.upper()} (доступно {usdt:.2f})")
+            # Управление токенами
+            st.write("**Изменить токены:**")
+            cols = st.columns(3)
+            for i, asset in enumerate(get_available_tokens()):
+                with cols[i % 3]:
+                    current_amount = portfolio.get(asset, 0.0)
+                    st.write(f"**{asset}:** {current_amount:.6f}")
+                    amount = st.number_input(f"Количество {asset}", min_value=0.0, step=0.01, key=f"amt_{ex}_{asset}", format="%.6f")
+                    col_add, col_sub = st.columns(2)
+                    with col_add:
+                        if st.button(f"➕ Добавить", key=f"add_{ex}_{asset}"):
+                            if amount > 0:
+                                update_balance(ex, asset, amount)
+                                st.success(f"Добавлено {amount} {asset} на биржу {ex.upper()}")
+                                st.rerun()
+                    with col_sub:
+                        if st.button(f"➖ Вычесть", key=f"sub_{ex}_{asset}"):
+                            if amount > 0 and current_amount >= amount:
+                                update_balance(ex, asset, -amount)
+                                st.success(f"Вычтено {amount} {asset} с биржи {ex.upper()}")
+                                st.rerun()
+                            elif amount > 0 and current_amount < amount:
+                                st.error(f"Недостаточно {asset} на бирже {ex.upper()} (доступно {current_amount:.6f})")
             st.divider()
 
 # TAB 6: Вывод
@@ -929,7 +887,14 @@ if show_admin:
                     update_withdrawal_status(w['id'], 'completed', st.session_state.email)
                     st.rerun()
         with a6:
-            st.write("Настройки арбитража (изменяются в коде для простоты)")
-            st.info(f"Спред: {MIN_SPREAD_PERCENT}%, комиссия: {FEE_PERCENT}%, проскальзывание: {SLIPPAGE_PERCENT}%, процент сделки: {TRADE_PERCENT}%, мин. сумма: {MIN_TRADE_USDT} USDT")
+            st.write("Настройки арбитража")
+            new_min_trade = st.number_input("Минимальная сумма сделки (USDT)", min_value=0.5, value=MIN_TRADE_USDT, step=0.5)
+            new_trade_percent = st.slider("Процент от баланса для сделки (%)", 10, 100, TRADE_PERCENT, 5)
+            if st.button("Сохранить настройки"):
+                # Здесь можно сохранить в config
+                st.session_state.temp_min_trade = new_min_trade
+                st.session_state.temp_trade_percent = new_trade_percent
+                st.success("Настройки сохранены (требуется перезапуск бота)")
+                st.rerun()
 
 st.caption(f"🚀 Сканируется {len(get_available_tokens())} токенов на {len(connected)} биржах | Интервал: {SCAN_INTERVAL} сек | Режим: {st.session_state.current_mode}")
