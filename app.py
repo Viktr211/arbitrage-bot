@@ -36,7 +36,7 @@ DEFAULT_MIN_TRADE_USDT = 12.0
 DEFAULT_MAX_TRADE_USDT = 30.0
 DEFAULT_SCAN_INTERVAL = 10
 
-# ---------- ФУНКЦИИ SUPABASE (только с существующими колонками) ----------
+# ---------- ФУНКЦИИ SUPABASE ----------
 def get_user_by_email(email):
     res = supabase.table('users').select('*').eq('email', email).execute()
     return res.data[0] if res.data else None
@@ -386,46 +386,37 @@ def execute_trade(opp):
     add_trade(st.session_state.user_id, "Демо", token, amount, real_profit, buy_ex, sell_ex)
     return real_profit, None
 
-# ---------- ФОНОВЫЙ ПОТОК ДЛЯ АВТО-ТОРГОВЛИ ----------
+# ---------- ФОНОВЫЙ ПОТОК (с логгированием) ----------
 def background_arbitrage_loop():
     while True:
         try:
             if st.session_state.get('auto_trade_enabled', False):
-                opp = find_best_opportunity(
-                    st.session_state.fee_percent,
-                    st.session_state.min_profit_usdt,
-                    st.session_state.min_trade_usdt,
-                    st.session_state.max_trade_usdt
-                )
+                fee = st.session_state.get('fee_percent', DEFAULT_FEE_PERCENT)
+                min_profit = st.session_state.get('min_profit_usdt', DEFAULT_MIN_PROFIT_USDT)
+                min_trade = st.session_state.get('min_trade_usdt', DEFAULT_MIN_TRADE_USDT)
+                max_trade = st.session_state.get('max_trade_usdt', DEFAULT_MAX_TRADE_USDT)
+                opp = find_best_opportunity(fee, min_profit, min_trade, max_trade)
                 if opp:
+                    if 'auto_log' not in st.session_state:
+                        st.session_state.auto_log = []
+                    st.session_state.auto_log.append(f"🔍 Найдена возможность: {opp['token']} {opp['buy_ex']}→{opp['sell_ex']} прибыль {opp['profit']:.4f} USDT")
                     profit, error = execute_trade(opp)
                     if profit:
-                        print(f"✅ Авто-сделка: +{profit:.2f} USDT")
+                        st.session_state.auto_log.append(f"✅ Сделка исполнена: +{profit:.2f} USDT")
                     elif error:
-                        print(f"❌ Ошибка: {error}")
-                time.sleep(st.session_state.scan_interval)
+                        st.session_state.auto_log.append(f"❌ Ошибка: {error}")
+                time.sleep(st.session_state.get('scan_interval', DEFAULT_SCAN_INTERVAL))
             else:
                 time.sleep(5)
         except Exception as e:
-            print(f"Ошибка в фоновом потоке: {e}")
+            if 'auto_log' in st.session_state:
+                st.session_state.auto_log.append(f"⚠️ Ошибка в фоновом потоке: {e}")
             time.sleep(5)
 
 if 'background_thread_started' not in st.session_state:
     threading.Thread(target=background_arbitrage_loop, daemon=True).start()
     st.session_state.background_thread_started = True
-
-BOT_STATUS_FILE = "bot_status.json"
-def save_bot_status(status):
-    try:
-        with open(BOT_STATUS_FILE,'w') as f:
-            json.dump({'bot_running':status}, f)
-    except: pass
-def load_bot_status():
-    try:
-        with open(BOT_STATUS_FILE,'r') as f:
-            return json.load(f).get('bot_running', False)
-    except:
-        return False
+    st.session_state.auto_log = []
 
 # ---------- СЕССИЯ ----------
 if 'logged_in' not in st.session_state:
@@ -439,7 +430,6 @@ if 'logged_in' not in st.session_state:
     st.session_state.user_data = None
     st.session_state.chat_unread = 0
     st.session_state.auto_trade_enabled = False
-    st.session_state.bot_running = load_bot_status()
     st.session_state.fee_percent = DEFAULT_FEE_PERCENT
     st.session_state.min_profit_usdt = DEFAULT_MIN_PROFIT_USDT
     st.session_state.min_trade_usdt = DEFAULT_MIN_TRADE_USDT
@@ -504,15 +494,15 @@ if not st.session_state.logged_in:
 if st.session_state.user_id and st.session_state.user_data:
     save_user_data(st.session_state.user_id, st.session_state.user_data)
 
-# ---------- ОСНОВНОЙ ИНТЕРФЕЙС ----------
-col_logo, col_status, col_logout = st.columns([3,1,1])
+# ---------- ОСНОВНОЙ ИНТЕРФЕЙС (с индикатором) ----------
+col_logo, col_status, col_logout = st.columns([3, 1, 1])
 with col_logo:
     st.markdown('<h1 class="main-header">🔄 Арбитражный бот | Центральный кошелёк</h1>', unsafe_allow_html=True)
 with col_status:
     if st.session_state.auto_trade_enabled:
-        st.markdown('<div><span class="status-indicator status-running"></span> <b>АВТО-СДЕЛКИ АКТИВНЫ</b></div>', unsafe_allow_html=True)
+        st.markdown('<div style="text-align: center;"><span class="status-indicator status-running"></span> <b style="color: #00FF88;">АВТО-СДЕЛКИ АКТИВНЫ</b></div>', unsafe_allow_html=True)
     else:
-        st.markdown('<div><span class="status-indicator status-stopped"></span> <b>ОСТАНОВЛЕН</b></div>', unsafe_allow_html=True)
+        st.markdown('<div style="text-align: center;"><span class="status-indicator status-stopped"></span> <b style="color: #FF4444;">АВТО-СДЕЛКИ ОСТАНОВЛЕНЫ</b></div>', unsafe_allow_html=True)
 with col_logout:
     if st.button("🚪 Выйти"):
         st.session_state.logged_in = False
@@ -534,10 +524,11 @@ for ex, balances in st.session_state.user_data['balances'].items():
         if price:
             total_portfolio += amount * price
 
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 col1.metric("💰 Центральный кошелёк", f"{total_main:.2f} USDT")
 col2.metric("🏦 USDT на биржах", f"{total_usdt_in_exchanges:.2f} USDT")
 col3.metric("📦 Портфель (токены)", f"{total_portfolio:.2f} USDT")
+col4.metric("📊 Сделок", st.session_state.user_data['trade_count'])
 
 c1, c2, c3, c4 = st.columns(4)
 with c1:
@@ -553,9 +544,8 @@ with c3:
         st.rerun()
 with c4:
     new_mode = st.selectbox("Режим",["Демо","Реальный"], index=0)
-    # Режим пока не реализован, всегда Демо
 
-# ----- НАСТРОЙКИ АРБИТРАЖА (в разворачиваемом блоке) -----
+# ----- НАСТРОЙКИ АРБИТРАЖА -----
 with st.expander("⚙️ Настройки арбитража"):
     new_fee = st.number_input("Комиссия тейкера (%)", min_value=0.0, max_value=0.5, value=st.session_state.fee_percent, step=0.01, format="%.2f")
     new_min_profit = st.number_input("Минимальная прибыль (USDT)", min_value=0.001, value=st.session_state.min_profit_usdt, step=0.01, format="%.3f")
@@ -570,6 +560,14 @@ with st.expander("⚙️ Настройки арбитража"):
         st.session_state.scan_interval = new_interval
         st.success("Настройки сохранены")
 
+# ----- Лог авто-торговли -----
+with st.expander("📋 Лог авто-торговли (последние 20 событий)"):
+    if st.session_state.auto_log:
+        for log in st.session_state.auto_log[-20:]:
+            st.text(log)
+    else:
+        st.info("Нет событий. Запустите авто-торговлю.")
+
 # ---------- ВКЛАДКИ ----------
 show_admin = is_admin(st.session_state.email)
 tabs_list = ["📊 Dashboard", "📈 Графики", "🔄 Арбитраж", "📊 Статистика", "📈 Доходность", "💼 Балансы", "💰 Вывод", "📜 История", "👤 Кабинет", "💬 Чат"]
@@ -577,7 +575,7 @@ if show_admin:
     tabs_list.append("👑 Админ-панель")
 tabs = st.tabs(tabs_list)
 
-# TAB 0: Dashboard
+# TAB 0: Dashboard (цены)
 with tabs[0]:
     st.subheader("📊 Текущие цены на биржах")
     tokens = get_available_tokens()
@@ -661,7 +659,7 @@ with tabs[3]:
     else:
         st.info("Нет данных")
 
-# TAB 4: Доходность по периодам
+# TAB 4: Доходность
 with tabs[4]:
     st.subheader("📈 Прибыль по периодам")
     stats = st.session_state.user_data['stats']
@@ -692,7 +690,7 @@ with tabs[4]:
     else:
         st.info("Нет статистики")
 
-# TAB 5: Балансы (управление средствами)
+# TAB 5: Балансы (управление)
 with tabs[5]:
     st.subheader("💼 Управление средствами")
     st.info("Сначала пополните центральный кошелёк в личном кабинете, затем переводите USDT на биржи и покупайте токены.")
@@ -757,7 +755,7 @@ with tabs[5]:
                     st.write(f"{token}: {amount:.8f} ≈ ${value:.2f}")
             st.divider()
 
-# TAB 6: Вывод средств
+# TAB 6: Вывод
 with tabs[6]:
     st.subheader("💰 Вывод средств")
     st.write(f"**Доступно для вывода:** {st.session_state.user_data['withdrawable_balance']:.2f} USDT")
@@ -795,7 +793,7 @@ with tabs[7]:
     else:
         st.info("Нет сделок")
 
-# TAB 8: Личный кабинет (пополнение центрального кошелька)
+# TAB 8: Личный кабинет
 with tabs[8]:
     st.subheader("👤 Личный кабинет")
     st.write(f"**Имя:** {st.session_state.username}")
