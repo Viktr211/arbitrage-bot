@@ -1,18 +1,77 @@
+import streamlit as st
 import time
 import json
 import ccxt
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
-from datetime import datetime, timedelta
+from datetime import datetime
 import threading
 import hashlib
 import base64
 from supabase import create_client, Client
 
-st.set_page_config(page_title="Арбитражный бот | Центральный кошелёк", layout="wide", page_icon="🔄", initial_sidebar_state="collapsed")
+# ========== НАСТРОЙКА СТРАНИЦЫ (должна быть первой командой) ==========
+st.set_page_config(
+    page_title="Арбитражный бот HOVMEL",
+    page_icon="🔄",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
 
-# ---------- SECRETS ----------
+# ========== КАСТОМНЫЙ CSS ДЛЯ КРАСИВОГО НАЗВАНИЯ ==========
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap');
+
+.main-header {
+    text-align: center;
+    margin-bottom: 0.5rem;
+}
+.main-header h1 {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 2.8rem;
+    background: linear-gradient(135deg, #FFD700 0%, #FFA500 40%, #FF8C00 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    text-shadow: 0 0 15px rgba(255,215,0,0.5);
+    letter-spacing: 2px;
+}
+.hovmel-highlight {
+    background: linear-gradient(120deg, #FFD700, #FF8C00);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    font-weight: 900;
+    text-shadow: 0 0 20px rgba(255,215,0,0.8);
+}
+.subtitle {
+    text-align: center;
+    color: #aaa;
+    margin-top: -0.8rem;
+    margin-bottom: 1.5rem;
+    font-size: 1rem;
+}
+.status-indicator {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    margin-right: 6px;
+}
+.status-running {
+    background-color: #00FF88;
+    box-shadow: 0 0 8px #00FF88;
+}
+.status-stopped {
+    background-color: #FF4444;
+    box-shadow: 0 0 8px #FF4444;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# ========== ОСТАЛЬНОЙ КОД (Supabase, биржи, логика) ==========
 SUPABASE_URL = st.secrets.get("SUPABASE_URL")
 SUPABASE_KEY = st.secrets.get("SUPABASE_KEY")
 if not SUPABASE_URL or not SUPABASE_KEY:
@@ -217,7 +276,6 @@ def init_public_clients():
     for ex_name in EXCHANGES:
         try:
             exchange_class = getattr(ccxt, ex_name)
-            # Публичный клиент без ключей
             ex = exchange_class({
                 'enableRateLimit': True,
                 'options': {'defaultType': 'spot'}
@@ -289,7 +347,6 @@ def update_demo_balance(exchange_name, asset, delta):
     save_user_data(st.session_state.user_id, st.session_state.user_data)
 
 def execute_demo_buy(exchange_name, token, usdt_amount):
-    # Для цен используем публичные клиенты
     price = get_price(st.session_state.public_clients.get(exchange_name), token)
     if not price:
         return False, "Не удалось получить цену", None
@@ -335,7 +392,7 @@ def get_real_balances_all():
             }
             for token in get_available_tokens():
                 balances[ex_name]['portfolio'][token] = balance.get(token, {}).get('free', 0.0)
-        except Exception as e:
+        except Exception:
             balances[ex_name] = {'USDT': 0.0, 'portfolio': {t: 0.0 for t in TOKENS}}
     return balances
 
@@ -376,7 +433,6 @@ def execute_real_sell(exchange_name, token, amount_token):
 # ---------- АРБИТРАЖ (общая логика) ----------
 def find_best_opportunity(mode, fee_percent, min_profit_usdt, min_trade_usdt, max_trade_usdt):
     opportunities = []
-    # Для цен используем публичные клиенты (всегда доступны)
     if not st.session_state.public_clients:
         return None
     
@@ -405,13 +461,11 @@ def find_best_opportunity(mode, fee_percent, min_profit_usdt, min_trade_usdt, ma
                     continue
                 
                 if mode == "Реальный":
-                    # Реальные балансы
                     if buy_ex not in st.session_state.real_exchanges or sell_ex not in st.session_state.real_exchanges:
                         continue
                     usdt_on_buy = get_real_balance(st.session_state.real_exchanges[buy_ex], 'USDT')
                     token_on_sell = get_real_balance(st.session_state.real_exchanges[sell_ex], token)
                 else:
-                    # Демо-балансы
                     usdt_on_buy = get_demo_balance(buy_ex, 'USDT')
                     token_on_sell = get_demo_balance(sell_ex, token)
                 
@@ -511,8 +565,8 @@ if 'logged_in' not in st.session_state:
     st.session_state.username = None
     st.session_state.email = None
     st.session_state.wallet_address = ''
-    st.session_state.public_clients = None      # для цен
-    st.session_state.real_exchanges = None      # для реальной торговли
+    st.session_state.public_clients = None
+    st.session_state.real_exchanges = None
     st.session_state.exchange_status = {}
     st.session_state.user_id = None
     st.session_state.user_data = None
@@ -535,7 +589,6 @@ if st.session_state.public_clients is None:
 if st.session_state.real_exchanges is None and st.session_state.trade_mode == "Реальный":
     with st.spinner("Подключение реальных бирж с API..."):
         st.session_state.real_exchanges, real_status = init_real_exchanges()
-        # Обновляем статус (если есть реальные, показываем их)
         for ex, sts in real_status.items():
             st.session_state.exchange_status[ex] = sts
 
@@ -544,9 +597,16 @@ if 'background_thread_started' not in st.session_state:
     st.session_state.background_thread_started = True
     st.session_state.auto_log = []
 
+# ---------- ХЕДЕР С КРАСИВЫМ НАЗВАНИЕМ ----------
+st.markdown("""
+<div class="main-header">
+    <h1>Арбитражный бот <span class="hovmel-highlight">HOVMEL</span></h1>
+</div>
+<div class="subtitle">⚡ Автоматический поиск межбиржевого арбитража ⚡</div>
+""", unsafe_allow_html=True)
+
 # ---------- ЛОГИН / РЕГИСТРАЦИЯ ----------
 if not st.session_state.logged_in:
-    st.markdown('<h1 style="text-align:center;">🔄 Арбитражный бот | Центральный кошелёк</h1>', unsafe_allow_html=True)
     tab_reg, tab_login = st.tabs(["📝 Регистрация", "🔑 Вход"])
     with tab_reg:
         with st.form("register_form"):
@@ -595,12 +655,12 @@ if st.session_state.user_id and st.session_state.user_data:
 # ---------- ВЕРХНЯЯ ПАНЕЛЬ ----------
 col_logo, col_status, col_mode, col_logout = st.columns([2, 1, 1, 1])
 with col_logo:
-    st.markdown('<h2>🔄 Арбитражный бот</h2>', unsafe_allow_html=True)
+    st.markdown(f"👤 **{st.session_state.username}** | 📧 {st.session_state.email}")
 with col_status:
     if st.session_state.auto_trade_enabled:
-        st.markdown('🟢 **АВТО-СДЕЛКИ АКТИВНЫ**')
+        st.markdown('<span class="status-indicator status-running"></span> **АВТО-СДЕЛКИ АКТИВНЫ**', unsafe_allow_html=True)
     else:
-        st.markdown('🔴 **АВТО-СДЕЛКИ ОСТАНОВЛЕНЫ**')
+        st.markdown('<span class="status-indicator status-stopped"></span> **АВТО-СДЕЛКИ ОСТАНОВЛЕНЫ**', unsafe_allow_html=True)
 with col_mode:
     mode_color = "green" if st.session_state.trade_mode == "Реальный" else "orange"
     st.markdown(f'🎯 **{st.session_state.trade_mode} режим**', unsafe_allow_html=True)
@@ -610,9 +670,7 @@ with col_logout:
         st.session_state.auto_trade_enabled = False
         st.rerun()
 
-st.markdown(f"👤 {st.session_state.username} | 📧 {st.session_state.email}")
-
-# Статус публичных клиентов (для цен)
+# Статус публичных клиентов
 connected_pub = [ex.upper() for ex, sts in st.session_state.exchange_status.items() if sts == "ok"]
 if connected_pub:
     st.success(f"🔌 Биржи для мониторинга цен: {', '.join(connected_pub)}")
@@ -620,7 +678,7 @@ else:
     st.error("Нет подключения ни к одной бирже для получения цен")
 st.divider()
 
-# ----- ДЕМО-РЕЖИМ: пополнение балансов (USDT и токены) -----
+# ----- ДЕМО-РЕЖИМ: пополнение балансов -----
 if st.session_state.trade_mode == "Демо":
     with st.expander("💰 Пополнение демо-балансов"):
         col1, col2, col3 = st.columns(3)
@@ -637,7 +695,7 @@ if st.session_state.trade_mode == "Демо":
                 st.rerun()
         st.info("💡 Вы можете добавить USDT или любые токены для тестирования арбитража.")
 
-# Показ балансов в зависимости от режима
+# Показ балансов
 if st.session_state.trade_mode == "Реальный" and st.session_state.real_exchanges:
     real_balances = get_real_balances_all()
     total_usdt = sum(real_balances.get(ex, {}).get('USDT', 0) for ex in EXCHANGES)
@@ -654,7 +712,6 @@ if st.session_state.trade_mode == "Реальный" and st.session_state.real_e
         update_real_balance_in_db(st.session_state.user_id)
         st.rerun()
 else:
-    # Демо-балансы
     demo_balances = st.session_state.user_data['balances']
     total_usdt = sum(demo_balances.get(ex, {}).get('USDT', 0) for ex in EXCHANGES)
     total_portfolio = 0
@@ -689,7 +746,6 @@ with c4:
     new_mode = st.selectbox("Режим торговли", ["Демо", "Реальный"], index=0 if st.session_state.trade_mode == "Демо" else 1)
     if new_mode != st.session_state.trade_mode:
         st.session_state.trade_mode = new_mode
-        # При переключении в реальный режим инициализируем реальные биржи
         if new_mode == "Реальный" and st.session_state.real_exchanges is None:
             with st.spinner("Подключение реальных бирж..."):
                 st.session_state.real_exchanges, _ = init_real_exchanges()
@@ -712,7 +768,7 @@ with st.expander("📋 Лог авто-торговли"):
     else:
         st.info("Нет событий. Запустите авто-торговлю.")
 
-# ---------- ВКЛАДКИ ----------
+# ---------- ВКЛАДКИ (сокращённо, но все присутствуют) ----------
 show_admin = is_admin(st.session_state.email)
 tabs_list = ["📊 Dashboard", "📈 Графики", "🔄 Арбитраж", "📊 Статистика", "📈 Доходность", "💼 Балансы", "💰 Вывод", "📜 История", "👤 Кабинет", "💬 Чат"]
 if show_admin:
@@ -722,10 +778,8 @@ tabs = st.tabs(tabs_list)
 # ---------- DASHBOARD ----------
 with tabs[0]:
     st.subheader("📊 Dashboard")
-    if st.session_state.trade_mode == "Реальный":
-        st.write("**Режим: реальная торговля** (требуются API ключи в админ-панели)")
-    else:
-        st.write("**Режим: демо-торговля** – вы можете пополнять балансы выше.")
+    st.write("Добро пожаловать в арбитражного бота **HOVMEL**.")
+    st.write("Используйте боковое меню настроек и кнопки управления.")
 
 # ---------- ГРАФИКИ ----------
 with tabs[1]:
@@ -900,7 +954,6 @@ if show_admin:
                     if st.button(f"Сохранить {ex}", key=f"save_{ex}"):
                         save_api_key(ex, api_key, secret, st.session_state.email)
                         st.success(f"Ключи для {ex} сохранены")
-                        # Перезагружаем реальные биржи
                         st.session_state.real_exchanges = None
                         st.rerun()
         
