@@ -42,7 +42,6 @@ def get_user_by_email(email):
     return res.data[0] if res.data else None
 
 def create_user(email, pwd_hash, full_name, country, city, phone, wallet):
-    # Начальная структура данных
     initial_data = {
         'main_balance': 0.0,
         'exchanges': {ex: {"USDT": 0.0, "portfolio": {t: 0.0 for t in TOKENS}} for ex in EXCHANGES},
@@ -55,7 +54,7 @@ def create_user(email, pwd_hash, full_name, country, city, phone, wallet):
         'email': email, 'password_hash': pwd_hash, 'full_name': full_name,
         'country': country, 'city': city, 'phone': phone, 'wallet_address': wallet,
         'registration_status': 'approved',
-        'trade_balance': 0,   # не используется, но есть в таблице
+        'trade_balance': 0,
         'withdrawable_balance': 0,
         'total_profit': 0,
         'trade_count': 0,
@@ -71,8 +70,9 @@ def load_user_data(user_id):
     res = supabase.table('users').select('demo_balances, demo_history, demo_stats, total_profit, trade_count, withdrawable_balance, total_admin_fee_paid').eq('id', user_id).execute()
     if res.data:
         user = res.data[0]
-        balances = json.loads(user.get('demo_balances', '{}'))
-        # Если в demo_balances нет нужной структуры, инициализируем
+        balances = user.get('demo_balances', {})
+        if isinstance(balances, str):
+            balances = json.loads(balances)
         if not isinstance(balances, dict) or 'main_balance' not in balances:
             balances = {
                 'main_balance': 0.0,
@@ -85,18 +85,16 @@ def load_user_data(user_id):
         return {
             'main_balance': balances.get('main_balance', 0.0),
             'balances': balances.get('exchanges', {ex: {"USDT": 0.0, "portfolio": {t: 0.0 for t in TOKENS}} for ex in EXCHANGES}),
-            'history': json.loads(user.get('demo_history', '[]')),
-            'stats': json.loads(user.get('demo_stats', '{}')),
+            'history': json.loads(user.get('demo_history', '[]')) if isinstance(user.get('demo_history'), str) else user.get('demo_history', []),
+            'stats': json.loads(user.get('demo_stats', '{}')) if isinstance(user.get('demo_stats'), str) else user.get('demo_stats', {}),
             'total_profit': balances.get('total_profit', user.get('total_profit', 0)),
             'trade_count': balances.get('trade_count', user.get('trade_count', 0)),
             'withdrawable_balance': balances.get('withdrawable_balance', user.get('withdrawable_balance', 0)),
             'total_admin_fee_paid': balances.get('total_admin_fee_paid', user.get('total_admin_fee_paid', 0))
         }
-    else:
-        return None
+    return None
 
 def save_user_data(user_id, data):
-    # Сохраняем всё в demo_balances, demo_history, demo_stats
     balances = {
         'main_balance': data['main_balance'],
         'exchanges': data['balances'],
@@ -490,6 +488,9 @@ if not st.session_state.logged_in:
                         st.session_state.wallet_address = user.get('wallet_address', '')
                         st.session_state.user_id = user['id']
                         st.session_state.user_data = load_user_data(user['id'])
+                        if st.session_state.user_data is None:
+                            st.error("Не удалось загрузить данные пользователя")
+                            st.stop()
                         st.session_state.chat_unread = get_unread_count(user['id'])
                         st.success(f"Добро пожаловать, {st.session_state.username}!")
                         st.rerun()
@@ -526,8 +527,6 @@ st.divider()
 
 total_usdt_in_exchanges = sum(st.session_state.user_data['balances'].get(ex, {}).get('USDT', 0) for ex in EXCHANGES)
 total_main = st.session_state.user_data['main_balance']
-total_usdt = total_main + total_usdt_in_exchanges
-
 total_portfolio = 0
 for ex, balances in st.session_state.user_data['balances'].items():
     for token, amount in balances.get('portfolio', {}).items():
@@ -578,7 +577,7 @@ if show_admin:
     tabs_list.append("👑 Админ-панель")
 tabs = st.tabs(tabs_list)
 
-# TAB 0: Dashboard (текущие цены)
+# TAB 0: Dashboard
 with tabs[0]:
     st.subheader("📊 Текущие цены на биржах")
     tokens = get_available_tokens()
@@ -594,13 +593,13 @@ with tabs[0]:
                     st.metric(ex.upper(), "❌")
         st.divider()
 
-# TAB 1: Графики (японские свечи)
+# TAB 1: Графики
 with tabs[1]:
     st.subheader("📈 Японские свечи")
     col_a, col_b = st.columns(2)
     sel_asset = col_a.selectbox("Актив", get_available_tokens())
     sel_ex = col_b.selectbox("Биржа", EXCHANGES)
-    if st.button("Обновить график") or True:
+    if st.button("Обновить график"):
         if st.session_state.exchanges and sel_ex in st.session_state.exchanges:
             try:
                 ohlcv = st.session_state.exchanges[sel_ex].fetch_ohlcv(f"{sel_asset}/USDT", '1h', 100)
@@ -613,7 +612,7 @@ with tabs[1]:
             except:
                 st.warning("Нет данных для графика")
 
-# TAB 2: Арбитраж (ручной поиск и исполнение)
+# TAB 2: Арбитраж (ручной)
 with tabs[2]:
     st.subheader("🔍 Ручной арбитраж")
     if st.button("🎯 НАЙТИ И ИСПОЛНИТЬ ЛУЧШУЮ СДЕЛКУ", use_container_width=True):
@@ -693,17 +692,16 @@ with tabs[4]:
     else:
         st.info("Нет статистики")
 
-# TAB 5: Балансы (управление USDT и токенами)
+# TAB 5: Балансы (управление средствами)
 with tabs[5]:
     st.subheader("💼 Управление средствами")
-    st.info("Сначала пополните центральный кошелёк в личном кабинете, затем переводите USDT на биржи.")
+    st.info("Сначала пополните центральный кошелёк в личном кабинете, затем переводите USDT на биржи и покупайте токены.")
     for ex in EXCHANGES:
         with st.expander(f"### {ex.upper()}"):
             bal = st.session_state.user_data['balances'].get(ex, {})
             usdt_ex = bal.get('USDT', 0)
             st.metric("USDT на бирже", f"{usdt_ex:.2f}")
             
-            # Перевести USDT с центрального кошелька на биржу
             col1, col2 = st.columns(2)
             with col1:
                 transfer_in = st.number_input(f"Перевести USDT с ЦК на {ex.upper()}", min_value=0.0, step=10.0, key=f"transfer_in_{ex}")
@@ -759,7 +757,7 @@ with tabs[5]:
                     st.write(f"{token}: {amount:.8f} ≈ ${value:.2f}")
             st.divider()
 
-# TAB 6: Вывод средств (заявки на вывод с центрального кошелька)
+# TAB 6: Вывод средств
 with tabs[6]:
     st.subheader("💰 Вывод средств")
     st.write(f"**Доступно для вывода:** {st.session_state.user_data['withdrawable_balance']:.2f} USDT")
@@ -770,7 +768,7 @@ with tabs[6]:
     max_wd = st.session_state.user_data['withdrawable_balance']
     if max_wd >= 10:
         amt = st.number_input("Сумма вывода (USDT)", min_value=10.0, max_value=max_wd, step=10.0, disabled=disabled)
-        if st.button("Запросить вывод", disabled=disabled) and amt and st.session_state.wallet_address:
+        if st.button("Запросить вывод") and amt and st.session_state.wallet_address:
             create_withdrawal_request(st.session_state.user_id, amt, st.session_state.wallet_address)
             st.session_state.user_data['withdrawable_balance'] -= amt
             save_user_data(st.session_state.user_id, st.session_state.user_data)
@@ -784,7 +782,7 @@ with tabs[6]:
         supabase.table('users').update({'wallet_address': wallet_input}).eq('email', st.session_state.email).execute()
         st.success("Сохранено")
 
-# TAB 7: История сделок
+# TAB 7: История
 with tabs[7]:
     st.subheader("📜 История сделок")
     if st.session_state.user_data['history']:
@@ -865,14 +863,20 @@ if show_admin:
         with a1:
             users = get_all_users_for_admin()
             if users:
-                df = pd.DataFrame([{
-                    "Email":u['email'], "Имя":u['full_name'], "Статус":u['registration_status'],
-                    "Баланс ЦК":f"${json.loads(u.get('demo_balances','{}')).get('main_balance',0):.2f}", 
-                    "Прибыль":f"${json.loads(u.get('demo_balances','{}')).get('total_profit',0):.2f}",
-                    "Сделок":json.loads(u.get('demo_balances','{}')).get('trade_count',0)
-                } for u in users])
-                st.dataframe(df, use_container_width=True, hide_index=True)
-                emails = {u['email']:u['id'] for u in users}
+                data_rows = []
+                for u in users:
+                    bal = u.get('demo_balances', {})
+                    if isinstance(bal, str):
+                        bal = json.loads(bal)
+                    main_bal = bal.get('main_balance', 0) if isinstance(bal, dict) else 0
+                    profit_bal = bal.get('total_profit', 0) if isinstance(bal, dict) else 0
+                    trade_cnt = bal.get('trade_count', 0) if isinstance(bal, dict) else 0
+                    data_rows.append({
+                        "Email": u['email'], "Имя": u['full_name'], "Статус": u['registration_status'],
+                        "Баланс ЦК": f"${main_bal:.2f}", "Прибыль": f"${profit_bal:.2f}", "Сделок": trade_cnt
+                    })
+                st.dataframe(pd.DataFrame(data_rows), use_container_width=True, hide_index=True)
+                emails = {u['email']: u['id'] for u in users}
                 sel = st.selectbox("Выберите пользователя", list(emails.keys()))
                 if sel:
                     uid = emails[sel]
@@ -930,7 +934,8 @@ if show_admin:
                     update_withdrawal_status(w['id'], 'completed', st.session_state.email)
                     st.rerun()
         with a6:
-            if st.button("🔄 Сбросить данные текущего пользователя (обнулить всё)"):
+            st.warning("Сбросить все балансы текущего пользователя до нуля (центральный кошелёк, USDT на биржах, портфель токенов, историю, прибыль).")
+            if st.button("🔄 Сбросить всё до нуля (очистить данные)"):
                 st.session_state.user_data['main_balance'] = 0.0
                 st.session_state.user_data['balances'] = {ex: {"USDT": 0.0, "portfolio": {t: 0.0 for t in TOKENS}} for ex in EXCHANGES}
                 st.session_state.user_data['history'] = []
@@ -940,7 +945,7 @@ if show_admin:
                 st.session_state.user_data['withdrawable_balance'] = 0
                 st.session_state.user_data['total_admin_fee_paid'] = 0
                 save_user_data(st.session_state.user_id, st.session_state.user_data)
-                st.success("Данные сброшены")
+                st.success("Все данные сброшены. Перезагрузите страницу (F5).")
                 st.rerun()
 
 st.caption(f"🚀 Настройки: комиссия {st.session_state.fee_percent}%, мин. прибыль {st.session_state.min_profit_usdt} USDT, мин. сделка {st.session_state.min_trade_usdt} USDT, макс. сделка {st.session_state.max_trade_usdt} USDT | Авто-интервал {st.session_state.scan_interval} сек")
