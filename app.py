@@ -71,12 +71,12 @@ def is_admin(email):
     return email in ADMIN_EMAILS
 
 DEFAULT_FEE_PERCENT = 0.1
-DEFAULT_MIN_PROFIT_USDT = 0.5
+DEFAULT_MIN_PROFIT_USDT = 0.01   # <-- Уменьшил, чтобы арбитраж находился
 DEFAULT_MIN_TRADE_USDT = 12.0
 DEFAULT_MAX_TRADE_USDT = 15.0
 DEFAULT_SCAN_INTERVAL = 10
 
-# ---------- ФУНКЦИИ SUPABASE (без изменений, оставлены как в предыдущей версии) ----------
+# ---------- ФУНКЦИИ SUPABASE (без изменений) ----------
 def get_user_by_email(email):
     res = supabase.table('users').select('*').eq('email', email).execute()
     return res.data[0] if res.data else None
@@ -251,7 +251,7 @@ def decrypt_api_key(encrypted):
         except:
             return ""
 
-# ---------- ПУБЛИЧНЫЕ КЛИЕНТЫ ДЛЯ ЦЕН ----------
+# ---------- ПУБЛИЧНЫЕ КЛИЕНТЫ ----------
 @st.cache_resource
 def init_public_clients():
     clients = {}
@@ -485,25 +485,33 @@ def execute_trade(mode, opp):
     add_trade(st.session_state.user_id, mode, token, amount, real_profit, buy_ex, sell_ex)
     return real_profit, None
 
+# ---------- ФОНОВЫЙ ПОТОК (исправлен) ----------
 def background_arbitrage_loop():
     while True:
         try:
-            if st.session_state.get('auto_trade_enabled', False):
-                mode = st.session_state.get('trade_mode', "Демо")
-                fee = st.session_state.get('fee_percent', DEFAULT_FEE_PERCENT)
-                min_profit = st.session_state.get('min_profit_usdt', DEFAULT_MIN_PROFIT_USDT)
-                min_trade = st.session_state.get('min_trade_usdt', DEFAULT_MIN_TRADE_USDT)
-                max_trade = st.session_state.get('max_trade_usdt', DEFAULT_MAX_TRADE_USDT)
+            # Принудительно считываем состояние
+            auto = st.session_state.get('auto_trade_enabled', False)
+            mode = st.session_state.get('trade_mode', "Демо")
+            fee = st.session_state.get('fee_percent', DEFAULT_FEE_PERCENT)
+            min_profit = st.session_state.get('min_profit_usdt', DEFAULT_MIN_PROFIT_USDT)
+            min_trade = st.session_state.get('min_trade_usdt', DEFAULT_MIN_TRADE_USDT)
+            max_trade = st.session_state.get('max_trade_usdt', DEFAULT_MAX_TRADE_USDT)
+            
+            if auto:
+                if 'auto_log' not in st.session_state:
+                    st.session_state.auto_log = []
                 opp = find_best_opportunity(mode, fee, min_profit, min_trade, max_trade)
                 if opp:
-                    if 'auto_log' not in st.session_state:
-                        st.session_state.auto_log = []
-                    st.session_state.auto_log.append(f"🔍 {mode} | {opp['token']} {opp['buy_ex']}→{opp['sell_ex']} | прибыль {opp['profit']:.4f} USDT | сумма {opp['trade_usdt']:.2f} USDT")
+                    st.session_state.auto_log.append(
+                        f"🔍 {mode} | {opp['token']} {opp['buy_ex']}→{opp['sell_ex']} | "
+                        f"прибыль {opp['profit']:.4f} USDT | сумма {opp['trade_usdt']:.2f} USDT"
+                    )
                     profit, error = execute_trade(mode, opp)
                     if profit:
                         st.session_state.auto_log.append(f"✅ {mode} сделка: +{profit:.2f} USDT")
                     elif error:
                         st.session_state.auto_log.append(f"❌ {mode} ошибка: {error}")
+                # else: не спамим лог
                 time.sleep(st.session_state.get('scan_interval', DEFAULT_SCAN_INTERVAL))
             else:
                 time.sleep(5)
@@ -695,7 +703,7 @@ with c4:
 
 with st.expander("⚙️ Настройки арбитража"):
     st.session_state.fee_percent = st.number_input("Комиссия (%)", 0.0, 0.5, st.session_state.fee_percent, 0.01, format="%.2f")
-    st.session_state.min_profit_usdt = st.number_input("Мин. прибыль (USDT)", 0.001, 10.0, st.session_state.min_profit_usdt, 0.5, format="%.3f")
+    st.session_state.min_profit_usdt = st.number_input("Мин. прибыль (USDT)", 0.001, 10.0, st.session_state.min_profit_usdt, 0.01, format="%.3f")
     st.session_state.min_trade_usdt = st.number_input("Мин. сумма сделки (USDT)", 10.0, 15.0, st.session_state.min_trade_usdt, 1.0)
     st.session_state.max_trade_usdt = st.number_input("Макс. сумма сделки (USDT)", 12.0, 15.0, st.session_state.max_trade_usdt, 1.0)
     st.session_state.scan_interval = st.number_input("Интервал (сек)", 5, 60, st.session_state.scan_interval, 5)
@@ -790,10 +798,9 @@ with tabs[4]:
     else:
         st.info("Нет данных о сделках")
 
-# ---------- БАЛАНСЫ (добавлены формы для ручной торговли) ----------
+# ---------- БАЛАНСЫ c ручной торговлей ----------
 with tabs[5]:
     st.subheader("💼 Балансы и ручная торговля")
-    # Показываем детальные балансы
     if st.session_state.trade_mode == "Реальный" and st.session_state.real_exchanges:
         balances = get_real_balances_all()
     else:
@@ -810,9 +817,8 @@ with tabs[5]:
                         price = get_price(st.session_state.public_clients.get(ex), token) if st.session_state.public_clients.get(ex) else None
                         value = amount * price if price else 0
                         st.write(f"  {token}: {amount:.8f} ≈ {value:.2f} USDT")
-                # Ручная покупка
                 st.markdown("---")
-                st.markdown("#### ✨ Ручная операция")
+                # Ручная покупка
                 col_buy1, col_buy2, col_buy3 = st.columns(3)
                 with col_buy1:
                     token_buy = st.selectbox("Токен для покупки", get_available_tokens(), key=f"buy_token_{ex}")
@@ -825,6 +831,10 @@ with tabs[5]:
                         else:
                             ok, msg, _ = execute_demo_buy(ex, token_buy, usdt_amount)
                         if ok:
+                            st.session_state.user_data['trade_count'] += 1
+                            entry = f"🟢 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Ручная покупка {token_buy} на {ex.upper()} на {usdt_amount} USDT"
+                            st.session_state.user_data['history'].append(entry)
+                            save_user_data(st.session_state.user_id, st.session_state.user_data)
                             st.success(msg)
                             st.rerun()
                         else:
@@ -842,11 +852,14 @@ with tabs[5]:
                         else:
                             ok, msg, _ = execute_demo_sell(ex, token_sell, token_amount)
                         if ok:
+                            st.session_state.user_data['trade_count'] += 1
+                            entry = f"🔴 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Ручная продажа {token_sell} на {ex.upper()} {token_amount:.6f} шт"
+                            st.session_state.user_data['history'].append(entry)
+                            save_user_data(st.session_state.user_id, st.session_state.user_data)
                             st.success(msg)
                             st.rerun()
                         else:
                             st.error(msg)
-    # Кнопка обновления для реального режима
     if st.session_state.trade_mode == "Реальный":
         st.divider()
         if st.button("🔄 Обновить реальные балансы", use_container_width=True):
@@ -880,7 +893,7 @@ with tabs[7]:
     else:
         st.info("Сделок пока нет")
 
-# ---------- КАБИНЕТ (добавлен общий капитал) ----------
+# ---------- КАБИНЕТ (с общим капиталом) ----------
 with tabs[8]:
     st.subheader("👤 Личный кабинет")
     col1, col2 = st.columns(2)
@@ -891,7 +904,7 @@ with tabs[8]:
     with col2:
         st.write(f"**Всего сделок:** {st.session_state.user_data['trade_count']}")
         st.write(f"**Общая прибыль:** {st.session_state.user_data['total_profit']:.2f} USDT")
-        st.write(f"**Общий капитал (USDT):** {total_capital:.2f}")
+        st.write(f"**💎 Общий капитал (USDT):** {total_capital:.2f}")
 
 # ---------- ЧАТ ----------
 with tabs[9]:
