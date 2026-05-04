@@ -6,10 +6,13 @@ import plotly.graph_objects as go
 from datetime import datetime
 import hashlib
 import base64
+import time
+import threading
 from supabase import create_client, Client
 import requests
+from streamlit_autorefresh import st_autorefresh
 
-st.set_page_config(page_title="Простой арбитражный бот", layout="wide", page_icon="🔄", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Арбитражный бот | Настраиваемый", layout="wide", page_icon="🔄", initial_sidebar_state="collapsed")
 
 SUPABASE_URL = st.secrets.get("SUPABASE_URL")
 SUPABASE_KEY = st.secrets.get("SUPABASE_KEY")
@@ -25,9 +28,11 @@ ADMIN_EMAILS = ["cb777899@gmail.com", "admin@arbitrage.com"]
 def is_admin(email):
     return email in ADMIN_EMAILS
 
-# ---------- НАСТРОЙКИ ----------
-FEE_PERCENT = 0.1  # 0.1% комиссия тейкера
-MIN_PROFIT_USDT = 0.05  # минимальная прибыль для сделки
+# ---------- НАСТРОЙКИ ПО УМОЛЧАНИЮ (будут перезаписаны из st.session_state) ----------
+DEFAULT_FEE_PERCENT = 0.1
+DEFAULT_MIN_PROFIT_USDT = 0.01
+DEFAULT_MIN_TRADE_USDT = 10.0
+DEFAULT_SCAN_INTERVAL = 10
 
 # ---------- ФУНКЦИИ SUPABASE ----------
 def get_user_by_email(email):
@@ -56,7 +61,7 @@ def load_balances(user_id):
     if res.data and res.data[0].get('demo_balances'):
         return json.loads(res.data[0]['demo_balances'])
     else:
-        return {ex: {"USDT": 0.0, "portfolio": {token: 0.0 for token in TOKENS}} for ex in EXCHANGES}
+        return {ex: {"USDT": 0.0, "portfolio": {t: 0.0 for t in TOKENS}} for ex in EXCHANGES}
 
 def save_balances(user_id, balances):
     supabase.table('users').update({'demo_balances': json.dumps(balances)}).eq('id', user_id).execute()
@@ -174,7 +179,6 @@ def update_balance(exchange_name, asset, delta):
     save_balances(st.session_state.user_id, st.session_state.user_balances)
 
 def buy_token_with_usdt(exchange_name, token, usdt_amount):
-    """Покупает токен на указанную сумму USDT по текущему курсу"""
     ex = st.session_state.exchanges.get(exchange_name)
     if not ex:
         return False, "Биржа не подключена"
@@ -190,7 +194,7 @@ def buy_token_with_usdt(exchange_name, token, usdt_amount):
     return True, f"Куплено {amount:.8f} {token} за {usdt_amount} USDT по цене {price:.2f}"
 
 # ---------- АРБИТРАЖ ----------
-def find_best_opportunity():
+def find_best_opportunity(fee_percent, min_profit_usdt, min_trade_usdt):
     opportunities = []
     if not st.session_state.exchanges:
         return None
@@ -217,17 +221,18 @@ def find_best_opportunity():
                 # Проверяем, хватает ли средств
                 usdt_buy = get_balance(buy_ex, 'USDT')
                 token_sell = get_balance(sell_ex, token)
-                if usdt_buy < 10 or token_sell < 0.001:
+                if usdt_buy < min_trade_usdt or token_sell < 0.0001:
                     continue
                 # Максимальная сумма сделки (мин. из доступных USDT и стоимости токенов)
                 max_trade_usdt = min(usdt_buy, token_sell * sell_price)
-                if max_trade_usdt < 10:
+                if max_trade_usdt < min_trade_usdt:
                     continue
+                amount = max_trade_usdt / buy_price
                 # Прибыль до комиссий
-                profit_before = (sell_price - buy_price) * (max_trade_usdt / buy_price)
-                fee = profit_before * (FEE_PERCENT / 100)
+                profit_before = (sell_price - buy_price) * amount
+                fee = profit_before * (fee_percent / 100)
                 profit_after = profit_before - fee
-                if profit_after < MIN_PROFIT_USDT:
+                if profit_after < min_profit_usdt:
                     continue
                 opportunities.append({
                     'token': token,
@@ -236,7 +241,7 @@ def find_best_opportunity():
                     'buy_price': buy_price,
                     'sell_price': sell_price,
                     'trade_usdt': max_trade_usdt,
-                    'amount': max_trade_usdt / buy_price,
+                    'amount': amount,
                     'profit': profit_after
                 })
     if not opportunities:
@@ -253,7 +258,6 @@ def execute_trade(opp):
     trade_usdt = opp['trade_usdt']
     expected_profit = opp['profit']
 
-    # Проверяем ещё раз балансы
     usdt_buy = get_balance(buy_ex, 'USDT')
     token_sell = get_balance(sell_ex, token)
     if usdt_buy < trade_usdt:
@@ -261,7 +265,6 @@ def execute_trade(opp):
     if token_sell < amount:
         return None, f"Не хватает {token} на {sell_ex}"
 
-    # Исполняем
     update_balance(buy_ex, 'USDT', -trade_usdt)
     update_balance(buy_ex, token, amount)
     update_balance(sell_ex, token, -amount)
@@ -294,14 +297,19 @@ if 'logged_in' not in st.session_state:
     st.session_state.total_profit = 0
     st.session_state.trade_count = 0
     st.session_state.chat_unread = 0
-    st.session_state.msg = ""
+    st.session_state.auto_trade_enabled = False
+    st.session_state.fee_percent = DEFAULT_FEE_PERCENT
+    st.session_state.min_profit_usdt = DEFAULT_MIN_PROFIT_USDT
+    st.session_state.min_trade_usdt = DEFAULT_MIN_TRADE_USDT
+    st.session_state.scan_interval = DEFAULT_SCAN_INTERVAL
 
 if st.session_state.exchanges is None:
     with st.spinner("Подключение к биржам..."):
         st.session_state.exchanges, st.session_state.exchange_status = init_exchanges()
 
+# ---------- РЕГИСТРАЦИЯ / ВХОД ----------
 if not st.session_state.logged_in:
-    st.markdown('<h1 class="main-header">🔄 Простой арбитражный бот</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">🔄 Арбитражный бот | Настраиваемый</h1>', unsafe_allow_html=True)
     tab_reg, tab_login = st.tabs(["📝 Регистрация","🔑 Вход"])
     with tab_reg:
         with st.form("register_form"):
@@ -348,83 +356,145 @@ if not st.session_state.logged_in:
                     st.error("Неверный email или пароль")
     st.stop()
 
-# Сохраняем данные
+# Сохраняем данные при каждом изменении
 if st.session_state.user_id:
     save_balances(st.session_state.user_id, st.session_state.user_balances)
 
 # ---------- ИНТЕРФЕЙС ----------
-st.title("🔄 Простой арбитражный бот")
+st.title("🔧 Арбитражный бот | Настраиваемый")
 col1, col2, col3 = st.columns(3)
 col1.metric("💰 Всего USDT", f"{sum(bal.get('USDT',0) for bal in st.session_state.user_balances.values()):.2f}")
-col2.metric("📦 Стоимость портфеля", "—")
+total_portfolio = 0
+for ex, bal in st.session_state.user_balances.items():
+    for token, amount in bal.get('portfolio', {}).items():
+        price = get_price(st.session_state.exchanges.get(ex), token) if st.session_state.exchanges.get(ex) else None
+        if price:
+            total_portfolio += amount * price
+col2.metric("📦 Стоимость портфеля", f"{total_portfolio:.2f}")
 col3.metric("📊 Сделок", st.session_state.trade_count)
 
-# ----- Вкладка 1: Балансы (пополнение USDT и покупка токенов) -----
-st.subheader("💼 Балансы и пополнение")
-for ex in EXCHANGES:
-    with st.expander(f"### {ex.upper()}"):
-        bal = st.session_state.user_balances.get(ex, {})
-        usdt = bal.get('USDT', 0)
-        st.metric("USDT", f"{usdt:.2f}")
-        
-        # Пополнение USDT
-        col1, col2 = st.columns(2)
-        with col1:
-            add_usdt = st.number_input(f"Добавить USDT на {ex.upper()}", min_value=0.0, step=10.0, key=f"add_usdt_{ex}")
-            if st.button(f"➕ Добавить USDT", key=f"btn_usdt_{ex}"):
-                if add_usdt > 0:
-                    update_balance(ex, 'USDT', add_usdt)
-                    st.success(f"Добавлено {add_usdt} USDT")
-                    st.rerun()
-        
-        # Покупка токенов за USDT (автоматический перевод по курсу)
-        st.write("**Купить токены (автоматически по курсу)**")
-        token_to_buy = st.selectbox(f"Токен", get_available_tokens(), key=f"token_{ex}")
-        usdt_to_spend = st.number_input(f"Сумма USDT для покупки {token_to_buy}", min_value=0.0, step=10.0, key=f"spend_{ex}")
-        if st.button(f"💰 Купить {token_to_buy}", key=f"buy_{ex}"):
-            if usdt_to_spend > 0:
-                success, msg = buy_token_with_usdt(ex, token_to_buy, usdt_to_spend)
-                if success:
-                    st.success(msg)
+# ----- Настройки -----
+with st.expander("⚙️ Настройки арбитража"):
+    new_fee = st.number_input("Комиссия тейкера (%)", min_value=0.0, max_value=0.5, value=st.session_state.fee_percent, step=0.01, format="%.2f")
+    new_min_profit = st.number_input("Минимальная прибыль (USDT)", min_value=0.001, value=st.session_state.min_profit_usdt, step=0.01, format="%.3f")
+    new_min_trade = st.number_input("Минимальная сумма сделки (USDT)", min_value=1.0, value=st.session_state.min_trade_usdt, step=5.0)
+    new_interval = st.number_input("Интервал авто-сканирования (сек)", min_value=5, max_value=60, value=st.session_state.scan_interval, step=5)
+    if st.button("Сохранить настройки"):
+        st.session_state.fee_percent = new_fee
+        st.session_state.min_profit_usdt = new_min_profit
+        st.session_state.min_trade_usdt = new_min_trade
+        st.session_state.scan_interval = new_interval
+        st.success("Настройки сохранены")
+
+# ----- Вкладки -----
+tabs = st.tabs(["💼 Балансы", "🔄 Арбитраж (ручной)", "🤖 Авто-торговля", "📜 История", "💬 Чат"])
+
+# Вкладка 0: Балансы и пополнение
+with tabs[0]:
+    for ex in EXCHANGES:
+        with st.expander(f"### {ex.upper()}"):
+            bal = st.session_state.user_balances.get(ex, {})
+            usdt = bal.get('USDT', 0)
+            st.metric("USDT", f"{usdt:.2f}")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                add_usdt = st.number_input(f"Добавить USDT", min_value=0.0, step=10.0, key=f"add_usdt_{ex}")
+                if st.button(f"➕ Добавить USDT", key=f"btn_usdt_{ex}"):
+                    if add_usdt > 0:
+                        update_balance(ex, 'USDT', add_usdt)
+                        st.success(f"Добавлено {add_usdt} USDT")
+                        st.rerun()
+            with col2:
+                # Вывод USDT (уменьшение) – можно добавить по желанию
+                remove_usdt = st.number_input(f"Вычесть USDT", min_value=0.0, step=10.0, key=f"remove_usdt_{ex}")
+                if st.button(f"➖ Вычесть USDT", key=f"btn_remove_usdt_{ex}"):
+                    if remove_usdt > 0 and usdt >= remove_usdt:
+                        update_balance(ex, 'USDT', -remove_usdt)
+                        st.success(f"Вычтено {remove_usdt} USDT")
+                        st.rerun()
+                    elif remove_usdt > 0:
+                        st.error(f"Недостаточно USDT (доступно {usdt:.2f})")
+            
+            st.write("**Купить токены (автоматически по курсу)**")
+            token_to_buy = st.selectbox(f"Токен", get_available_tokens(), key=f"token_{ex}")
+            usdt_to_spend = st.number_input(f"Сумма USDT для покупки {token_to_buy}", min_value=0.0, step=10.0, key=f"spend_{ex}")
+            if st.button(f"💰 Купить {token_to_buy}", key=f"buy_{ex}"):
+                if usdt_to_spend > 0:
+                    success, msg = buy_token_with_usdt(ex, token_to_buy, usdt_to_spend)
+                    if success:
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+            
+            st.write("**Текущий портфель:**")
+            portfolio = bal.get('portfolio', {})
+            for token, amount in portfolio.items():
+                if amount > 0:
+                    price = get_price(st.session_state.exchanges.get(ex), token) if st.session_state.exchanges.get(ex) else None
+                    value = amount * price if price else 0
+                    st.write(f"{token}: {amount:.8f} ≈ ${value:.2f}")
+
+# Вкладка 1: Ручной арбитраж
+with tabs[1]:
+    if st.button("🎯 НАЙТИ И ИСПОЛНИТЬ ЛУЧШУЮ СДЕЛКУ (ручной режим)", use_container_width=True):
+        with st.spinner("Поиск..."):
+            best = find_best_opportunity(st.session_state.fee_percent, st.session_state.min_profit_usdt, st.session_state.min_trade_usdt)
+            if best:
+                st.info(f"📊 Найдена сделка: купить {best['token']} на {best['buy_ex'].upper()} за {best['buy_price']:.2f}, продать на {best['sell_ex'].upper()} за {best['sell_price']:.2f} | Ожидаемая прибыль: {best['profit']:.4f} USDT")
+                profit, error = execute_trade(best)
+                if profit:
+                    st.success(f"✅ Сделка исполнена! Прибыль: +{profit:.2f} USDT")
                     st.rerun()
                 else:
-                    st.error(msg)
-        
-        # Текущий портфель
-        st.write("**Текущий портфель:**")
-        portfolio = bal.get('portfolio', {})
-        for token, amount in portfolio.items():
-            if amount > 0:
-                price = get_price(st.session_state.exchanges.get(ex), token) if st.session_state.exchanges.get(ex) else None
-                value = amount * price if price else 0
-                st.write(f"{token}: {amount:.8f} ≈ ${value:.2f}")
+                    st.error(f"❌ Ошибка: {error}")
+            else:
+                st.warning("Арбитражных возможностей не найдено. Попробуйте снизить порог прибыли или увеличить суммы USDT/токенов.")
 
-# ----- Вкладка 2: Арбитраж -----
-st.subheader("🔍 Арбитраж")
-if st.button("🎯 НАЙТИ И ИСПОЛНИТЬ ЛУЧШУЮ СДЕЛКУ", use_container_width=True):
-    with st.spinner("Поиск лучшей возможности..."):
-        best = find_best_opportunity()
+# Вкладка 2: Авто-торговля
+with tabs[2]:
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("▶ СТАРТ АВТО-СДЕЛКИ", use_container_width=True):
+            st.session_state.auto_trade_enabled = True
+            st.rerun()
+    with col2:
+        if st.button("⏹ СТОП АВТО-СДЕЛКИ", use_container_width=True):
+            st.session_state.auto_trade_enabled = False
+            st.rerun()
+    
+    if st.session_state.auto_trade_enabled:
+        st_autorefresh(interval=st.session_state.scan_interval * 1000, key="auto_refresh")
+        best = find_best_opportunity(st.session_state.fee_percent, st.session_state.min_profit_usdt, st.session_state.min_trade_usdt)
         if best:
-            st.info(f"📊 Найдена сделка: купить {best['token']} на {best['buy_ex'].upper()} за {best['buy_price']:.2f}, продать на {best['sell_ex'].upper()} за {best['sell_price']:.2f} | Ожидаемая прибыль: {best['profit']:.2f} USDT")
+            st.info(f"🎯 Авто-сделка: {best['token']} {best['buy_ex']}→{best['sell_ex']} | прибыль ~{best['profit']:.4f} USDT")
             profit, error = execute_trade(best)
             if profit:
-                st.success(f"✅ Сделка исполнена! Прибыль: +{profit:.2f} USDT")
+                st.success(f"✅ Авто-сделка исполнена! +{profit:.2f} USDT")
+                st.session_state.auto_trade_enabled = False  # остановить после одной сделки (можно убрать)
                 st.rerun()
             else:
                 st.error(f"❌ Ошибка: {error}")
         else:
-            st.warning("Арбитражных возможностей не найдено. Проверьте балансы USDT и токенов.")
+            st.info("Нет подходящих возможностей. Ожидание...")
+    else:
+        st.info("Авто-торговля остановлена. Нажмите «СТАРТ АВТО-СДЕЛКИ».")
 
-# ----- История -----
-st.subheader("📜 История сделок")
-if st.session_state.user_history:
-    for trade in reversed(st.session_state.user_history[-20:]):
-        st.text(trade)
-else:
-    st.info("Нет сделок")
+# Вкладка 3: История
+with tabs[3]:
+    if st.session_state.user_history:
+        for trade in reversed(st.session_state.user_history[-50:]):
+            st.text(trade)
+        if st.button("Очистить историю"):
+            st.session_state.user_history = []
+            save_history(st.session_state.user_id, [])
+            st.rerun()
+    else:
+        st.info("Нет сделок")
 
-# ----- Чат -----
-with st.expander("💬 Сообщения поддержке"):
+# Вкладка 4: Чат
+with tabs[4]:
     if is_admin(st.session_state.email):
         msgs = get_messages(limit=50)
         for msg in msgs:
@@ -444,3 +514,5 @@ with st.expander("💬 Сообщения поддержке"):
                 add_message(st.session_state.user_id, st.session_state.email, st.session_state.username, user_msg)
                 st.success("Сообщение отправлено")
                 st.rerun()
+
+st.caption(f"🚀 Настройки: комиссия {st.session_state.fee_percent}%, мин. прибыль {st.session_state.min_profit_usdt} USDT, мин. сделка {st.session_state.min_trade_usdt} USDT | Авто-интервал {st.session_state.scan_interval} сек")
