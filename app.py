@@ -8,6 +8,7 @@ from datetime import datetime
 from supabase import create_client, Client
 import hashlib
 import base64
+from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(page_title="Арбитражный бот HOVMEL", layout="wide", page_icon="🔄", initial_sidebar_state="collapsed")
 
@@ -309,13 +310,42 @@ if 'logged_in' not in st.session_state:
     st.session_state.min_profit = 0.01
     st.session_state.min_trade = 12.0
     st.session_state.max_trade = 15.0
+    st.session_state.auto_scan_enabled = True   # автоматическое сканирование при каждой перезагрузке
+    st.session_state.last_scan_time = None
 
 public_clients = init_public_clients()
 real_exchanges = init_real_exchanges()
 
+# ---------- АВТОМАТИЧЕСКАЯ ПЕРЕЗАГРУЗКА И СКАНИРОВАНИЕ ----------
+# Устанавливаем автообновление страницы каждые N секунд (например, 15 секунд)
+# Значение берём из настроек или стандартное 15
+refresh_interval = st.session_state.get('scan_interval', 15)
+st_autorefresh(interval=refresh_interval * 1000, key="auto_refresh")
+
+# При каждом запуске страницы (в том числе после автообновления) выполняем сканирование, если авто-сканирование включено
+if st.session_state.get('auto_scan_enabled', True) and st.session_state.get('logged_in', False):
+    # Чтобы не сканировать слишком часто при ручных нажатиях, используем флаг времени
+    now = datetime.now()
+    last = st.session_state.get('last_scan_time')
+    if last is None or (now - last).total_seconds() >= refresh_interval:
+        st.session_state.last_scan_time = now
+        opp = find_opportunity(st.session_state.trade_mode, st.session_state.fee, st.session_state.min_profit,
+                               st.session_state.min_trade, st.session_state.max_trade,
+                               st.session_state.demo_data, real_exchanges, public_clients)
+        if opp:
+            st.session_state.auto_log.append(f"🔍 Найдено: {opp['token']} {opp['buy_ex']}→{opp['sell_ex']} | прибыль {opp['profit']:.4f} USDT")
+            profit, err = execute_arbitrage(st.session_state.trade_mode, opp, st.session_state.user_id,
+                                            st.session_state.demo_data, real_exchanges, public_clients)
+            if profit:
+                st.session_state.auto_log.append(f"✅ Сделка исполнена! +{profit:.2f} USDT")
+            else:
+                st.session_state.auto_log.append(f"❌ Ошибка: {err}")
+        else:
+            st.session_state.auto_log.append("❌ Возможностей не найдено")
+
 # ---------- ЛОГИН ----------
 if not st.session_state.logged_in:
-    st.markdown('<div class="main-header"><h1>Арбитражный бот <span class="hovmel-highlight">HOVMEL</span></h1></div><div class="subtitle">⚡ Автоматический поиск межбиржевого арбитража ⚡</div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-header"><h1>Арбитражный бот <span class="hovmel-highlight">HOVMEL</span></h1></div><div class="subtitle">⚡ Автоматический поиск межбиржевого арбитража 24/7 ⚡</div>', unsafe_allow_html=True)
     tab1, tab2 = st.tabs(["Вход", "Регистрация"])
     with tab1:
         email = st.text_input("Email")
@@ -358,7 +388,7 @@ if not st.session_state.logged_in:
     st.stop()
 
 # ---------- ОСНОВНОЙ ИНТЕРФЕЙС ----------
-st.markdown('<div class="main-header"><h1>Арбитражный бот <span class="hovmel-highlight">HOVMEL</span></h1></div><div class="subtitle">⚡ Автоматический поиск межбиржевого арбитража ⚡</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header"><h1>Арбитражный бот <span class="hovmel-highlight">HOVMEL</span></h1></div><div class="subtitle">⚡ Автоматический поиск межбиржевого арбитража 24/7 ⚡</div>', unsafe_allow_html=True)
 
 col1, col2, col3 = st.columns([2,1,1])
 with col1:
@@ -442,29 +472,20 @@ with st.expander("⚙️ Настройки арбитража"):
     st.session_state.min_profit = st.number_input("Мин. прибыль (USDT)", 0.001, 1.0, st.session_state.min_profit, 0.01, format="%.3f")
     st.session_state.min_trade = st.number_input("Мин. сумма сделки (USDT)", 10.0, 15.0, st.session_state.min_trade, 1.0)
     st.session_state.max_trade = st.number_input("Макс. сумма сделки (USDT)", 12.0, 15.0, st.session_state.max_trade, 1.0)
-
-# ---------- АВТО-СКАНИРОВАНИЕ (ОДНО НАЖАТИЕ) ----------
-col_scan, col_log = st.columns([1,3])
-with col_scan:
-    if st.button("🔄 Запустить авто-сканирование", use_container_width=True):
-        opp = find_opportunity(st.session_state.trade_mode, st.session_state.fee, st.session_state.min_profit,
-                               st.session_state.min_trade, st.session_state.max_trade,
-                               st.session_state.demo_data, real_exchanges, public_clients)
-        if opp:
-            st.session_state.auto_log.append(f"🔍 Найдено: {opp['token']} {opp['buy_ex']}→{opp['sell_ex']} | прибыль {opp['profit']:.4f} USDT")
-            profit, err = execute_arbitrage(st.session_state.trade_mode, opp, st.session_state.user_id,
-                                            st.session_state.demo_data, real_exchanges, public_clients)
-            if profit:
-                st.session_state.auto_log.append(f"✅ Сделка исполнена! +{profit:.2f} USDT")
-            else:
-                st.session_state.auto_log.append(f"❌ Ошибка: {err}")
-        else:
-            st.session_state.auto_log.append("❌ Возможностей не найдено")
+    interval = st.number_input("Интервал сканирования (сек)", 5, 60, st.session_state.get('scan_interval', 15), 5)
+    if interval != st.session_state.get('scan_interval', 15):
+        st.session_state.scan_interval = interval
         st.rerun()
-with col_log:
-    with st.expander("📋 Лог авто-торговли", expanded=True):
-        for log in st.session_state.auto_log[-15:]:
-            st.text(log)
+    auto_scan = st.checkbox("Автоматическое сканирование (24/7)", value=st.session_state.get('auto_scan_enabled', True))
+    if auto_scan != st.session_state.get('auto_scan_enabled', True):
+        st.session_state.auto_scan_enabled = auto_scan
+        st.rerun()
+    st.info("При автоматическом сканировании страница будет обновляться каждые N секунд, и бот будет искать арбитраж.")
+
+# ---------- ЛОГ АВТО-ТОРГОВЛИ ----------
+with st.expander("📋 Лог авто-торговли", expanded=True):
+    for log in st.session_state.auto_log[-30:]:
+        st.text(log)
 
 # ---------- ВКЛАДКИ ----------
 tabs = st.tabs(["📊 Dashboard", "📈 Графики", "🔄 Арбитраж", "📊 Статистика", "💼 Балансы", "📜 История", "👤 Кабинет"])
@@ -472,8 +493,8 @@ tabs = st.tabs(["📊 Dashboard", "📈 Графики", "🔄 Арбитраж"
 # Dashboard
 with tabs[0]:
     st.subheader("Добро пожаловать!")
-    st.write("Используйте вкладку **Балансы** для ручной покупки/продажи.")
-    st.write("Нажмите **Запустить авто-сканирование** для поиска и исполнения арбитража.")
+    st.write("Бот работает **автоматически 24/7** – каждые N секунд сканирует рынок и исполняет арбитражные сделки.")
+    st.write("Вы можете настроить интервал сканирования и другие параметры в разделе 'Настройки арбитража'.")
 
 # Графики
 with tabs[1]:
@@ -490,10 +511,10 @@ with tabs[1]:
             fig = px.bar(df, x="Биржа", y="Цена", title=f"{tok}/USDT", color="Биржа")
             st.plotly_chart(fig, use_container_width=True)
 
-# Ручной арбитраж
+# Ручной арбитраж (на случай, если нужно вручную)
 with tabs[2]:
     st.subheader("Ручной поиск и исполнение")
-    if st.button("🔍 Найти лучшую возможность"):
+    if st.button("🔍 Найти лучшую возможность (ручной режим)"):
         opp = find_opportunity(st.session_state.trade_mode, st.session_state.fee, st.session_state.min_profit,
                                st.session_state.min_trade, st.session_state.max_trade,
                                st.session_state.demo_data, real_exchanges, public_clients)
