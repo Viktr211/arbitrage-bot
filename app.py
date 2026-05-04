@@ -71,12 +71,12 @@ def is_admin(email):
     return email in ADMIN_EMAILS
 
 DEFAULT_FEE_PERCENT = 0.1
-DEFAULT_MIN_PROFIT_USDT = 0.01   # <-- Уменьшил, чтобы арбитраж находился
+DEFAULT_MIN_PROFIT_USDT = 0.01
 DEFAULT_MIN_TRADE_USDT = 12.0
 DEFAULT_MAX_TRADE_USDT = 15.0
 DEFAULT_SCAN_INTERVAL = 10
 
-# ---------- ФУНКЦИИ SUPABASE (без изменений) ----------
+# ---------- ФУНКЦИИ SUPABASE ----------
 def get_user_by_email(email):
     res = supabase.table('users').select('*').eq('email', email).execute()
     return res.data[0] if res.data else None
@@ -485,40 +485,48 @@ def execute_trade(mode, opp):
     add_trade(st.session_state.user_id, mode, token, amount, real_profit, buy_ex, sell_ex)
     return real_profit, None
 
-# ---------- ФОНОВЫЙ ПОТОК (исправлен) ----------
-def background_arbitrage_loop():
-    while True:
-        try:
-            # Принудительно считываем состояние
-            auto = st.session_state.get('auto_trade_enabled', False)
-            mode = st.session_state.get('trade_mode', "Демо")
-            fee = st.session_state.get('fee_percent', DEFAULT_FEE_PERCENT)
-            min_profit = st.session_state.get('min_profit_usdt', DEFAULT_MIN_PROFIT_USDT)
-            min_trade = st.session_state.get('min_trade_usdt', DEFAULT_MIN_TRADE_USDT)
-            max_trade = st.session_state.get('max_trade_usdt', DEFAULT_MAX_TRADE_USDT)
-            
-            if auto:
-                if 'auto_log' not in st.session_state:
-                    st.session_state.auto_log = []
-                opp = find_best_opportunity(mode, fee, min_profit, min_trade, max_trade)
-                if opp:
-                    st.session_state.auto_log.append(
-                        f"🔍 {mode} | {opp['token']} {opp['buy_ex']}→{opp['sell_ex']} | "
-                        f"прибыль {opp['profit']:.4f} USDT | сумма {opp['trade_usdt']:.2f} USDT"
-                    )
-                    profit, error = execute_trade(mode, opp)
-                    if profit:
-                        st.session_state.auto_log.append(f"✅ {mode} сделка: +{profit:.2f} USDT")
-                    elif error:
-                        st.session_state.auto_log.append(f"❌ {mode} ошибка: {error}")
-                # else: не спамим лог
-                time.sleep(st.session_state.get('scan_interval', DEFAULT_SCAN_INTERVAL))
-            else:
+# ---------- ФОНОВЫЙ ПОТОК (ПЕРЕПИСАН) ----------
+class ArbitrageLoop:
+    def __init__(self):
+        self.running = True
+    def run(self):
+        while self.running:
+            try:
+                # Читаем состояние из session_state через st.session_state (но в потоке нужно делать осторожно)
+                # Используем глобальный флаг
+                if hasattr(st.session_state, 'auto_trade_enabled') and st.session_state.auto_trade_enabled:
+                    mode = st.session_state.trade_mode
+                    fee = st.session_state.fee_percent
+                    min_profit = st.session_state.min_profit_usdt
+                    min_trade = st.session_state.min_trade_usdt
+                    max_trade = st.session_state.max_trade_usdt
+                    opp = find_best_opportunity(mode, fee, min_profit, min_trade, max_trade)
+                    if opp:
+                        if 'auto_log' not in st.session_state:
+                            st.session_state.auto_log = []
+                        st.session_state.auto_log.append(
+                            f"🔍 {mode} | {opp['token']} {opp['buy_ex']}→{opp['sell_ex']} | "
+                            f"прибыль {opp['profit']:.4f} USDT | сумма {opp['trade_usdt']:.2f} USDT"
+                        )
+                        profit, error = execute_trade(mode, opp)
+                        if profit:
+                            st.session_state.auto_log.append(f"✅ {mode} сделка: +{profit:.2f} USDT")
+                        elif error:
+                            st.session_state.auto_log.append(f"❌ {mode} ошибка: {error}")
+                    time.sleep(st.session_state.scan_interval)
+                else:
+                    time.sleep(5)
+            except Exception as e:
+                if 'auto_log' in st.session_state:
+                    st.session_state.auto_log.append(f"⚠️ Ошибка фона: {e}")
                 time.sleep(5)
-        except Exception as e:
-            if 'auto_log' in st.session_state:
-                st.session_state.auto_log.append(f"⚠️ Ошибка фона: {e}")
-            time.sleep(5)
+
+# Глобальный экземпляр потока
+if 'arbitrage_loop' not in st.session_state:
+    st.session_state.arbitrage_loop = ArbitrageLoop()
+    thread = threading.Thread(target=st.session_state.arbitrage_loop.run, daemon=True)
+    thread.start()
+    st.session_state.background_thread_started = True
 
 # ---------- ИНИЦИАЛИЗАЦИЯ СЕССИИ ----------
 if 'logged_in' not in st.session_state:
@@ -539,6 +547,7 @@ if 'logged_in' not in st.session_state:
     st.session_state.max_trade_usdt = DEFAULT_MAX_TRADE_USDT
     st.session_state.scan_interval = DEFAULT_SCAN_INTERVAL
     st.session_state.trade_mode = "Демо"
+    st.session_state.auto_log = []
 
 if st.session_state.public_clients is None:
     with st.spinner("Подключение к биржам для получения цен..."):
@@ -550,11 +559,6 @@ if st.session_state.real_exchanges is None and st.session_state.trade_mode == "�
         st.session_state.real_exchanges, real_status = init_real_exchanges()
         for ex, sts in real_status.items():
             st.session_state.exchange_status[ex] = sts
-
-if 'background_thread_started' not in st.session_state:
-    threading.Thread(target=background_arbitrage_loop, daemon=True).start()
-    st.session_state.background_thread_started = True
-    st.session_state.auto_log = []
 
 # ---------- ХЕДЕР ----------
 st.markdown('<div class="main-header"><h1>Арбитражный бот <span class="hovmel-highlight">HOVMEL</span></h1></div><div class="subtitle">⚡ Автоматический поиск межбиржевого арбитража ⚡</div>', unsafe_allow_html=True)
@@ -605,6 +609,23 @@ if not st.session_state.logged_in:
 
 if st.session_state.user_id and st.session_state.user_data:
     save_user_data(st.session_state.user_id, st.session_state.user_data)
+
+# ---------- ФУНКЦИЯ СБРОСА ДАННЫХ ----------
+def reset_user_data():
+    # Сброс демо-портфеля
+    new_balances = {ex: {"USDT": 0.0, "portfolio": {t: 0.0 for t in TOKENS}} for ex in EXCHANGES}
+    # Добавляем немного USDT для тестов (опционально)
+    new_balances["kucoin"]["USDT"] = 10000.0
+    new_balances["okx"]["USDT"] = 10000.0
+    new_balances["hitbtc"]["USDT"] = 10000.0
+    st.session_state.user_data['balances'] = new_balances
+    st.session_state.user_data['total_profit'] = 0.0
+    st.session_state.user_data['trade_count'] = 0
+    st.session_state.user_data['history'] = []
+    st.session_state.user_data['withdrawable_balance'] = 0.0
+    st.session_state.user_data['total_admin_fee_paid'] = 0.0
+    save_user_data(st.session_state.user_id, st.session_state.user_data)
+    st.success("Все демо-данные сброшены! (Балансы обнулены, сделки удалены, прибыль сброшена)")
 
 # ---------- ВЕРХНЯЯ ПАНЕЛЬ ----------
 col_logo, col_status, col_mode, col_logout = st.columns([2, 1, 1, 1])
@@ -798,7 +819,7 @@ with tabs[4]:
     else:
         st.info("Нет данных о сделках")
 
-# ---------- БАЛАНСЫ c ручной торговлей ----------
+# ---------- БАЛАНСЫ c ручной торговлей (счётчик увеличен) ----------
 with tabs[5]:
     st.subheader("💼 Балансы и ручная торговля")
     if st.session_state.trade_mode == "Реальный" and st.session_state.real_exchanges:
@@ -832,6 +853,7 @@ with tabs[5]:
                             ok, msg, _ = execute_demo_buy(ex, token_buy, usdt_amount)
                         if ok:
                             st.session_state.user_data['trade_count'] += 1
+                            st.session_state.user_data['total_profit'] += 0  # покупка не даёт прибыль
                             entry = f"🟢 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Ручная покупка {token_buy} на {ex.upper()} на {usdt_amount} USDT"
                             st.session_state.user_data['history'].append(entry)
                             save_user_data(st.session_state.user_id, st.session_state.user_data)
@@ -893,7 +915,7 @@ with tabs[7]:
     else:
         st.info("Сделок пока нет")
 
-# ---------- КАБИНЕТ (с общим капиталом) ----------
+# ---------- КАБИНЕТ (сброс данных) ----------
 with tabs[8]:
     st.subheader("👤 Личный кабинет")
     col1, col2 = st.columns(2)
@@ -905,6 +927,10 @@ with tabs[8]:
         st.write(f"**Всего сделок:** {st.session_state.user_data['trade_count']}")
         st.write(f"**Общая прибыль:** {st.session_state.user_data['total_profit']:.2f} USDT")
         st.write(f"**💎 Общий капитал (USDT):** {total_capital:.2f}")
+    st.divider()
+    if st.button("⚠️ СБРОСИТЬ ВСЕ ДЕМО-ДАННЫЕ (портфель, сделки, прибыль)", use_container_width=True):
+        reset_user_data()
+        st.rerun()
 
 # ---------- ЧАТ ----------
 with tabs[9]:
