@@ -6,13 +6,11 @@ import plotly.graph_objects as go
 from datetime import datetime
 import hashlib
 import base64
-import time
-import threading
 from supabase import create_client, Client
 import requests
 from streamlit_autorefresh import st_autorefresh
 
-st.set_page_config(page_title="Арбитражный бот | Настраиваемый", layout="wide", page_icon="🔄", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Арбитражный бот | Двусторонний", layout="wide", page_icon="🔄", initial_sidebar_state="collapsed")
 
 SUPABASE_URL = st.secrets.get("SUPABASE_URL")
 SUPABASE_KEY = st.secrets.get("SUPABASE_KEY")
@@ -28,10 +26,10 @@ ADMIN_EMAILS = ["cb777899@gmail.com", "admin@arbitrage.com"]
 def is_admin(email):
     return email in ADMIN_EMAILS
 
-# ---------- НАСТРОЙКИ ПО УМОЛЧАНИЮ (будут перезаписаны из st.session_state) ----------
+# ---------- НАСТРОЙКИ ПО УМОЛЧАНИЮ ----------
 DEFAULT_FEE_PERCENT = 0.1
 DEFAULT_MIN_PROFIT_USDT = 0.01
-DEFAULT_MIN_TRADE_USDT = 10.0
+DEFAULT_MIN_TRADE_USDT = 12.0    # изменено на 12
 DEFAULT_SCAN_INTERVAL = 10
 
 # ---------- ФУНКЦИИ SUPABASE ----------
@@ -193,7 +191,7 @@ def buy_token_with_usdt(exchange_name, token, usdt_amount):
     update_balance(exchange_name, token, amount)
     return True, f"Куплено {amount:.8f} {token} за {usdt_amount} USDT по цене {price:.2f}"
 
-# ---------- АРБИТРАЖ ----------
+# ---------- АРБИТРАЖ (ДВУСТОРОННИЙ) ----------
 def find_best_opportunity(fee_percent, min_profit_usdt, min_trade_usdt):
     opportunities = []
     if not st.session_state.exchanges:
@@ -207,8 +205,8 @@ def find_best_opportunity(fee_percent, min_profit_usdt, min_trade_usdt):
             if price:
                 prices[ex_name][token] = price
     exchange_names = list(prices.keys())
-    for buy_ex in exchange_names:
-        for sell_ex in exchange_names:
+    for i, buy_ex in enumerate(exchange_names):
+        for j, sell_ex in enumerate(exchange_names):
             if buy_ex == sell_ex:
                 continue
             for token in tokens:
@@ -218,12 +216,12 @@ def find_best_opportunity(fee_percent, min_profit_usdt, min_trade_usdt):
                 sell_price = prices[sell_ex][token]
                 if sell_price <= buy_price:
                     continue
-                # Проверяем, хватает ли средств
+                # Проверяем, хватает ли средств для покупки (USDT) и продажи (токены)
                 usdt_buy = get_balance(buy_ex, 'USDT')
                 token_sell = get_balance(sell_ex, token)
                 if usdt_buy < min_trade_usdt or token_sell < 0.0001:
                     continue
-                # Максимальная сумма сделки (мин. из доступных USDT и стоимости токенов)
+                # Максимальная сумма сделки: мин(доступные USDT, стоимость доступных токенов)
                 max_trade_usdt = min(usdt_buy, token_sell * sell_price)
                 if max_trade_usdt < min_trade_usdt:
                     continue
@@ -240,6 +238,51 @@ def find_best_opportunity(fee_percent, min_profit_usdt, min_trade_usdt):
                     'sell_ex': sell_ex,
                     'buy_price': buy_price,
                     'sell_price': sell_price,
+                    'trade_usdt': max_trade_usdt,
+                    'amount': amount,
+                    'profit': profit_after
+                })
+    # Также рассмотрим обратное направление: покупка на sell_ex, продажа на buy_ex
+    # (это вторая половина двустороннего арбитража)
+    for i, buy_ex in enumerate(exchange_names):
+        for j, sell_ex in enumerate(exchange_names):
+            if buy_ex == sell_ex:
+                continue
+            for token in tokens:
+                if token not in prices[buy_ex] or token not in prices[sell_ex]:
+                    continue
+                buy_price = prices[buy_ex][token]
+                sell_price = prices[sell_ex][token]
+                if buy_price <= sell_price:
+                    continue  # уже рассмотрено в первом цикле – это то же направление, что и выше? Нет, здесь условие обратное: покупаем на sell_ex, продаём на buy_ex.
+                # В этом цикле мы рассматриваем пару (sell_ex, buy_ex) как (покупаем на sell_ex, продаём на buy_ex)
+                # Но проще: переставить местами buy_ex и sell_ex, чтобы условие sell_price > buy_price выполнялось.
+                # Поэтому просто меняем роли:
+                actual_buy_ex = sell_ex
+                actual_sell_ex = buy_ex
+                actual_buy_price = prices[actual_buy_ex][token]
+                actual_sell_price = prices[actual_sell_ex][token]
+                if actual_sell_price <= actual_buy_price:
+                    continue
+                usdt_buy = get_balance(actual_buy_ex, 'USDT')
+                token_sell = get_balance(actual_sell_ex, token)
+                if usdt_buy < min_trade_usdt or token_sell < 0.0001:
+                    continue
+                max_trade_usdt = min(usdt_buy, token_sell * actual_sell_price)
+                if max_trade_usdt < min_trade_usdt:
+                    continue
+                amount = max_trade_usdt / actual_buy_price
+                profit_before = (actual_sell_price - actual_buy_price) * amount
+                fee = profit_before * (fee_percent / 100)
+                profit_after = profit_before - fee
+                if profit_after < min_profit_usdt:
+                    continue
+                opportunities.append({
+                    'token': token,
+                    'buy_ex': actual_buy_ex,
+                    'sell_ex': actual_sell_ex,
+                    'buy_price': actual_buy_price,
+                    'sell_price': actual_sell_price,
                     'trade_usdt': max_trade_usdt,
                     'amount': amount,
                     'profit': profit_after
@@ -309,7 +352,7 @@ if st.session_state.exchanges is None:
 
 # ---------- РЕГИСТРАЦИЯ / ВХОД ----------
 if not st.session_state.logged_in:
-    st.markdown('<h1 class="main-header">🔄 Арбитражный бот | Настраиваемый</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">🔄 Арбитражный бот | Двусторонний</h1>', unsafe_allow_html=True)
     tab_reg, tab_login = st.tabs(["📝 Регистрация","🔑 Вход"])
     with tab_reg:
         with st.form("register_form"):
@@ -361,7 +404,7 @@ if st.session_state.user_id:
     save_balances(st.session_state.user_id, st.session_state.user_balances)
 
 # ---------- ИНТЕРФЕЙС ----------
-st.title("🔧 Арбитражный бот | Настраиваемый")
+st.title("🔧 Арбитражный бот | Двусторонний")
 col1, col2, col3 = st.columns(3)
 col1.metric("💰 Всего USDT", f"{sum(bal.get('USDT',0) for bal in st.session_state.user_balances.values()):.2f}")
 total_portfolio = 0
@@ -406,7 +449,6 @@ with tabs[0]:
                         st.success(f"Добавлено {add_usdt} USDT")
                         st.rerun()
             with col2:
-                # Вывод USDT (уменьшение) – можно добавить по желанию
                 remove_usdt = st.number_input(f"Вычесть USDT", min_value=0.0, step=10.0, key=f"remove_usdt_{ex}")
                 if st.button(f"➖ Вычесть USDT", key=f"btn_remove_usdt_{ex}"):
                     if remove_usdt > 0 and usdt >= remove_usdt:
@@ -472,7 +514,8 @@ with tabs[2]:
             profit, error = execute_trade(best)
             if profit:
                 st.success(f"✅ Авто-сделка исполнена! +{profit:.2f} USDT")
-                st.session_state.auto_trade_enabled = False  # остановить после одной сделки (можно убрать)
+                # Не останавливаем, продолжаем искать дальше (можно удалить следующую строку)
+                # st.session_state.auto_trade_enabled = False
                 st.rerun()
             else:
                 st.error(f"❌ Ошибка: {error}")
