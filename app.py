@@ -28,12 +28,34 @@ def is_admin(email):
 
 # ---------- НАСТРОЙКИ ПО УМОЛЧАНИЮ ----------
 DEFAULT_FEE_PERCENT = 0.1
-DEFAULT_MIN_PROFIT_USDT = 0.005   # снизил для теста
+DEFAULT_MIN_PROFIT_USDT = 0.005
 DEFAULT_MIN_TRADE_USDT = 12.0
-DEFAULT_MAX_TRADE_USDT = 30.0     # НОВЫЙ ПАРАМЕТР
+DEFAULT_MAX_TRADE_USDT = 30.0
 DEFAULT_SCAN_INTERVAL = 10
 
-# ---------- ФУНКЦИИ SUPABASE ----------
+# ---------- ФУНКЦИИ ДЛЯ РАБОТЫ С НАСТРОЙКАМИ ----------
+def load_settings():
+    """Загружает настройки из config или устанавливает значения по умолчанию"""
+    res = supabase.table('config').select('value').eq('key', 'arbitrage_settings').execute()
+    if res.data and res.data[0].get('value'):
+        settings = json.loads(res.data[0]['value'])
+        return settings
+    else:
+        return {
+            'fee_percent': DEFAULT_FEE_PERCENT,
+            'min_profit_usdt': DEFAULT_MIN_PROFIT_USDT,
+            'min_trade_usdt': DEFAULT_MIN_TRADE_USDT,
+            'max_trade_usdt': DEFAULT_MAX_TRADE_USDT,
+            'scan_interval': DEFAULT_SCAN_INTERVAL
+        }
+
+def save_settings(settings):
+    supabase.table('config').upsert({
+        'key': 'arbitrage_settings',
+        'value': json.dumps(settings)
+    }, on_conflict='key').execute()
+
+# ---------- ОСТАЛЬНЫЕ ФУНКЦИИ SUPABASE ----------
 def get_user_by_email(email):
     res = supabase.table('users').select('*').eq('email', email).execute()
     return res.data[0] if res.data else None
@@ -192,7 +214,7 @@ def buy_token_with_usdt(exchange_name, token, usdt_amount):
     update_balance(exchange_name, token, amount)
     return True, f"Куплено {amount:.8f} {token} за {usdt_amount} USDT по цене {price:.2f}"
 
-# ---------- АРБИТРАЖ (ДВУСТОРОННИЙ) ----------
+# ---------- АРБИТРАЖ ----------
 def find_best_opportunity(fee_percent, min_profit_usdt, min_trade_usdt, max_trade_usdt):
     opportunities = []
     if not st.session_state.exchanges:
@@ -206,7 +228,6 @@ def find_best_opportunity(fee_percent, min_profit_usdt, min_trade_usdt, max_trad
             if price:
                 prices[ex_name][token] = price
     exchange_names = list(prices.keys())
-    # Перебираем все пары бирж
     for buy_ex in exchange_names:
         for sell_ex in exchange_names:
             if buy_ex == sell_ex:
@@ -218,12 +239,10 @@ def find_best_opportunity(fee_percent, min_profit_usdt, min_trade_usdt, max_trad
                 sell_price = prices[sell_ex][token]
                 if sell_price <= buy_price:
                     continue
-                # Проверяем доступные средства
                 usdt_buy = get_balance(buy_ex, 'USDT')
                 token_sell = get_balance(sell_ex, token)
                 if usdt_buy < min_trade_usdt or token_sell < 0.0001:
                     continue
-                # Максимальная сумма сделки с учётом ограничения сверху
                 max_possible = min(usdt_buy, token_sell * sell_price)
                 trade_usdt = min(max_possible, max_trade_usdt)
                 if trade_usdt < min_trade_usdt:
@@ -248,10 +267,7 @@ def find_best_opportunity(fee_percent, min_profit_usdt, min_trade_usdt, max_trad
                 })
     if not opportunities:
         return None
-    # Выбираем с максимальной прибылью
-    best = max(opportunities, key=lambda x: x['profit'])
-    st.session_state.last_candidate = best  # для отладки
-    return best
+    return max(opportunities, key=lambda x: x['profit'])
 
 def execute_trade(opp):
     buy_ex = opp['buy_ex']
@@ -269,7 +285,6 @@ def execute_trade(opp):
     if token_sell < amount:
         return None, f"Не хватает {token} на {sell_ex} (нужно {amount:.8f}, есть {token_sell:.8f})"
 
-    # Исполняем
     update_balance(buy_ex, 'USDT', -trade_usdt)
     update_balance(buy_ex, token, amount)
     update_balance(sell_ex, token, -amount)
@@ -303,11 +318,13 @@ if 'logged_in' not in st.session_state:
     st.session_state.trade_count = 0
     st.session_state.chat_unread = 0
     st.session_state.auto_trade_enabled = False
-    st.session_state.fee_percent = DEFAULT_FEE_PERCENT
-    st.session_state.min_profit_usdt = DEFAULT_MIN_PROFIT_USDT
-    st.session_state.min_trade_usdt = DEFAULT_MIN_TRADE_USDT
-    st.session_state.max_trade_usdt = DEFAULT_MAX_TRADE_USDT
-    st.session_state.scan_interval = DEFAULT_SCAN_INTERVAL
+    # Загружаем настройки из БД
+    settings = load_settings()
+    st.session_state.fee_percent = settings['fee_percent']
+    st.session_state.min_profit_usdt = settings['min_profit_usdt']
+    st.session_state.min_trade_usdt = settings['min_trade_usdt']
+    st.session_state.max_trade_usdt = settings['max_trade_usdt']
+    st.session_state.scan_interval = settings['scan_interval']
     st.session_state.last_candidate = None
 
 if st.session_state.exchanges is None:
@@ -393,6 +410,14 @@ with st.expander("⚙️ Настройки арбитража"):
         st.session_state.min_trade_usdt = new_min_trade
         st.session_state.max_trade_usdt = new_max_trade
         st.session_state.scan_interval = new_interval
+        # Сохраняем в БД
+        save_settings({
+            'fee_percent': new_fee,
+            'min_profit_usdt': new_min_profit,
+            'min_trade_usdt': new_min_trade,
+            'max_trade_usdt': new_max_trade,
+            'scan_interval': new_interval
+        })
         st.success("Настройки сохранены")
 
 # ----- Вкладки -----
