@@ -36,21 +36,31 @@ DEFAULT_MIN_TRADE_USDT = 12.0
 DEFAULT_MAX_TRADE_USDT = 30.0
 DEFAULT_SCAN_INTERVAL = 10
 
-# ---------- ФУНКЦИИ SUPABASE ----------
+# ---------- ФУНКЦИИ SUPABASE (только с существующими колонками) ----------
 def get_user_by_email(email):
     res = supabase.table('users').select('*').eq('email', email).execute()
     return res.data[0] if res.data else None
 
 def create_user(email, pwd_hash, full_name, country, city, phone, wallet):
-    # Начальные данные: главный кошелёк = 0, на биржах всё 0
+    # Начальная структура данных
+    initial_data = {
+        'main_balance': 0.0,
+        'exchanges': {ex: {"USDT": 0.0, "portfolio": {t: 0.0 for t in TOKENS}} for ex in EXCHANGES},
+        'total_profit': 0,
+        'trade_count': 0,
+        'withdrawable_balance': 0,
+        'total_admin_fee_paid': 0
+    }
     data = {
         'email': email, 'password_hash': pwd_hash, 'full_name': full_name,
         'country': country, 'city': city, 'phone': phone, 'wallet_address': wallet,
         'registration_status': 'approved',
-        'main_balance': 0.0,   # центральный кошелёк
-        'total_profit': 0, 'trade_count': 0, 'total_admin_fee_paid': 0,
+        'trade_balance': 0,   # не используется, но есть в таблице
         'withdrawable_balance': 0,
-        'demo_balances': json.dumps({ex: {"USDT": 0.0, "portfolio": {t: 0.0 for t in TOKENS}} for ex in EXCHANGES}),
+        'total_profit': 0,
+        'trade_count': 0,
+        'total_admin_fee_paid': 0,
+        'demo_balances': json.dumps(initial_data),
         'demo_history': json.dumps([]),
         'demo_stats': json.dumps({})
     }
@@ -58,26 +68,45 @@ def create_user(email, pwd_hash, full_name, country, city, phone, wallet):
     return res.data[0]['id'] if res.data else None
 
 def load_user_data(user_id):
-    res = supabase.table('users').select('*').eq('id', user_id).execute()
+    res = supabase.table('users').select('demo_balances, demo_history, demo_stats, total_profit, trade_count, withdrawable_balance, total_admin_fee_paid').eq('id', user_id).execute()
     if res.data:
         user = res.data[0]
+        balances = json.loads(user.get('demo_balances', '{}'))
+        # Если в demo_balances нет нужной структуры, инициализируем
+        if not isinstance(balances, dict) or 'main_balance' not in balances:
+            balances = {
+                'main_balance': 0.0,
+                'exchanges': {ex: {"USDT": 0.0, "portfolio": {t: 0.0 for t in TOKENS}} for ex in EXCHANGES},
+                'total_profit': user.get('total_profit', 0),
+                'trade_count': user.get('trade_count', 0),
+                'withdrawable_balance': user.get('withdrawable_balance', 0),
+                'total_admin_fee_paid': user.get('total_admin_fee_paid', 0)
+            }
         return {
-            'main_balance': user.get('main_balance', 0.0),
-            'balances': json.loads(user.get('demo_balances', '{}')),
+            'main_balance': balances.get('main_balance', 0.0),
+            'balances': balances.get('exchanges', {ex: {"USDT": 0.0, "portfolio": {t: 0.0 for t in TOKENS}} for ex in EXCHANGES}),
             'history': json.loads(user.get('demo_history', '[]')),
             'stats': json.loads(user.get('demo_stats', '{}')),
-            'total_profit': user.get('total_profit', 0),
-            'trade_count': user.get('trade_count', 0),
-            'withdrawable_balance': user.get('withdrawable_balance', 0),
-            'total_admin_fee_paid': user.get('total_admin_fee_paid', 0)
+            'total_profit': balances.get('total_profit', user.get('total_profit', 0)),
+            'trade_count': balances.get('trade_count', user.get('trade_count', 0)),
+            'withdrawable_balance': balances.get('withdrawable_balance', user.get('withdrawable_balance', 0)),
+            'total_admin_fee_paid': balances.get('total_admin_fee_paid', user.get('total_admin_fee_paid', 0))
         }
     else:
         return None
 
 def save_user_data(user_id, data):
-    supabase.table('users').update({
+    # Сохраняем всё в demo_balances, demo_history, demo_stats
+    balances = {
         'main_balance': data['main_balance'],
-        'demo_balances': json.dumps(data['balances']),
+        'exchanges': data['balances'],
+        'total_profit': data['total_profit'],
+        'trade_count': data['trade_count'],
+        'withdrawable_balance': data['withdrawable_balance'],
+        'total_admin_fee_paid': data['total_admin_fee_paid']
+    }
+    supabase.table('users').update({
+        'demo_balances': json.dumps(balances),
         'demo_history': json.dumps(data['history'][-500:]),
         'demo_stats': json.dumps(data['stats']),
         'total_profit': data['total_profit'],
@@ -359,7 +388,7 @@ def execute_trade(opp):
     add_trade(st.session_state.user_id, "Демо", token, amount, real_profit, buy_ex, sell_ex)
     return real_profit, None
 
-# ---------- ФОНОВОЙ ПОТОК ДЛЯ АВТО-ТОРГОВЛИ ----------
+# ---------- ФОНОВЫЙ ПОТОК ДЛЯ АВТО-ТОРГОВЛИ ----------
 def background_arbitrage_loop():
     while True:
         try:
@@ -495,7 +524,6 @@ st.write(f"🔌 **Биржи:** {', '.join(connected)}")
 st.write(f"🪙 **Токены:** {', '.join(get_available_tokens())}")
 st.divider()
 
-# Общая статистика
 total_usdt_in_exchanges = sum(st.session_state.user_data['balances'].get(ex, {}).get('USDT', 0) for ex in EXCHANGES)
 total_main = st.session_state.user_data['main_balance']
 total_usdt = total_main + total_usdt_in_exchanges
@@ -839,8 +867,9 @@ if show_admin:
             if users:
                 df = pd.DataFrame([{
                     "Email":u['email'], "Имя":u['full_name'], "Статус":u['registration_status'],
-                    "Баланс ЦК":f"${u.get('main_balance',0):.2f}", "Прибыль":f"${u.get('total_profit',0):.2f}",
-                    "Сделок":u.get('trade_count',0)
+                    "Баланс ЦК":f"${json.loads(u.get('demo_balances','{}')).get('main_balance',0):.2f}", 
+                    "Прибыль":f"${json.loads(u.get('demo_balances','{}')).get('total_profit',0):.2f}",
+                    "Сделок":json.loads(u.get('demo_balances','{}')).get('trade_count',0)
                 } for u in users])
                 st.dataframe(df, use_container_width=True, hide_index=True)
                 emails = {u['email']:u['id'] for u in users}
