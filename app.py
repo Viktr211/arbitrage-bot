@@ -29,7 +29,7 @@ def is_admin(email):
 # ---------- НАСТРОЙКИ ПО УМОЛЧАНИЮ ----------
 DEFAULT_FEE_PERCENT = 0.1
 DEFAULT_MIN_PROFIT_USDT = 0.01
-DEFAULT_MIN_TRADE_USDT = 12.0    # изменено на 12
+DEFAULT_MIN_TRADE_USDT = 12.0
 DEFAULT_SCAN_INTERVAL = 10
 
 # ---------- ФУНКЦИИ SUPABASE ----------
@@ -191,7 +191,7 @@ def buy_token_with_usdt(exchange_name, token, usdt_amount):
     update_balance(exchange_name, token, amount)
     return True, f"Куплено {amount:.8f} {token} за {usdt_amount} USDT по цене {price:.2f}"
 
-# ---------- АРБИТРАЖ (ДВУСТОРОННИЙ) ----------
+# ---------- АРБИТРАЖ (ИСПРАВЛЕННЫЙ) ----------
 def find_best_opportunity(fee_percent, min_profit_usdt, min_trade_usdt):
     opportunities = []
     if not st.session_state.exchanges:
@@ -219,7 +219,9 @@ def find_best_opportunity(fee_percent, min_profit_usdt, min_trade_usdt):
                 # Проверяем, хватает ли средств для покупки (USDT) и продажи (токены)
                 usdt_buy = get_balance(buy_ex, 'USDT')
                 token_sell = get_balance(sell_ex, token)
-                if usdt_buy < min_trade_usdt or token_sell < 0.0001:
+                # Минимальное количество токенов, которое нужно для сделки на сумму min_trade_usdt
+                min_amount_for_trade = min_trade_usdt / buy_price
+                if usdt_buy < min_trade_usdt or token_sell < min_amount_for_trade:
                     continue
                 # Максимальная сумма сделки: мин(доступные USDT, стоимость доступных токенов)
                 max_trade_usdt = min(usdt_buy, token_sell * sell_price)
@@ -242,31 +244,26 @@ def find_best_opportunity(fee_percent, min_profit_usdt, min_trade_usdt):
                     'amount': amount,
                     'profit': profit_after
                 })
-    # Также рассмотрим обратное направление: покупка на sell_ex, продажа на buy_ex
-    # (это вторая половина двустороннего арбитража)
+    # Второй проход – обратное направление (покупаем на sell_ex, продаём на buy_ex)
     for i, buy_ex in enumerate(exchange_names):
         for j, sell_ex in enumerate(exchange_names):
             if buy_ex == sell_ex:
                 continue
-            for token in tokens:
-                if token not in prices[buy_ex] or token not in prices[sell_ex]:
+            actual_buy_ex = sell_ex
+            actual_sell_ex = buy_ex
+            token = None
+            for t in tokens:
+                if t not in prices[actual_buy_ex] or t not in prices[actual_sell_ex]:
                     continue
-                buy_price = prices[buy_ex][token]
-                sell_price = prices[sell_ex][token]
-                if buy_price <= sell_price:
-                    continue  # уже рассмотрено в первом цикле – это то же направление, что и выше? Нет, здесь условие обратное: покупаем на sell_ex, продаём на buy_ex.
-                # В этом цикле мы рассматриваем пару (sell_ex, buy_ex) как (покупаем на sell_ex, продаём на buy_ex)
-                # Но проще: переставить местами buy_ex и sell_ex, чтобы условие sell_price > buy_price выполнялось.
-                # Поэтому просто меняем роли:
-                actual_buy_ex = sell_ex
-                actual_sell_ex = buy_ex
-                actual_buy_price = prices[actual_buy_ex][token]
-                actual_sell_price = prices[actual_sell_ex][token]
+                actual_buy_price = prices[actual_buy_ex][t]
+                actual_sell_price = prices[actual_sell_ex][t]
                 if actual_sell_price <= actual_buy_price:
                     continue
+                # Проверяем балансы
                 usdt_buy = get_balance(actual_buy_ex, 'USDT')
-                token_sell = get_balance(actual_sell_ex, token)
-                if usdt_buy < min_trade_usdt or token_sell < 0.0001:
+                token_sell = get_balance(actual_sell_ex, t)
+                min_amount_for_trade = min_trade_usdt / actual_buy_price
+                if usdt_buy < min_trade_usdt or token_sell < min_amount_for_trade:
                     continue
                 max_trade_usdt = min(usdt_buy, token_sell * actual_sell_price)
                 if max_trade_usdt < min_trade_usdt:
@@ -278,7 +275,7 @@ def find_best_opportunity(fee_percent, min_profit_usdt, min_trade_usdt):
                 if profit_after < min_profit_usdt:
                     continue
                 opportunities.append({
-                    'token': token,
+                    'token': t,
                     'buy_ex': actual_buy_ex,
                     'sell_ex': actual_sell_ex,
                     'buy_price': actual_buy_price,
@@ -287,6 +284,7 @@ def find_best_opportunity(fee_percent, min_profit_usdt, min_trade_usdt):
                     'amount': amount,
                     'profit': profit_after
                 })
+                break  # берём первый подходящий токен для этой пары (можно убрать break, но тогда будет много дублей)
     if not opportunities:
         return None
     return max(opportunities, key=lambda x: x['profit'])
@@ -514,8 +512,6 @@ with tabs[2]:
             profit, error = execute_trade(best)
             if profit:
                 st.success(f"✅ Авто-сделка исполнена! +{profit:.2f} USDT")
-                # Не останавливаем, продолжаем искать дальше (можно удалить следующую строку)
-                # st.session_state.auto_trade_enabled = False
                 st.rerun()
             else:
                 st.error(f"❌ Ошибка: {error}")
