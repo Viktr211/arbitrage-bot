@@ -221,8 +221,9 @@ def demo_sell(user_id, exchange, token, amount_token, data, clients):
     price = get_price(clients[exchange], token)
     if not price:
         return False, "Цена не получена"
-    if data['balances'][exchange]['portfolio'].get(token,0) < amount_token:
-        return False, f"Не хватает {token} (есть {data['balances'][exchange]['portfolio'].get(token,0):.8f})"
+    available = data['balances'][exchange]['portfolio'].get(token, 0)
+    if available < amount_token:
+        return False, f"Не хватает {token} (есть {available:.8f}, нужно {amount_token:.8f})"
     usdt_received = amount_token * price
     update_demo_balance(user_id, exchange, token, -amount_token, data)
     update_demo_balance(user_id, exchange, 'USDT', usdt_received, data)
@@ -295,6 +296,10 @@ def find_opportunity(mode, fee, min_profit, min_trade, max_trade, demo_data, rea
                 trade_usdt = min(max_possible, max_trade)
                 if trade_usdt < min_trade: continue
                 amount = trade_usdt / buy_p
+                # Добавляем запас 2% для токенов на продаже
+                required_token = amount * 1.02
+                if required_token > token_amt:
+                    continue
                 profit_before = (sell_p - buy_p) * amount
                 profit = profit_before * (1 - fee/100)
                 if profit < min_profit: continue
@@ -312,6 +317,10 @@ def execute_arbitrage(mode, opp, user_id, demo_data, real_exchanges, public_clie
     if mode == "Реальный":
         ok_buy, msg_buy = real_buy(real_exchanges[buy_ex], token, trade_usdt)
         if not ok_buy: return None, msg_buy
+        # Перед продажей повторно проверяем баланс
+        token_available = get_real_balance(real_exchanges[sell_ex], token)
+        if token_available < amount:
+            return None, f"После покупки не хватает {token} на {sell_ex}: нужно {amount:.8f}, доступно {token_available:.8f}"
         ok_sell, msg_sell = real_sell(real_exchanges[sell_ex], token, amount)
         if not ok_sell: return None, msg_sell
         real_profit = amount * sell_price - trade_usdt
@@ -326,6 +335,10 @@ def execute_arbitrage(mode, opp, user_id, demo_data, real_exchanges, public_clie
     else:
         ok_buy, msg_buy = demo_buy(user_id, buy_ex, token, trade_usdt, demo_data, public_clients)
         if not ok_buy: return None, msg_buy
+        # Повторная проверка баланса перед продажей
+        token_available = demo_data['balances'].get(sell_ex, {}).get('portfolio', {}).get(token, 0)
+        if token_available < amount:
+            return None, f"После покупки не хватает {token} на {sell_ex}: нужно {amount:.8f}, доступно {token_available:.8f}"
         ok_sell, msg_sell = demo_sell(user_id, sell_ex, token, amount, demo_data, public_clients)
         if not ok_sell: return None, msg_sell
         real_profit = amount * sell_price - trade_usdt
@@ -351,7 +364,7 @@ if 'logged_in' not in st.session_state:
     st.session_state.trade_mode = "Демо"
     st.session_state.auto_log = []
     st.session_state.fee = 0.1
-    st.session_state.min_profit = 0.01
+    st.session_state.min_profit = 0.1   # увеличена минимальная прибыль
     st.session_state.min_trade = 12.0
     st.session_state.max_trade = 15.0
     st.session_state.auto_trade_enabled = False
@@ -383,7 +396,7 @@ if st.session_state.get('auto_trade_enabled', False) and st.session_state.get('l
             else:
                 st.session_state.auto_log.append(f"❌ Ошибка: {err}")
         else:
-            pass  # не спамим лог
+            pass
 
 # ------------------- ЛОГИН -------------------
 if not st.session_state.logged_in:
@@ -494,7 +507,6 @@ else:
                 if price: total_portfolio += amt * price
     total_capital = total_usdt + total_portfolio
 
-# Карточки балансов
 col_a, col_b, col_c, col_d = st.columns(4)
 col_a.metric("💰 USDT на биржах", f"{total_usdt:.2f}")
 col_b.metric("📦 Портфель (токены)", f"{total_portfolio:.2f}")
@@ -596,11 +608,10 @@ with tabs[3]:
         fig = px.line(df_trades, x='trade_time', y='cumulative_profit', title="Накопленная прибыль (все сделки)")
         st.plotly_chart(fig, use_container_width=True)
 
-# ---------- БАЛАНСЫ (с пополнением и сбросом) ----------
+# ---------- БАЛАНСЫ ----------
 with tabs[4]:
     st.subheader("💼 Балансы и ручная торговля")
     
-    # Для демо-режима показываем пополнение и сброс
     if st.session_state.trade_mode == "Демо":
         st.markdown("### 💰 Пополнение демо-балансов")
         col1, col2, col3 = st.columns(3)
@@ -624,7 +635,6 @@ with tabs[4]:
         st.warning("Это действие удалит все ваши демо-балансы, историю и статистику. Необратимо!")
         st.markdown("---")
     
-    # Отображение балансов и ручные операции
     if st.session_state.trade_mode == "Реальный":
         if real_exchanges and any(real_exchanges.values()):
             balances = {}
@@ -651,7 +661,6 @@ with tabs[4]:
                     val = amt * price if price else 0
                     st.write(f"{token}: {amt:.8f} ≈ {val:.2f} USDT")
             st.markdown("---")
-            # Ручная покупка
             colA, colB = st.columns(2)
             with colA:
                 token_buy = st.selectbox("Купить", get_available_tokens(), key=f"buy_{ex}")
@@ -663,7 +672,6 @@ with tabs[4]:
                         ok, msg = demo_buy(st.session_state.user_id, ex, token_buy, usdt_amt, st.session_state.demo_data, public_clients)
                     if ok:
                         if st.session_state.trade_mode == "Демо":
-                            # Увеличиваем счётчик для демо
                             st.session_state.demo_data['trade_count'] += 1
                             entry = f"🟢 {datetime.now()} | Ручная покупка {token_buy} на {ex.upper()} на {usdt_amt} USDT"
                             st.session_state.demo_data['history'].append(entry)
