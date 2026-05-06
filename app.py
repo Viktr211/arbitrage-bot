@@ -205,8 +205,9 @@ def init_real_exchanges():
 
 def get_price(exchange, symbol):
     try:
-        return exchange.fetch_ticker(f"{symbol}/USDT")['last']
-    except:
+        ticker = exchange.fetch_ticker(f"{symbol}/USDT")
+        return ticker['last']
+    except Exception:
         return None
 
 # ------------------- ДЕМО-ФУНКЦИИ -------------------
@@ -262,6 +263,8 @@ def real_buy(exchange, token, usdt_amount):
     if not exchange: return False, "Биржа не подключена"
     try:
         price = get_price(exchange, token)
+        if not price:
+            return False, "Не удалось получить цену"
         amount = usdt_amount / price
         exchange.create_market_buy_order(f"{token}/USDT", amount)
         return True, f"Куплено {amount:.8f} {token} за {usdt_amount} USDT"
@@ -273,68 +276,14 @@ def real_sell(exchange, token, amount_token):
     try:
         exchange.create_market_sell_order(f"{token}/USDT", amount_token)
         price = get_price(exchange, token)
+        if not price:
+            return False, "Не удалось получить цену после продажи"
         usdt_received = amount_token * price
         return True, f"Продано {amount_token:.8f} {token} за {usdt_received:.2f} USDT"
     except Exception as e:
         return False, str(e)
 
-# ------------------- НОВЫЕ ФУНКЦИИ ДЛЯ ПРИОРИТЕТНОГО РЕБАЛАНСА -------------------
-def get_rebalance_priority_pairs(data, imbalance_threshold=0.3):
-    """
-    Анализирует текущие балансы и возвращает список приоритетных арбитражных пар
-    для восстановления баланса токенов.
-    
-    imbalance_threshold: порог дисбаланса (напр., 0.3 означает, что отклонение от среднего >30%)
-    
-    Возвращает: список приоритетных пар, где:
-        buy_ex = биржа с избытком токена (дешёвая)
-        sell_ex = биржа с дефицитом токена (дорогая)
-        priority = степень дисбаланса (чем выше, тем важнее)
-    """
-    tokens = get_available_tokens()
-    priority_pairs = []
-    
-    # Собираем балансы токенов по всем биржам
-    token_balances = {token: {} for token in tokens}
-    for ex in EXCHANGES:
-        for token in tokens:
-            bal = data['balances'].get(ex, {}).get('portfolio', {}).get(token, 0)
-            token_balances[token][ex] = bal
-    
-    # Для каждого токена считаем средний баланс и отклонения
-    for token in tokens:
-        balances = [token_balances[token][ex] for ex in EXCHANGES]
-        avg_balance = sum(balances) / len(EXCHANGES) if balances else 0
-        if avg_balance == 0:
-            continue
-        
-        surplus_exchanges = []  # где токена больше среднего (можно продавать)
-        deficit_exchanges = []   # где токена меньше среднего (нужно покупать)
-        
-        for ex in EXCHANGES:
-            bal = token_balances[token][ex]
-            deviation = (bal - avg_balance) / avg_balance
-            if deviation > imbalance_threshold:
-                surplus_exchanges.append((ex, deviation))
-            elif deviation < -imbalance_threshold:
-                deficit_exchanges.append((ex, -deviation))
-        
-        # Создаём приоритетные пары: продать на бирже с избытком → купить на бирже с дефицитом
-        for buy_ex, surplus_dev in surplus_exchanges:
-            for sell_ex, deficit_dev in deficit_exchanges:
-                if buy_ex != sell_ex:
-                    priority = surplus_dev + deficit_dev
-                    priority_pairs.append({
-                        'token': token,
-                        'buy_ex': buy_ex,
-                        'sell_ex': sell_ex,
-                        'priority': priority,
-                        'reason': f"дефицит на {sell_ex} ({deficit_dev:.1%}), избыток на {buy_ex} ({surplus_dev:.1%})"
-                    })
-    
-    priority_pairs.sort(key=lambda x: x['priority'], reverse=True)
-    return priority_pairs
-
+# ------------------- ФУНКЦИИ СТАКАНА И ЛИКВИДНОСТИ -------------------
 def get_order_book_price(exchange, symbol, side, amount_usdt):
     try:
         orderbook = exchange.fetch_order_book(f"{symbol}/USDT", limit=20)
@@ -380,30 +329,72 @@ def get_order_book_price(exchange, symbol, side, amount_usdt):
         return None, 0, f"Ошибка получения стакана: {str(e)}"
 
 def get_market_price(exchange, symbol, side, amount_usdt):
-    price, available, err = get_order_book_price(exchange, symbol, side, amount_usdt)
-    if price is not None:
-        return price, available, f"(стакан)"
-    else:
+    # Пробуем через стакан
+    try:
+        price, available, err = get_order_book_price(exchange, symbol, side, amount_usdt)
+        if price is not None:
+            return price, available, f"(стакан)"
+    except Exception:
+        pass
+    # Если стакан не удался, используем тикер
+    try:
         ticker = exchange.fetch_ticker(f"{symbol}/USDT")
         if side == 'buy':
             price = ticker['ask'] if 'ask' in ticker and ticker['ask'] else ticker['last'] * 1.001
         else:
             price = ticker['bid'] if 'bid' in ticker and ticker['bid'] else ticker['last'] * 0.999
-        return price, amount_usdt, f"(тикер, предупреждение: {err})"
+        return price, amount_usdt, "(тикер)"
+    except Exception as e:
+        return None, 0, f"Ошибка получения цены: {str(e)}"
 
-# ------------------- АРБИТРАЖ (с приоритетным ребалансом) -------------------
+# ------------------- ПРИОРИТЕТНЫЙ РЕБАЛАНС -------------------
+def get_rebalance_priority_pairs(data, imbalance_threshold=0.3):
+    tokens = get_available_tokens()
+    priority_pairs = []
+    token_balances = {token: {} for token in tokens}
+    for ex in EXCHANGES:
+        for token in tokens:
+            bal = data['balances'].get(ex, {}).get('portfolio', {}).get(token, 0)
+            token_balances[token][ex] = bal
+    for token in tokens:
+        balances = [token_balances[token][ex] for ex in EXCHANGES]
+        avg_balance = sum(balances) / len(EXCHANGES) if balances else 0
+        if avg_balance == 0:
+            continue
+        surplus_exchanges = []
+        deficit_exchanges = []
+        for ex in EXCHANGES:
+            bal = token_balances[token][ex]
+            if avg_balance == 0:
+                continue
+            deviation = (bal - avg_balance) / avg_balance
+            if deviation > imbalance_threshold:
+                surplus_exchanges.append((ex, deviation))
+            elif deviation < -imbalance_threshold:
+                deficit_exchanges.append((ex, -deviation))
+        for buy_ex, surplus_dev in surplus_exchanges:
+            for sell_ex, deficit_dev in deficit_exchanges:
+                if buy_ex != sell_ex:
+                    priority = surplus_dev + deficit_dev
+                    priority_pairs.append({
+                        'token': token,
+                        'buy_ex': buy_ex,
+                        'sell_ex': sell_ex,
+                        'priority': priority,
+                        'reason': f"дефицит на {sell_ex} ({deficit_dev:.1%}), избыток на {buy_ex} ({surplus_dev:.1%})"
+                    })
+    priority_pairs.sort(key=lambda x: x['priority'], reverse=True)
+    return priority_pairs
+
+# ------------------- АРБИТРАЖ -------------------
 def find_opportunity(mode, fee, min_profit, min_trade, max_trade, max_slippage_percent, use_orderbook,
                      demo_data, real_exchanges, public_clients, priority_pairs=None):
     opportunities = []
     tokens = get_available_tokens()
-    
-    # Сортируем пары для проверки: сначала приоритетные (если есть), потом все остальные
     pairs_to_check = []
     if priority_pairs:
         for p in priority_pairs:
             pairs_to_check.append((p['buy_ex'], p['sell_ex'], p['token'], p['priority']))
-    
-    # Добавляем все остальные комбинации (если приоритетных нет, то все)
     if not priority_pairs or len(pairs_to_check) < len(EXCHANGES) * len(EXCHANGES) * len(tokens):
         for buy_ex in EXCHANGES:
             for sell_ex in EXCHANGES:
@@ -411,7 +402,6 @@ def find_opportunity(mode, fee, min_profit, min_trade, max_trade, max_slippage_p
                 for token in tokens:
                     if (buy_ex, sell_ex, token) not in [(p[0], p[1], p[2]) for p in pairs_to_check]:
                         pairs_to_check.append((buy_ex, sell_ex, token, 0))
-    
     for buy_ex, sell_ex, token, priority in pairs_to_check:
         if mode == "Реальный":
             ex_buy = real_exchanges.get(buy_ex)
@@ -421,7 +411,6 @@ def find_opportunity(mode, fee, min_profit, min_trade, max_trade, max_slippage_p
             ex_buy = public_clients.get(buy_ex)
             ex_sell = public_clients.get(sell_ex)
             if not ex_buy or not ex_sell: continue
-
         if use_orderbook:
             ask_price, ask_available, ask_warn = get_market_price(ex_buy, token, 'buy', max_trade)
             if ask_price is None: continue
@@ -441,7 +430,8 @@ def find_opportunity(mode, fee, min_profit, min_trade, max_trade, max_slippage_p
                 slippage_sell = abs(bid_price - last_sell) / last_sell * 100
                 if slippage_buy > max_slippage_percent or slippage_sell > max_slippage_percent:
                     continue
-            except: pass
+            except:
+                pass
             profit_before = (bid_price - ask_price) * amount
             fee_amount = profit_before * (fee / 100)
             profit_after = profit_before - fee_amount
@@ -481,7 +471,6 @@ def find_opportunity(mode, fee, min_profit, min_trade, max_trade, max_slippage_p
                 'trade_usdt':trade_usdt, 'amount':amount, 'profit':profit,
                 'slippage':0, 'priority': priority
             })
-    
     if not opportunities: return None
     opportunities.sort(key=lambda x: (-x['priority'], -x['profit']))
     return opportunities[0]
@@ -496,8 +485,8 @@ def execute_arbitrage(mode, opp, user_id, demo_data, real_exchanges, public_clie
         if not ex_buy or not ex_sell:
             return None, "Биржа не подключена"
         try:
-            order_buy = ex_buy.create_market_buy_order(f"{token}/USDT", amount)
-            order_sell = ex_sell.create_market_sell_order(f"{token}/USDT", amount)
+            ex_buy.create_market_buy_order(f"{token}/USDT", amount)
+            ex_sell.create_market_sell_order(f"{token}/USDT", amount)
             real_profit = amount * sell_price - trade_usdt
             if 'real_profit' not in st.session_state: st.session_state.real_profit = 0
             if 'real_trades' not in st.session_state: st.session_state.real_trades = 0
@@ -600,7 +589,7 @@ if st.session_state.get('auto_trade_enabled', False) and st.session_state.get('l
             if not priority_pairs:
                 st.session_state.auto_log.append("❌ Возможностей не найдено")
 
-# ------------------- ЛОГИН -------------------
+# ------------------- ЛОГИН / РЕГИСТРАЦИЯ -------------------
 if not st.session_state.logged_in:
     st.markdown('<div class="main-header"><h1>Арбитражный бот <span class="hovmel-highlight">HOVMEL</span></h1></div><div class="subtitle">⚡ Автоматический поиск межбиржевого арбитража 24/7 ⚡</div>', unsafe_allow_html=True)
     tab1, tab2 = st.tabs(["Вход", "Регистрация"])
@@ -758,8 +747,8 @@ with st.expander("⚙️ Настройки арбитража", expanded=True):
         st.session_state.reinvest_percent = new_reinvest
         st.rerun()
     st.markdown("---")
-    st.markdown("**⚖️ Автоматический ребаланс портфеля**")
-    rebalance_on = st.checkbox("Включить авто-ребаланс", value=False)
+    st.markdown("**⚖️ Автоматический ребаланс портфеля (через рыночные ордера)**")
+    rebalance_on = st.checkbox("Включить авто-ребаланс (устаревший)", value=False)
     if rebalance_on != st.session_state.get('rebalance_enabled', False):
         st.session_state.rebalance_enabled = rebalance_on
         st.rerun()
@@ -768,7 +757,7 @@ with st.expander("⚙️ Настройки арбитража", expanded=True):
         if target_ratio != st.session_state.rebalance_target_ratio:
             st.session_state.rebalance_target_ratio = target_ratio
             st.rerun()
-        st.info(f"Ребаланс будет поддерживать USDT ≈ {st.session_state.rebalance_target_ratio}% от капитала каждой биржи.")
+        st.info(f"Ребаланс будет поддерживать USDT ≈ {st.session_state.rebalance_target_ratio}% от капитала каждой биржи. Лучше использовать приоритетный ребаланс выше.")
     st.markdown("---")
     interval = st.number_input("Интервал сканирования (сек)", 5, 180, st.session_state.scan_interval, 5)
     if interval != st.session_state.scan_interval:
