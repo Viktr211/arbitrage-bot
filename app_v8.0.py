@@ -9,6 +9,7 @@ from supabase import create_client, Client
 import hashlib
 import base64
 from streamlit_autorefresh import st_autorefresh
+import os
 
 st.set_page_config(page_title="Арбитражный бот HOVMEL", layout="wide", page_icon="🔄", initial_sidebar_state="collapsed")
 
@@ -38,18 +39,30 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ------------------- SUPABASE -------------------
-SUPABASE_URL = st.secrets["SUPABASE_URL"]
-SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+# ------------------- SUPABASE (с проверкой секретов) -------------------
+try:
+    SUPABASE_URL = st.secrets["SUPABASE_URL"]
+    SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+except Exception:
+    # Если secrets не заданы, пробуем взять из переменных окружения (для локального теста)
+    SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+    SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        st.error("❌ Ошибка: не заданы SUPABASE_URL и SUPABASE_KEY.\n\n"
+                 "Для локального запуска создайте файл `.streamlit/secrets.toml`:\n"
+                 "```\nSUPABASE_URL = 'https://your-project.supabase.co'\nSUPABASE_KEY = 'your-anon-key'\n```\n"
+                 "Или установите переменные окружения SUPABASE_URL и SUPABASE_KEY.")
+        st.stop()
+
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 EXCHANGES = ["kucoin", "okx", "hitbtc"]
-TOKENS = ["BTC", "ETH", "SOL", "XRP", "HYPE"]
+TOKENS = ["BTC", "ETH", "SOL", "XRP", "HYPE"]   # можно менять через админ-панель
 ADMIN_EMAILS = ["cb777899@gmail.com", "admin@arbitrage.com"]
 
 def is_admin(email): return email in ADMIN_EMAILS
 
-# ------------------- ФУНКЦИИ БД -------------------
+# ------------------- ФУНКЦИИ БД (без изменений) -------------------
 def get_user_by_email(email):
     res = supabase.table('users').select('*').eq('email', email).execute()
     return res.data[0] if res.data else None
@@ -264,7 +277,7 @@ def real_sell(exchange, token, amount_token):
     except Exception as e:
         return False, str(e)
 
-# ------------------- АРБИТРАЖ (использует настройки min_trade_usdt, max_trade_usdt из состояния) -------------------
+# ------------------- АРБИТРАЖ (использует настройки min/max из session_state) -------------------
 def find_opportunity(mode, fee, min_profit, min_trade, max_trade, demo_data, real_exchanges, public_clients):
     opportunities = []
     tokens = get_available_tokens()
@@ -297,8 +310,7 @@ def find_opportunity(mode, fee, min_profit, min_trade, max_trade, demo_data, rea
                 trade_usdt = min(max_possible, max_trade)
                 if trade_usdt < min_trade: continue
                 amount = trade_usdt / buy_p
-                # Запас 2% для безопасности исполнения
-                required_token = amount * 1.02
+                required_token = amount * 1.02   # небольшой запас
                 if required_token > token_amt:
                     continue
                 profit_before = (sell_p - buy_p) * amount
@@ -364,9 +376,9 @@ if 'logged_in' not in st.session_state:
     st.session_state.auto_log = []
     st.session_state.fee = 0.1
     st.session_state.min_profit = 0.1
-    # 🔽 Гибкие настройки суммы сделки – пользователь задаёт любые min и max
-    st.session_state.min_trade_usdt = 10.0
-    st.session_state.max_trade_usdt = 1000.0
+    # 🔽 НОВЫЕ НАСТРОЙКИ СУММ (без жёстких пределов)
+    st.session_state.min_trade = 12.0      # минимальная сумма для авто-торговли (можно менять)
+    st.session_state.max_trade = 1000.0    # максимальная сумма для авто-торговли (можно менять)
     st.session_state.auto_trade_enabled = False
     st.session_state.scan_interval = 15
     st.session_state.last_scan_time = None
@@ -385,17 +397,16 @@ if st.session_state.get('auto_trade_enabled', False) and st.session_state.get('l
     if last is None or (now - last).total_seconds() >= interval:
         st.session_state.last_scan_time = now
         opp = find_opportunity(st.session_state.trade_mode, st.session_state.fee, st.session_state.min_profit,
-                               st.session_state.min_trade_usdt, st.session_state.max_trade_usdt,
+                               st.session_state.min_trade, st.session_state.max_trade,
                                st.session_state.demo_data, real_exchanges, public_clients)
         if opp:
-            st.session_state.auto_log.append(f"🔍 Найдено: {opp['token']} {opp['buy_ex']}→{opp['sell_ex']} | прибыль {opp['profit']:.4f} USDT, сумма {opp['trade_usdt']:.2f} USDT")
+            st.session_state.auto_log.append(f"🔍 Найдено: {opp['token']} {opp['buy_ex']}→{opp['sell_ex']} | прибыль {opp['profit']:.4f} USDT")
             profit, err = execute_arbitrage(st.session_state.trade_mode, opp, st.session_state.user_id,
                                             st.session_state.demo_data, real_exchanges, public_clients)
             if profit:
-                st.session_state.auto_log.append(f"✅ Авто-сделка исполнена! +{profit:.2f} USDT")
+                st.session_state.auto_log.append(f"✅ Сделка исполнена! +{profit:.2f} USDT")
             else:
                 st.session_state.auto_log.append(f"❌ Ошибка: {err}")
-        # else: ничего не пишем, чтобы не засорять лог
 
 # ------------------- ЛОГИН -------------------
 if not st.session_state.logged_in:
@@ -513,17 +524,21 @@ col_c.metric("💎 Общий капитал", f"{total_capital:.2f}")
 trade_count = st.session_state.real_trades if st.session_state.trade_mode == "Реальный" else st.session_state.demo_data['trade_count']
 col_d.metric("📊 Сделок", trade_count)
 
-# ------------------- НАСТРОЙКИ АРБИТРАЖА (теперь общие для авто и ручного) -------------------
+# ------------------- НАСТРОЙКИ АРБИТРАЖА (теперь вы сами задаёте min и max сумму) -------------------
 with st.expander("⚙️ Настройки арбитража"):
     st.session_state.fee = st.number_input("Комиссия (%)", 0.0, 0.5, st.session_state.fee, 0.01, format="%.2f")
     st.session_state.min_profit = st.number_input("Мин. прибыль (USDT)", 0.001, 10.0, st.session_state.min_profit, 0.01, format="%.3f")
     st.markdown("---")
-    st.markdown("**Лимиты суммы сделки (для авто и ручного режима)**")
-    st.session_state.min_trade_usdt = st.number_input("Минимальная сумма сделки (USDT)", min_value=1.0, max_value=100000.0, value=st.session_state.min_trade_usdt, step=10.0)
-    st.session_state.max_trade_usdt = st.number_input("Максимальная сумма сделки (USDT)", min_value=st.session_state.min_trade_usdt, max_value=100000.0, value=max(st.session_state.max_trade_usdt, st.session_state.min_trade_usdt), step=50.0)
-    st.info(f"💡 Бот будет совершать сделки на сумму от {st.session_state.min_trade_usdt:.0f} до {st.session_state.max_trade_usdt:.0f} USDT (в зависимости от доступных балансов).")
+    st.markdown("**💰 Настройки суммы сделки (для авто-торговли и ручного поиска)**")
+    new_min = st.number_input("Минимальная сумма сделки (USDT)", min_value=1.0, max_value=100000.0, value=st.session_state.min_trade, step=10.0)
+    new_max = st.number_input("Максимальная сумма сделки (USDT)", min_value=1.0, max_value=100000.0, value=st.session_state.max_trade, step=50.0)
+    if new_min != st.session_state.min_trade or new_max != st.session_state.max_trade:
+        st.session_state.min_trade = new_min
+        st.session_state.max_trade = new_max
+        st.rerun()
+    st.info(f"Авто-торговля будет использовать сумму в диапазоне от {st.session_state.min_trade:.0f} до {st.session_state.max_trade:.0f} USDT (с учётом доступных средств).")
     st.markdown("---")
-    interval = st.number_input("Интервал сканирования (сек)", 5, 60, st.session_state.scan_interval, 5)
+    interval = st.number_input("Интервал сканирования (сек)", 5, 180, st.session_state.scan_interval, 5)
     if interval != st.session_state.scan_interval:
         st.session_state.scan_interval = interval
         st.rerun()
@@ -548,7 +563,8 @@ with tabs[0]:
     st.subheader("📊 Dashboard")
     st.write("Добро пожаловать в арбитражного бота **HOVMEL**.")
     st.write(f"Активные токены: {', '.join(get_available_tokens())}")
-    st.write(f"Текущие лимиты сделок: **{st.session_state.min_trade_usdt:.0f} – {st.session_state.max_trade_usdt:.0f} USDT**")
+    st.write(f"Текущие настройки суммы сделки: от **{st.session_state.min_trade:.0f}** до **{st.session_state.max_trade:.0f}** USDT.")
+    st.write("Вы можете изменить эти значения в настройках арбитража.")
 
 # ---------- ГРАФИКИ ----------
 with tabs[1]:
@@ -566,20 +582,22 @@ with tabs[1]:
             fig = px.bar(df, x="Биржа", y="Цена", title=f"{tok}/USDT", color="Биржа")
             st.plotly_chart(fig, use_container_width=True)
 
-# ---------- АРБИТРАЖ (ручной) использует те же лимиты ----------
+# ---------- АРБИТРАЖ (ручной) ----------
 with tabs[2]:
     st.subheader("🔄 Ручной поиск арбитража")
-    # Показываем текущие лимиты из настроек
-    st.write(f"⚠️ Сумма сделки будет автоматически подобрана в пределах **{st.session_state.min_trade_usdt:.0f} – {st.session_state.max_trade_usdt:.0f} USDT** (с учётом доступных балансов).")
-    if st.button("🔍 Найти лучшую возможность"):
+    # Здесь можно дополнительно ввести желаемую сумму, но мы просто используем общие настройки min/max.
+    # Если хотите отдельную сумму – раскомментируйте следующую строку и замените min_trade/max_trade.
+    # manual_amount = st.number_input("💰 Желаемая сумма сделки (USDT)", min_value=1.0, max_value=st.session_state.max_trade, value=st.session_state.min_trade, step=10.0)
+    # Но по просьбе "в настройки вставил минимум и максимум" – будем использовать их.
+    if st.button("🔍 Найти лучшую возможность (с учётом текущих настроек сумм)"):
         opp = find_opportunity(st.session_state.trade_mode, st.session_state.fee, st.session_state.min_profit,
-                               st.session_state.min_trade_usdt, st.session_state.max_trade_usdt,
+                               st.session_state.min_trade, st.session_state.max_trade,
                                st.session_state.demo_data, real_exchanges, public_clients)
         if opp:
             st.success(f"Найдена возможность: {opp['token']}")
             st.write(f"**Покупка:** {opp['buy_ex'].upper()} по {opp['buy_price']:.2f} USDT")
             st.write(f"**Продажа:** {opp['sell_ex'].upper()} по {opp['sell_price']:.2f} USDT")
-            st.write(f"**Сумма сделки:** {opp['trade_usdt']:.2f} USDT (в диапазоне настроек)")
+            st.write(f"**Сумма сделки:** {opp['trade_usdt']:.2f} USDT")
             st.write(f"**Прибыль:** {opp['profit']:.4f} USDT")
             if st.button("✅ Выполнить сделку"):
                 profit, err = execute_arbitrage(st.session_state.trade_mode, opp, st.session_state.user_id,
@@ -611,7 +629,7 @@ with tabs[3]:
         fig = px.line(df_trades, x='trade_time', y='cumulative_profit', title="Накопленная прибыль (все сделки)")
         st.plotly_chart(fig, use_container_width=True)
 
-# ---------- БАЛАНСЫ (ручная покупка/продажа с произвольной суммой, но с учётом лимитов) ----------
+# ---------- БАЛАНСЫ ----------
 with tabs[4]:
     st.subheader("💼 Балансы и ручная торговля")
     
@@ -667,7 +685,7 @@ with tabs[4]:
             colA, colB = st.columns(2)
             with colA:
                 token_buy = st.selectbox("Купить", get_available_tokens(), key=f"buy_{ex}")
-                usdt_amt = st.number_input("USDT (сумма сделки)", min_value=st.session_state.min_trade_usdt, max_value=st.session_state.max_trade_usdt, value=min(100.0, st.session_state.max_trade_usdt), step=10.0, key=f"usdt_{ex}")
+                usdt_amt = st.number_input("Сумма в USDT", min_value=1.0, max_value=st.session_state.max_trade, value=min(15.0, st.session_state.max_trade), step=10.0, key=f"usdt_{ex}")
                 if st.button(f"Купить {token_buy}", key=f"btn_buy_{ex}"):
                     if st.session_state.trade_mode == "Реальный":
                         ok, msg = real_buy(real_exchanges[ex], token_buy, usdt_amt)
