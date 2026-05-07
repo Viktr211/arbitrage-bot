@@ -13,7 +13,7 @@ import os
 
 st.set_page_config(page_title="Арбитражный бот HOVMEL", layout="wide", page_icon="🔄", initial_sidebar_state="collapsed")
 
-# ------------------- CSS -------------------
+# ------------------- CSS с уменьшением метрик -------------------
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap');
@@ -36,6 +36,17 @@ st.markdown("""
 .subtitle { text-align: center; color: #aaa; margin-top: -0.8rem; margin-bottom: 1.5rem; }
 .status-running { color: #00FF88; font-weight: bold; }
 .status-stopped { color: #FF4444; font-weight: bold; }
+
+/* Уменьшаем размер шрифта в метриках */
+div[data-testid="stMetric"] {
+    font-size: 0.9rem;
+}
+div[data-testid="stMetric"] label {
+    font-size: 0.8rem;
+}
+div[data-testid="stMetric"] div {
+    font-size: 1.2rem;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -57,12 +68,13 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ТОЛЬКО ДВЕ БИРЖИ
 EXCHANGES = ["kucoin", "okx"]
-TOKENS = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "SUI", "HYPE"]
+# МЕНЕЕ ЛИКВИДНЫЕ ТОКЕНЫ
+TOKENS = ["FET", "RUNE", "STX", "SEI", "APT", "NEAR", "ARB", "ACE", "CRV", "KSM"]
 ADMIN_EMAILS = ["cb777899@gmail.com", "admin@arbitrage.com"]
 
 def is_admin(email): return email in ADMIN_EMAILS
 
-# ------------------- ФУНКЦИИ БД (полностью идентичны предыдущим) -------------------
+# ------------------- ФУНКЦИИ БД -------------------
 def get_user_by_email(email):
     res = supabase.table('users').select('*').eq('email', email).execute()
     return res.data[0] if res.data else None
@@ -212,7 +224,7 @@ def get_price(exchange, symbol):
         return None
 
 # ------------------- ФУНКЦИИ ДЛЯ УЧЁТА СТАКАНА -------------------
-def get_order_book_price(exchange, symbol, side, amount_usdt, depth=20):
+def get_order_book_price(exchange, symbol, side, amount_usdt, depth=10):
     try:
         orderbook = exchange.fetch_order_book(f"{symbol}/USDT", limit=depth)
         if side == 'buy':
@@ -256,16 +268,16 @@ def get_order_book_price(exchange, symbol, side, amount_usdt, depth=20):
     except Exception as e:
         return None, 0, f"Ошибка получения стакана: {str(e)}"
 
-def get_market_price(exchange, symbol, side, amount_usdt, use_orderbook=True, max_slippage_percent=0.2):
+def get_market_price(exchange, symbol, side, amount_usdt, use_orderbook=True, max_slippage_percent=0.3):
     if use_orderbook:
-        price, available, err = get_order_book_price(exchange, symbol, side, amount_usdt)
+        price, available, err = get_order_book_price(exchange, symbol, side, amount_usdt, depth=10)
         if price is not None:
             try:
                 ticker = exchange.fetch_ticker(f"{symbol}/USDT")
                 last = ticker['last']
                 slippage = abs(price - last) / last * 100
                 if slippage > max_slippage_percent:
-                    return None, 0, f"Слишком высокое проскальзывание: {slippage:.2f}% > {max_slippage_percent}%"
+                    return None, 0, f"Проскальзывание {slippage:.2f}% > {max_slippage_percent}%"
             except:
                 pass
             return price, available, f"(стакан)"
@@ -291,7 +303,7 @@ def update_demo_balance(user_id, exchange, asset, delta, data):
         data['balances'][exchange]['portfolio'][asset] += delta
     save_demo_data(user_id, data)
 
-def demo_buy(user_id, exchange, token, usdt_amount, data, clients, use_orderbook=True, max_slippage=0.2):
+def demo_buy(user_id, exchange, token, usdt_amount, data, clients, use_orderbook=True, max_slippage=0.3):
     price, available, warn = get_market_price(clients[exchange], token, 'buy', usdt_amount, use_orderbook, max_slippage)
     if price is None:
         return False, warn
@@ -304,7 +316,7 @@ def demo_buy(user_id, exchange, token, usdt_amount, data, clients, use_orderbook
     update_demo_balance(user_id, exchange, token, amount_token, data)
     return True, f"Куплено {amount_token:.8f} {token} за {usdt_amount} USDT | {warn}"
 
-def demo_sell(user_id, exchange, token, amount_token, data, clients, use_orderbook=True, max_slippage=0.2):
+def demo_sell(user_id, exchange, token, amount_token, data, clients, use_orderbook=True, max_slippage=0.3):
     price, available, warn = get_market_price(clients[exchange], token, 'sell', amount_token * 100, use_orderbook, max_slippage)
     if price is None:
         return False, warn
@@ -330,7 +342,7 @@ def get_real_balance(exchange, asset):
     except:
         return 0.0
 
-def real_buy(exchange, token, usdt_amount, use_orderbook=True, max_slippage=0.2):
+def real_buy(exchange, token, usdt_amount, use_orderbook=True, max_slippage=0.3):
     if not exchange: return False, "Биржа не подключена"
     price, available, warn = get_market_price(exchange, token, 'buy', usdt_amount, use_orderbook, max_slippage)
     if price is None:
@@ -344,7 +356,7 @@ def real_buy(exchange, token, usdt_amount, use_orderbook=True, max_slippage=0.2)
     except Exception as e:
         return False, str(e)
 
-def real_sell(exchange, token, amount_token, use_orderbook=True, max_slippage=0.2):
+def real_sell(exchange, token, amount_token, use_orderbook=True, max_slippage=0.3):
     if not exchange: return False, "Биржа не подключена"
     price, available, warn = get_market_price(exchange, token, 'sell', amount_token * 100, use_orderbook, max_slippage)
     if price is None:
@@ -356,7 +368,7 @@ def real_sell(exchange, token, amount_token, use_orderbook=True, max_slippage=0.
     except Exception as e:
         return False, str(e)
 
-# ------------------- АРБИТРАЖ (чистый, без ребаланса) -------------------
+# ------------------- АРБИТРАЖ -------------------
 def find_opportunity(mode, fee, min_profit, min_trade, max_trade, use_orderbook, max_slippage,
                      demo_data, real_exchanges, public_clients):
     opportunities = []
@@ -423,7 +435,6 @@ def execute_arbitrage(mode, opp, user_id, demo_data, real_exchanges, public_clie
         ex_sell = real_exchanges.get(sell_ex)
         if not ex_buy or not ex_sell:
             return None, "Биржа не подключена"
-        # Повторная проверка балансов
         usdt_balance = get_real_balance(ex_buy, 'USDT')
         token_balance = get_real_balance(ex_sell, token)
         if usdt_balance < trade_usdt:
@@ -441,9 +452,6 @@ def execute_arbitrage(mode, opp, user_id, demo_data, real_exchanges, public_clie
             if 'real_history' not in st.session_state: st.session_state.real_history = []
             st.session_state.real_history.append(f"✅ {datetime.now()} | {token} | {buy_ex}→{sell_ex} | {amount:.8f} | +{real_profit:.2f} USDT")
             add_trade(user_id, mode, token, amount, real_profit, buy_ex, sell_ex)
-            if reinvest_percent > 0:
-                # Для реального режима пока не делаем автореинвестицию (можно позже)
-                pass
             return real_profit, "OK"
         except Exception as e:
             return None, str(e)
@@ -489,23 +497,23 @@ if 'logged_in' not in st.session_state:
     st.session_state.trade_mode = "Демо"
     st.session_state.auto_log = []
     st.session_state.fee = 0.1
-    st.session_state.min_profit = 0.5
+    st.session_state.min_profit = 0.3
     st.session_state.min_trade = 12.0
-    st.session_state.max_trade = 1000.0
+    st.session_state.max_trade = 80.0
     st.session_state.auto_trade_enabled = False
-    st.session_state.scan_interval = 60
+    st.session_state.scan_interval = 30
     st.session_state.last_scan_time = None
     st.session_state.chat_unread = 0
-    st.session_state.reinvest_percent = 0
+    st.session_state.reinvest_percent = 100
     st.session_state.use_orderbook = True
-    st.session_state.max_slippage = 0.2
+    st.session_state.max_slippage = 0.3
 
 public_clients = init_public_clients()
 real_exchanges = init_real_exchanges()
 
 # ------------------- АВТО-СКАНИРОВАНИЕ -------------------
 if st.session_state.get('auto_trade_enabled', False) and st.session_state.get('logged_in', False) and st.session_state.demo_data is not None:
-    interval = st.session_state.get('scan_interval', 60)
+    interval = st.session_state.get('scan_interval', 30)
     st_autorefresh(interval=interval * 1000, key="auto_refresh")
     now = datetime.now()
     last = st.session_state.get('last_scan_time')
@@ -528,6 +536,9 @@ if st.session_state.get('auto_trade_enabled', False) and st.session_state.get('l
                 st.session_state.auto_log.append(f"✅ Исполнено! +{profit:.2f} USDT")
             else:
                 st.session_state.auto_log.append(f"❌ Ошибка: {msg}")
+        else:
+            if len(st.session_state.auto_log) == 0 or st.session_state.auto_log[-1] != "❌ Возможностей не найдено":
+                st.session_state.auto_log.append("❌ Возможностей не найдено")
 
 # ------------------- ЛОГИН / РЕГИСТРАЦИЯ -------------------
 if not st.session_state.logged_in:
@@ -599,6 +610,7 @@ with col4:
 connected = [ex.upper() for ex, cl in public_clients.items() if cl is not None]
 st.success(f"🔌 Биржи для мониторинга: {', '.join(connected)}")
 
+# Кнопки СТАРТ и СТОП
 col_start, col_stop, col_mode, _ = st.columns([1,1,2,1])
 with col_start:
     if st.button("▶ СТАРТ АВТО-ТОРГОВЛИ", use_container_width=True):
@@ -653,18 +665,19 @@ col_d.metric("📊 Сделок", trade_count)
 # ------------------- НАСТРОЙКИ -------------------
 with st.expander("⚙️ Настройки арбитража", expanded=True):
     st.session_state.fee = st.number_input("Комиссия (%)", 0.0, 0.5, st.session_state.fee, 0.01, format="%.2f")
-    new_min_profit = st.number_input("Мин. прибыль (USDT)", 0.01, 10.0, st.session_state.min_profit, 0.1, format="%.2f")
+    new_min_profit = st.number_input("Мин. прибыль (USDT)", 0.01, 10.0, st.session_state.min_profit, 0.05, format="%.2f")
     if new_min_profit != st.session_state.min_profit:
         st.session_state.min_profit = new_min_profit
         st.rerun()
     st.markdown("---")
     st.markdown("**💰 Настройки суммы сделки**")
     new_min = st.number_input("Минимальная сумма сделки (USDT)", 1.0, 100000.0, st.session_state.min_trade, 10.0)
-    new_max = st.number_input("Максимальная сумма сделки (USDT)", 1.0, 100000.0, st.session_state.max_trade, 50.0)
+    new_max = st.number_input("Максимальная сумма сделки (USDT)", 1.0, 100000.0, st.session_state.max_trade, 10.0)
     if new_min != st.session_state.min_trade or new_max != st.session_state.max_trade:
         st.session_state.min_trade = new_min
         st.session_state.max_trade = new_max
         st.rerun()
+    st.info(f"Рекомендуемая сумма для менее ликвидных токенов: 50–100 USDT. Текущая: {st.session_state.max_trade:.0f} USDT.")
     st.markdown("---")
     st.markdown("**📊 Учёт ликвидности и проскальзывания**")
     use_ob = st.checkbox("Учитывать стакан ордеров (order book)", value=st.session_state.use_orderbook)
@@ -672,11 +685,11 @@ with st.expander("⚙️ Настройки арбитража", expanded=True):
         st.session_state.use_orderbook = use_ob
         st.rerun()
     if st.session_state.use_orderbook:
-        max_slip = st.number_input("Максимальное проскальзывание (%)", 0.01, 1.0, st.session_state.max_slippage, 0.05, format="%.2f")
+        max_slip = st.number_input("Максимальное проскальзывание (%)", 0.05, 1.0, st.session_state.max_slippage, 0.05, format="%.2f")
         if max_slip != st.session_state.max_slippage:
             st.session_state.max_slippage = max_slip
             st.rerun()
-        st.info("При включении этого режима бот будет проверять глубину стакана и отказываться от сделок, если проскальзывание превышает заданный процент.")
+        st.info("При включении этого режима бот проверяет глубину стакана и отказывается от сделок, если проскальзывание превышает заданный процент.")
     else:
         st.info("Бот будет использовать только последнюю цену (last) – риск проскальзывания при больших суммах.")
     st.markdown("---")
@@ -706,7 +719,7 @@ if show_admin:
     tabs_list.append("👑 Админ-панель")
 tabs = st.tabs(tabs_list)
 
-# ----- DASHBOARD -----
+# ----- DASHBOARD (с таблицей токенов и цен) -----
 with tabs[0]:
     st.subheader("📊 Dashboard")
     st.write("Добро пожаловать в арбитражного бота **HOVMEL** (версия для двух бирж).")
@@ -718,6 +731,34 @@ with tabs[0]:
     else:
         st.write("**Учёт стакана:** выключен (используются last цены).")
     st.write(f"**Минимальная прибыль:** {st.session_state.min_profit:.2f} USDT.")
+    
+    st.markdown("---")
+    st.markdown("### 💹 Текущие цены токенов")
+    
+    # Собираем цены для каждого токена на двух биржах
+    token_prices = []
+    for token in get_available_tokens():
+        row = {"Токен": token}
+        for ex in EXCHANGES:
+            if public_clients[ex]:
+                price = get_price(public_clients[ex], token)
+                row[ex.upper()] = f"{price:.4f}" if price else "—"
+            else:
+                row[ex.upper()] = "—"
+        # Добавляем разницу (спред) между биржами, если обе цены есть
+        if row.get("KUCOIN", "—") != "—" and row.get("OKX", "—") != "—":
+            try:
+                diff = abs(float(row["KUCOIN"]) - float(row["OKX"])) / float(row["KUCOIN"]) * 100
+                row["Спред %"] = f"{diff:.2f}%"
+            except:
+                row["Спред %"] = "—"
+        else:
+            row["Спред %"] = "—"
+        token_prices.append(row)
+    
+    df_prices = pd.DataFrame(token_prices)
+    st.dataframe(df_prices, use_container_width=True, hide_index=True)
+    st.caption("Цены могут задерживаться на несколько секунд. Спред >0.3% может давать арбитражную возможность после вычета комиссии.")
 
 # ----- ГРАФИКИ -----
 with tabs[1]:
@@ -734,6 +775,8 @@ with tabs[1]:
             df = pd.DataFrame(data)
             fig = px.bar(df, x="Биржа", y="Цена", title=f"{tok}/USDT", color="Биржа")
             st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("Цены временно недоступны")
 
 # ----- АРБИТРАЖ (ручной) -----
 with tabs[2]:
