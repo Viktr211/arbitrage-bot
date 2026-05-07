@@ -376,14 +376,16 @@ if 'logged_in' not in st.session_state:
     st.session_state.auto_log = []
     st.session_state.fee = 0.1
     st.session_state.min_profit = 0.1
-    # 🔽 НОВЫЕ НАСТРОЙКИ СУММ (без жёстких пределов)
-    st.session_state.min_trade = 12.0      # минимальная сумма для авто-торговли (можно менять)
-    st.session_state.max_trade = 1000.0    # максимальная сумма для авто-торговли (можно менять)
+    st.session_state.min_trade = 12.0
+    st.session_state.max_trade = 1000.0
     st.session_state.auto_trade_enabled = False
     st.session_state.scan_interval = 15
     st.session_state.last_scan_time = None
     st.session_state.chat_unread = 0
-
+    # ДОБАВИТЬ ЭТИ ТРИ СТРОКИ:
+    st.session_state.reinvest_percent = 0
+    st.session_state.use_orderbook = False
+    st.session_state.max_slippage = 0.2
 public_clients = init_public_clients()
 real_exchanges = init_real_exchanges()
 
