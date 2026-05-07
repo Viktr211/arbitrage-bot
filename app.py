@@ -346,7 +346,7 @@ def get_market_price(exchange, symbol, side, amount_usdt):
         return None, 0, f"Ошибка получения цены: {str(e)}"
 
 # ------------------- ПРИОРИТЕТНЫЙ РЕБАЛАНС -------------------
-def get_rebalance_priority_pairs(data, imbalance_threshold=0.3):
+def get_rebalance_priority_pairs(data, imbalance_threshold=0.5):
     tokens = get_available_tokens()
     priority_pairs = []
     token_balances = {token: {} for token in tokens}
@@ -539,11 +539,11 @@ if 'logged_in' not in st.session_state:
     st.session_state.trade_mode = "Демо"
     st.session_state.auto_log = []
     st.session_state.fee = 0.1
-    st.session_state.min_profit = 0.5
+    st.session_state.min_profit = 0.5      # увеличено
     st.session_state.min_trade = 12.0
     st.session_state.max_trade = 1000.0
     st.session_state.auto_trade_enabled = False
-    st.session_state.scan_interval = 30
+    st.session_state.scan_interval = 60    # увеличено до 60 сек
     st.session_state.last_scan_time = None
     st.session_state.chat_unread = 0
     st.session_state.reinvest_percent = 100
@@ -551,14 +551,15 @@ if 'logged_in' not in st.session_state:
     st.session_state.use_orderbook = True
     st.session_state.max_slippage = 0.2
     st.session_state.priority_rebalance = True
-    st.session_state.imbalance_threshold = 0.3
+    st.session_state.imbalance_threshold = 0.5  # увеличено до 50%
+    st.session_state.last_priority_log_time = 0
 
 public_clients = init_public_clients()
 real_exchanges = init_real_exchanges()
 
 # ------------------- АВТО-СКАНИРОВАНИЕ -------------------
 if st.session_state.get('auto_trade_enabled', False) and st.session_state.get('logged_in', False) and st.session_state.demo_data is not None:
-    interval = st.session_state.get('scan_interval', 30)
+    interval = st.session_state.get('scan_interval', 60)
     st_autorefresh(interval=interval * 1000, key="auto_refresh")
     now = datetime.now()
     last = st.session_state.get('last_scan_time')
@@ -567,8 +568,10 @@ if st.session_state.get('auto_trade_enabled', False) and st.session_state.get('l
         priority_pairs = None
         if st.session_state.priority_rebalance and st.session_state.demo_data:
             priority_pairs = get_rebalance_priority_pairs(st.session_state.demo_data, st.session_state.imbalance_threshold)
-            if priority_pairs:
+            # Логируем приоритетные пары не чаще 1 раза в 2 минуты
+            if priority_pairs and (now.timestamp() - st.session_state.get('last_priority_log_time', 0) > 120):
                 st.session_state.auto_log.append(f"🎯 Приоритетные пары для ребаланса: {len(priority_pairs)}")
+                st.session_state.last_priority_log_time = now.timestamp()
         opp = find_opportunity(
             st.session_state.trade_mode, st.session_state.fee, st.session_state.min_profit,
             st.session_state.min_trade, st.session_state.max_trade,
@@ -587,9 +590,6 @@ if st.session_state.get('auto_trade_enabled', False) and st.session_state.get('l
                 st.session_state.auto_log.append(f"✅ Исполнено! +{profit:.2f} USDT")
             else:
                 st.session_state.auto_log.append(f"❌ Ошибка: {msg}")
-        else:
-            if not priority_pairs:
-                st.session_state.auto_log.append("❌ Возможностей не найдено")
 
 # ------------------- ЛОГИН / РЕГИСТРАЦИЯ -------------------
 if not st.session_state.logged_in:
@@ -715,7 +715,11 @@ col_d.metric("📊 Сделок", trade_count)
 # ------------------- НАСТРОЙКИ -------------------
 with st.expander("⚙️ Настройки арбитража", expanded=True):
     st.session_state.fee = st.number_input("Комиссия (%)", 0.0, 0.5, st.session_state.fee, 0.01, format="%.2f")
-    st.session_state.min_profit = st.number_input("Мин. прибыль (USDT)", 0.001, 10.0, st.session_state.min_profit, 0.01, format="%.3f")
+    new_min_profit = st.number_input("Мин. прибыль (USDT)", 0.01, 10.0, st.session_state.min_profit, 0.1, format="%.2f")
+    if new_min_profit != st.session_state.min_profit:
+        st.session_state.min_profit = new_min_profit
+        st.rerun()
+    st.info("Рекомендуемая минимальная прибыль: 0.3–0.5 USDT, чтобы отсечь микро-сделки.")
     st.markdown("---")
     st.markdown("**💰 Настройки суммы сделки**")
     new_min = st.number_input("Минимальная сумма сделки (USDT)", 1.0, 100000.0, st.session_state.min_trade, 10.0)
@@ -767,19 +771,19 @@ with st.expander("⚙️ Настройки арбитража", expanded=True):
             st.rerun()
         st.info(f"Ребаланс будет поддерживать USDT ≈ {st.session_state.rebalance_target_ratio}% от капитала каждой биржи. Лучше использовать приоритетный ребаланс выше.")
     st.markdown("---")
-    interval = st.number_input("Интервал сканирования (сек)", 5, 180, st.session_state.scan_interval, 5)
-    if interval != st.session_state.scan_interval:
-        st.session_state.scan_interval = interval
+    new_interval = st.number_input("Интервал сканирования (сек)", 5, 300, st.session_state.scan_interval, 5)
+    if new_interval != st.session_state.scan_interval:
+        st.session_state.scan_interval = new_interval
         st.rerun()
 
 with st.expander("📋 Лог авто-торговли", expanded=True):
     if st.session_state.auto_log:
-        for log in st.session_state.auto_log[-30:]:
+        for log in st.session_state.auto_log[-50:]:
             st.text(log)
     else:
         st.info("Нет событий. Запустите авто-торговлю кнопкой СТАРТ.")
 
-# ------------------- ВКЛАДКИ (с проверками demo_data) -------------------
+# ------------------- ВКЛАДКИ -------------------
 show_admin = is_admin(st.session_state.email)
 tabs_list = ["📊 Dashboard", "📈 Графики", "🔄 Арбитраж", "📊 Статистика", "💼 Балансы", "💰 Вывод", "📜 История", "👤 Кабинет", "💬 Чат"]
 if show_admin:
@@ -800,6 +804,7 @@ with tabs[0]:
         st.write(f"**Стакан ордеров:** включён, максимальное проскальзывание {st.session_state.max_slippage}%.")
     else:
         st.write("**Стакан ордеров:** выключен (используются last цены).")
+    st.write(f"**Минимальная прибыль для сделки:** {st.session_state.min_profit:.2f} USDT. Рекомендуется 0.5 USDT для качественных сделок.")
 
 with tabs[1]:
     st.subheader("📈 Графики цен")
@@ -872,7 +877,10 @@ with tabs[3]:
     col2.metric("🔄 Количество сделок", trades)
     col3.metric("💰 Доступно для вывода", f"{withdrawable:.2f} USDT")
     if trades > 0:
-        st.metric("📊 Средняя прибыль на сделку", f"{profit/trades:.2f} USDT")
+        avg = profit / trades
+        st.metric("📊 Средняя прибыль на сделку", f"{avg:.2f} USDT")
+        if avg < 0.3:
+            st.warning("⚠️ Средняя прибыль слишком мала. Увеличьте 'Мин. прибыль (USDT)' в настройках до 0.5-1.0.")
     all_trades = get_all_trades(100)
     if all_trades:
         df_trades = pd.DataFrame(all_trades)
@@ -895,7 +903,7 @@ with tabs[4]:
             asset_type = st.selectbox("Актив", ["USDT"] + get_available_tokens(), key="demo_asset")
         with col3:
             amount_add = st.number_input("Количество", min_value=0.0, step=10.0, key="demo_amount")
-        if st.button("➕ Добавить на демо-счёт"):
+        if st.button("➕ Добавить на демо-счет"):
             if amount_add > 0 and st.session_state.demo_data:
                 update_demo_balance(st.session_state.user_id, demo_exchange, asset_type, amount_add, st.session_state.demo_data)
                 st.success(f"Добавлено {amount_add} {asset_type} на {demo_exchange.upper()}")
