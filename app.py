@@ -66,7 +66,7 @@ except Exception:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 EXCHANGES = ["kucoin", "okx"]
-TOKENS = ["DOGE", "SHIB", "PEPE", "WIF", "FLOKI", "BONK", "MEME", "BOME", "NEIRO", "BRETT"]
+TOKENS = ["DOGE", "SHIB", "PEPE", "WIF", "FLOKI", "BONK", "MEME", "BOME", "NOT", "NEIRO"]  # добавил NOT
 ADMIN_EMAILS = ["cb777899@gmail.com", "admin@arbitrage.com"]
 
 def is_admin(email): return email in ADMIN_EMAILS
@@ -293,7 +293,7 @@ def real_sell(exchange, token, amount_token):
     except Exception as e:
         return False, str(e)
 
-# ------------------- АРБИТРАЖ (без учёта стакана) -------------------
+# ------------------- АРБИТРАЖ С ДИАГНОСТИКОЙ -------------------
 def find_opportunity(mode, fee, min_profit, min_trade, max_trade, demo_data, real_exchanges, public_clients):
     opportunities = []
     tokens = get_available_tokens()
@@ -308,36 +308,50 @@ def find_opportunity(mode, fee, min_profit, min_trade, max_trade, demo_data, rea
         for sell_ex in EXCHANGES:
             if buy_ex == sell_ex: continue
             for token in tokens:
-                if token not in prices.get(buy_ex,{}) or token not in prices.get(sell_ex,{}): continue
+                if token not in prices.get(buy_ex,{}) or token not in prices.get(sell_ex,{}):
+                    continue
                 buy_p = prices[buy_ex][token]
                 sell_p = prices[sell_ex][token]
-                if sell_p <= buy_p: continue
+                if sell_p <= buy_p:
+                    continue
                 if mode == "Реальный":
-                    if not real_exchanges.get(buy_ex) or not real_exchanges.get(sell_ex): continue
+                    if not real_exchanges.get(buy_ex) or not real_exchanges.get(sell_ex):
+                        continue
                     usdt = get_real_balance(real_exchanges[buy_ex], 'USDT')
                     token_amt = get_real_balance(real_exchanges[sell_ex], token)
                 else:
                     usdt = demo_data['balances'].get(buy_ex, {}).get('USDT', 0)
                     token_amt = demo_data['balances'].get(sell_ex, {}).get('portfolio', {}).get(token, 0)
+                # Проверка USDT
+                if usdt < min_trade:
+                    if mode == "Демо" and usdt > 0:
+                        st.session_state.auto_log.append(f"⚠️ {token} на {buy_ex}: нужно USDT {min_trade:.2f}, есть {usdt:.2f}")
+                    continue
                 max_by_usdt = usdt
                 max_by_token = token_amt * sell_p
                 max_possible = min(max_by_usdt, max_by_token)
-                if max_possible < min_trade: continue
+                if max_possible < min_trade:
+                    continue
                 trade_usdt = min(max_possible, max_trade)
-                if trade_usdt < min_trade: continue
+                if trade_usdt < min_trade:
+                    continue
                 amount = trade_usdt / buy_p
                 required_token = amount * 1.02
                 if required_token > token_amt:
+                    if mode == "Демо" and token_amt > 0:
+                        st.session_state.auto_log.append(f"⚠️ {token} на {sell_ex}: нужно токенов {required_token:.2f}, есть {token_amt:.2f}")
                     continue
                 profit_before = (sell_p - buy_p) * amount
                 profit = profit_before * (1 - fee/100)
-                if profit < min_profit: continue
+                if profit < min_profit:
+                    continue
                 opportunities.append({
                     'token':token, 'buy_ex':buy_ex, 'sell_ex':sell_ex,
                     'buy_price':buy_p, 'sell_price':sell_p,
                     'trade_usdt':trade_usdt, 'amount':amount, 'profit':profit
                 })
-    if not opportunities: return None
+    if not opportunities: 
+        return None
     return max(opportunities, key=lambda x: x['profit'])
 
 def execute_arbitrage(mode, opp, user_id, demo_data, real_exchanges, public_clients, reinvest_percent):
@@ -382,7 +396,7 @@ def execute_arbitrage(mode, opp, user_id, demo_data, real_exchanges, public_clie
         ok_sell, msg_sell = demo_sell(user_id, sell_ex, token, amount, demo_data, public_clients)
         if not ok_sell: return None, msg_sell
         real_profit = amount * sell_price - trade_usdt
-        # Сбалансированная реинвестиция (поддержание 50% USDT / 50% токены на бирже продажи)
+        # Сбалансированная реинвестиция
         if reinvest_percent > 0:
             usdt_on_sell = demo_data['balances'].get(sell_ex, {}).get('USDT', 0)
             token_on_sell = demo_data['balances'].get(sell_ex, {}).get('portfolio', {}).get(token, 0)
@@ -427,9 +441,9 @@ if 'logged_in' not in st.session_state:
     st.session_state.trade_mode = "Демо"
     st.session_state.auto_log = []
     st.session_state.fee = 0.1
-    st.session_state.min_profit = 0.10
+    st.session_state.min_profit = 0.05
     st.session_state.min_trade = 12.0
-    st.session_state.max_trade = 20.0
+    st.session_state.max_trade = 15.0      # увеличено до 15 USDT
     st.session_state.auto_trade_enabled = False
     st.session_state.scan_interval = 30
     st.session_state.last_scan_time = None
@@ -593,22 +607,19 @@ col_d.metric("📊 Сделок", trade_count)
 # ------------------- НАСТРОЙКИ -------------------
 with st.expander("⚙️ Настройки арбитража", expanded=True):
     st.session_state.fee = st.number_input("Комиссия (%)", 0.0, 0.5, st.session_state.fee, 0.01, format="%.2f")
-    new_min_profit = st.number_input("Мин. прибыль (USDT)", 0.01, 10.0, st.session_state.min_profit, 0.05, format="%.2f")
+    new_min_profit = st.number_input("Мин. прибыль (USDT)", 0.01, 0.5, st.session_state.min_profit, 0.01, format="%.2f")
     if new_min_profit != st.session_state.min_profit:
         st.session_state.min_profit = new_min_profit
         st.rerun()
     st.markdown("---")
     st.markdown("**💰 Настройки суммы сделки**")
-    new_min = st.number_input("Минимальная сумма сделки (USDT)", 1.0, 100000.0, st.session_state.min_trade, 10.0)
-    new_max = st.number_input("Максимальная сумма сделки (USDT)", 1.0, 100000.0, st.session_state.max_trade, 5.0)
+    new_min = st.number_input("Минимальная сумма сделки (USDT)", 1.0, 100.0, st.session_state.min_trade, 1.0)
+    new_max = st.number_input("Максимальная сумма сделки (USDT)", 1.0, 100.0, st.session_state.max_trade, 1.0)
     if new_min != st.session_state.min_trade or new_max != st.session_state.max_trade:
         st.session_state.min_trade = new_min
         st.session_state.max_trade = new_max
         st.rerun()
-    st.info(f"Рекомендуемая сумма для мем-коинов: 20–30 USDT. Текущая: {st.session_state.max_trade:.0f} USDT.")
-    st.markdown("---")
-    st.markdown("**📊 Учёт ликвидности**")
-    st.checkbox("Учитывать стакан ордеров", value=False, disabled=True, help="Для мем-коинов отключено. Торгуем по последней цене.")
+    st.info(f"Рекомендуемая сумма для мем-коинов: 15–20 USDT. Текущая: {st.session_state.max_trade:.0f} USDT.")
     st.markdown("---")
     st.markdown("**🔄 Реинвестиция прибыли (сбалансированная)**")
     new_reinvest = st.slider("Процент реинвестиции (%)", 0, 100, st.session_state.reinvest_percent, 5)
@@ -617,7 +628,7 @@ with st.expander("⚙️ Настройки арбитража", expanded=True):
         st.rerun()
     st.info("100% реинвестиции поддерживают соотношение USDT : токены ≈ 50:50, чтобы капитал рос равномерно.")
     st.markdown("---")
-    new_interval = st.number_input("Интервал сканирования (сек)", 10, 300, st.session_state.scan_interval, 5)
+    new_interval = st.number_input("Интервал сканирования (сек)", 10, 120, st.session_state.scan_interval, 5)
     if new_interval != st.session_state.scan_interval:
         st.session_state.scan_interval = new_interval
         st.rerun()
@@ -801,7 +812,7 @@ with tabs[4]:
             colA, colB = st.columns(2)
             with colA:
                 token_buy = st.selectbox("Купить", get_available_tokens(), key=f"buy_{ex}")
-                usdt_amt = st.number_input("Сумма в USDT", min_value=1.0, max_value=st.session_state.max_trade, value=min(20.0, st.session_state.max_trade), step=5.0, key=f"usdt_{ex}")
+                usdt_amt = st.number_input("Сумма в USDT", min_value=1.0, max_value=st.session_state.max_trade, value=min(15.0, st.session_state.max_trade), step=5.0, key=f"usdt_{ex}")
                 if st.button(f"Купить {token_buy}", key=f"btn_buy_{ex}"):
                     if st.session_state.trade_mode == "Реальный":
                         ok, msg = real_buy(real_exchanges[ex], token_buy, usdt_amt)
