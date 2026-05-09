@@ -174,7 +174,7 @@ def create_withdrawal_request(user_id, amount, wallet):
         'user_receives': amount - admin_fee, 'wallet_address': wallet, 'status': 'pending'
     }).execute()
 
-# ------------------- НАСТРОЙКИ ПОЛЬЗОВАТЕЛЯ (сохранение в БД) -------------------
+# ------------------- НАСТРОЙКИ ПОЛЬЗОВАТЕЛЯ -------------------
 def load_user_settings(user_id):
     try:
         res = supabase.table('user_settings').select('*').eq('user_id', user_id).execute()
@@ -467,7 +467,7 @@ if 'logged_in' not in st.session_state:
 public_clients = init_public_clients()
 real_exchanges = init_real_exchanges()
 
-# ------------------- АВТО-СКАНИРОВАНИЕ -------------------
+# ------------------- АВТО-СКАНИРОВАНИЕ (только сделки, без "не найдено") -------------------
 if st.session_state.get('auto_trade_enabled', False) and st.session_state.get('logged_in', False) and st.session_state.demo_data is not None:
     interval = st.session_state.get('scan_interval', 30)
     st_autorefresh(interval=interval * 1000, key="auto_refresh")
@@ -491,9 +491,7 @@ if st.session_state.get('auto_trade_enabled', False) and st.session_state.get('l
                 st.session_state.auto_log.append(f"✅ Исполнено! +{profit:.2f} USDT")
             else:
                 st.session_state.auto_log.append(f"❌ Ошибка: {msg}")
-        else:
-            if len(st.session_state.auto_log) == 0 or "Найдено" not in st.session_state.auto_log[-1]:
-                st.session_state.auto_log.append("❌ Возможностей не найдено")
+        # Убрано сообщение "❌ Возможностей не найдено"
 
 # ------------------- ЛОГИН / РЕГИСТРАЦИЯ -------------------
 if not st.session_state.logged_in:
@@ -516,7 +514,7 @@ if not st.session_state.logged_in:
                     init_bal = {ex:{"USDT":0,"portfolio":{t:0 for t in get_available_tokens()}} for ex in EXCHANGES}
                     st.session_state.demo_data = {'balances':init_bal,'total_profit':0,'trade_count':0,'withdrawable_balance':0,'history':[]}
                     save_demo_data(user['id'], st.session_state.demo_data)
-                # Загружаем настройки пользователя
+                # Загружаем настройки
                 settings = load_user_settings(user['id'])
                 st.session_state.fee = settings.get('fee', 0.1)
                 st.session_state.min_profit = settings.get('min_profit', 0.05)
@@ -651,16 +649,16 @@ with st.expander("⚙️ Настройки арбитража", expanded=True):
             })
         st.rerun()
 
-    st.info(f"Настройки сохранены в базе данных. Текущая максимальная сумма: {st.session_state.max_trade:.0f} USDT.")
+    st.info(f"Настройки сохранены. Текущая максимальная сумма: {st.session_state.max_trade:.0f} USDT.")
 
 with st.expander("📋 Лог авто-торговли", expanded=True):
     if st.session_state.auto_log:
         for log in st.session_state.auto_log[-50:]:
             st.text(log)
     else:
-        st.info("Нет событий. Запустите авто-торговлю кнопкой СТАРТ.")
+        st.info("Нет событий. Запустите авто-торговлю.")
 
-# ------------------- ВКЛАДКИ -------------------
+# ------------------- ВКЛАДКИ С ЛЕНИВОЙ ЗАГРУЗКОЙ -------------------
 show_admin = is_admin(st.session_state.email)
 tabs_list = ["📊 Dashboard", "📈 Графики", "🔄 Арбитраж", "📊 Статистика", "💼 Балансы", "💰 Вывод", "📜 История", "👤 Кабинет", "💬 Чат"]
 if show_admin:
@@ -670,11 +668,11 @@ tabs = st.tabs(tabs_list)
 # ----- DASHBOARD -----
 with tabs[0]:
     st.subheader("📊 Dashboard")
-    st.write("Добро пожаловать в арбитражного бота **HOVMEL** (мем-коины + сбалансированная реинвестиция).")
+    st.write("Добро пожаловать в арбитражного бота **HOVMEL**.")
     st.write(f"Активные токены: {', '.join(get_available_tokens())}")
-    st.write(f"Текущие настройки суммы сделки: от **{st.session_state.min_trade:.0f}** до **{st.session_state.max_trade:.0f}** USDT.")
-    st.write(f"**Реинвестиция:** {st.session_state.reinvest_percent}% прибыли (сбалансировано: 50% USDT / 50% токены).")
-    st.write(f"**Минимальная прибыль:** {st.session_state.min_profit:.2f} USDT.")
+    st.write(f"Сумма сделки: от {st.session_state.min_trade:.0f} до {st.session_state.max_trade:.0f} USDT.")
+    st.write(f"Реинвестиция: {st.session_state.reinvest_percent}% (сбалансированно 50% USDT / 50% токены).")
+    st.write(f"Мин. прибыль: {st.session_state.min_profit:.2f} USDT.")
     st.markdown("---")
     st.markdown("### 💹 Текущие цены токенов")
     token_prices = []
@@ -718,9 +716,9 @@ with tabs[1]:
 # ----- АРБИТРАЖ (ручной) -----
 with tabs[2]:
     st.subheader("🔄 Ручной поиск арбитража")
-    if st.button("🔍 Найти лучшую возможность (с учётом текущих настроек)"):
+    if st.button("🔍 Найти лучшую возможность"):
         if not st.session_state.demo_data:
-            st.error("Данные демо-счёта не загружены. Пожалуйста, войдите снова.")
+            st.error("Данные демо-счёта не загружены.")
         else:
             opp = find_opportunity(
                 st.session_state.trade_mode, st.session_state.fee, st.session_state.min_profit,
@@ -731,16 +729,15 @@ with tabs[2]:
                 st.success(f"Найдена возможность: {opp['token']}")
                 st.write(f"**Покупка:** {opp['buy_ex'].upper()} по {opp['buy_price']:.8f} USDT")
                 st.write(f"**Продажа:** {opp['sell_ex'].upper()} по {opp['sell_price']:.8f} USDT")
-                st.write(f"**Сумма сделки:** {opp['trade_usdt']:.2f} USDT")
-                st.write(f"**Прибыль:** {opp['profit']:.4f} USDT")
-                if st.button("✅ Выполнить сделку"):
+                st.write(f"**Сумма:** {opp['trade_usdt']:.2f} USDT, прибыль: {opp['profit']:.4f} USDT")
+                if st.button("✅ Выполнить"):
                     profit, msg = execute_arbitrage(
                         st.session_state.trade_mode, opp, st.session_state.user_id,
                         st.session_state.demo_data, real_exchanges, public_clients,
                         st.session_state.reinvest_percent
                     )
                     if profit:
-                        st.success(f"Сделка выполнена! Прибыль: {profit:.2f} USDT. {msg}")
+                        st.success(f"Сделка выполнена! Прибыль: {profit:.2f} USDT")
                         st.rerun()
                     else:
                         st.error(f"Ошибка: {msg}")
@@ -755,12 +752,9 @@ with tabs[3]:
         trades = st.session_state.real_trades
         withdrawable = 0
     else:
-        if st.session_state.demo_data:
-            profit = st.session_state.demo_data.get('total_profit', 0)
-            trades = st.session_state.demo_data.get('trade_count', 0)
-            withdrawable = st.session_state.demo_data.get('withdrawable_balance', 0)
-        else:
-            profit, trades, withdrawable = 0, 0, 0
+        profit = st.session_state.demo_data.get('total_profit', 0) if st.session_state.demo_data else 0
+        trades = st.session_state.demo_data.get('trade_count', 0) if st.session_state.demo_data else 0
+        withdrawable = st.session_state.demo_data.get('withdrawable_balance', 0) if st.session_state.demo_data else 0
     col1, col2, col3 = st.columns(3)
     col1.metric("📈 Общая прибыль", f"{profit:.2f} USDT")
     col2.metric("🔄 Количество сделок", trades)
@@ -768,22 +762,23 @@ with tabs[3]:
     if trades > 0:
         avg = profit / trades
         st.metric("📊 Средняя прибыль на сделку", f"{avg:.4f} USDT")
-    all_trades = get_all_trades(100)
-    if all_trades:
-        df_trades = pd.DataFrame(all_trades)
-        df_trades['trade_time'] = pd.to_datetime(df_trades['trade_time'])
-        df_trades = df_trades.sort_values('trade_time')
-        df_trades['cumulative_profit'] = df_trades['profit'].cumsum()
-        fig = px.line(df_trades, x='trade_time', y='cumulative_profit', title="Накопленная прибыль (все сделки)")
-        st.plotly_chart(fig, use_container_width=True)
+    with st.spinner("Загрузка графика..."):
+        all_trades = get_all_trades(100)
+        if all_trades:
+            df_trades = pd.DataFrame(all_trades)
+            df_trades['trade_time'] = pd.to_datetime(df_trades['trade_time'])
+            df_trades = df_trades.sort_values('trade_time')
+            df_trades['cumulative_profit'] = df_trades['profit'].cumsum()
+            fig = px.line(df_trades, x='trade_time', y='cumulative_profit', title="Накопленная прибыль")
+            st.plotly_chart(fig, use_container_width=True)
 
 # ----- БАЛАНСЫ -----
 with tabs[4]:
     st.subheader("💼 Балансы и ручная торговля")
     if st.session_state.trade_mode == "Демо" and st.session_state.demo_data:
-        st.markdown(f"**💰 Доступно для вывода (от реинвестиции):** {st.session_state.demo_data.get('withdrawable_balance',0):.2f} USDT")
+        st.markdown(f"**💰 Доступно для вывода:** {st.session_state.demo_data.get('withdrawable_balance',0):.2f} USDT")
         st.markdown("---")
-        st.markdown("### 💰 Пополнение демо-балансов (не влияет на счётчик сделок)")
+        st.markdown("### 💰 Пополнение (не влияет на счётчик)")
         col1, col2, col3 = st.columns(3)
         with col1:
             demo_exchange = st.selectbox("Биржа", EXCHANGES, key="demo_ex")
@@ -791,18 +786,18 @@ with tabs[4]:
             asset_type = st.selectbox("Актив", ["USDT"] + get_available_tokens(), key="demo_asset")
         with col3:
             amount_add = st.number_input("Количество", min_value=0.0, step=10.0, key="demo_amount")
-        if st.button("➕ Добавить на демо-счёт"):
+        if st.button("➕ Добавить"):
             if amount_add > 0 and st.session_state.demo_data:
                 update_demo_balance(st.session_state.user_id, demo_exchange, asset_type, amount_add, st.session_state.demo_data)
                 st.success(f"Добавлено {amount_add} {asset_type} на {demo_exchange.upper()}")
                 st.rerun()
         st.markdown("---")
         st.markdown("### ⚠️ Сброс демо-данных")
-        if st.button("🧹 ПОЛНЫЙ СБРОС (балансы, прибыль, история)", use_container_width=True):
+        if st.button("🧹 ПОЛНЫЙ СБРОС", use_container_width=True):
             reset_demo_data(st.session_state.user_id)
-            st.success("Демо-данные сброшены!")
+            st.success("Сброшено!")
             st.rerun()
-        st.warning("Это действие удалит все ваши демо-балансы, историю и статистику. Необратимо!")
+        st.warning("Удалит все балансы, историю и статистику.")
         st.markdown("---")
     
     if st.session_state.trade_mode == "Реальный":
@@ -817,13 +812,10 @@ with tabs[4]:
                     balances[ex] = {'USDT': 0, 'portfolio': {t: 0 for t in TOKENS}}
         else:
             balances = {ex: {'USDT': 0, 'portfolio': {t: 0 for t in TOKENS}} for ex in EXCHANGES}
-            st.warning("Реальные биржи не подключены. Добавьте API-ключи в админ-панели.")
+            st.warning("Реальные биржи не подключены.")
     else:
-        if st.session_state.demo_data and 'balances' in st.session_state.demo_data:
-            balances = st.session_state.demo_data['balances']
-        else:
-            balances = {ex: {'USDT': 0, 'portfolio': {t: 0 for t in TOKENS}} for ex in EXCHANGES}
-    
+        balances = st.session_state.demo_data.get('balances', {}) if st.session_state.demo_data else {}
+
     for ex in EXCHANGES:
         with st.expander(f"{ex.upper()}"):
             if ex in balances:
@@ -841,15 +833,12 @@ with tabs[4]:
             colA, colB = st.columns(2)
             with colA:
                 token_buy = st.selectbox("Купить", get_available_tokens(), key=f"buy_{ex}")
-                usdt_amt = st.number_input("Сумма в USDT", min_value=1.0, value=15.0, step=10.0, key=f"usdt_{ex}")
+                usdt_amt = st.number_input("Сумма USDT", min_value=1.0, value=15.0, step=10.0, key=f"usdt_{ex}")
                 if st.button(f"Купить {token_buy}", key=f"btn_buy_{ex}"):
                     if st.session_state.trade_mode == "Реальный":
                         ok, msg = real_buy(real_exchanges.get(ex), token_buy, usdt_amt)
                     else:
-                        if not st.session_state.demo_data:
-                            st.error("Нет демо-данных")
-                        else:
-                            ok, msg = demo_buy(st.session_state.user_id, ex, token_buy, usdt_amt, st.session_state.demo_data, public_clients, is_manual=True)
+                        ok, msg = demo_buy(st.session_state.user_id, ex, token_buy, usdt_amt, st.session_state.demo_data, public_clients, is_manual=True)
                     if ok:
                         st.success(msg)
                         st.rerun()
@@ -862,10 +851,7 @@ with tabs[4]:
                     if st.session_state.trade_mode == "Реальный":
                         ok, msg = real_sell(real_exchanges.get(ex), token_sell, token_amt)
                     else:
-                        if not st.session_state.demo_data:
-                            st.error("Нет демо-данных")
-                        else:
-                            ok, msg = demo_sell(st.session_state.user_id, ex, token_sell, token_amt, st.session_state.demo_data, public_clients, is_manual=True)
+                        ok, msg = demo_sell(st.session_state.user_id, ex, token_sell, token_amt, st.session_state.demo_data, public_clients, is_manual=True)
                     if ok:
                         st.success(msg)
                         st.rerun()
@@ -875,28 +861,25 @@ with tabs[4]:
 # ----- ВЫВОД -----
 with tabs[5]:
     st.subheader("💰 Вывод средств")
-    st.info("Вывод возможен только после одобрения администратором (комиссия 22%).")
-    if st.session_state.trade_mode == "Реальный":
-        withdrawable = 0.0
-    else:
-        withdrawable = st.session_state.demo_data.get('withdrawable_balance', 0.0) if st.session_state.demo_data else 0.0
-    st.write(f"Доступно для вывода: **{withdrawable:.2f} USDT**")
-    amount = st.number_input("Сумма вывода (USDT)", min_value=1.0, max_value=max(1.0, withdrawable), step=10.0)
+    st.info("Вывод после одобрения админа (комиссия 22%).")
+    withdrawable = st.session_state.demo_data.get('withdrawable_balance', 0.0) if st.session_state.trade_mode == "Демо" and st.session_state.demo_data else 0.0
+    st.write(f"Доступно: **{withdrawable:.2f} USDT**")
+    amount = st.number_input("Сумма вывода", min_value=1.0, max_value=max(1.0, withdrawable), step=10.0)
     wallet = st.text_input("Адрес USDT (TRC20)", value=st.session_state.wallet)
     if st.button("Запросить вывод"):
         if amount > 0 and wallet and withdrawable >= amount:
             create_withdrawal_request(st.session_state.user_id, amount, wallet)
-            st.success("Заявка на вывод отправлена администратору!")
+            st.success("Заявка отправлена!")
         else:
-            st.error("Введите корректную сумму и адрес")
+            st.error("Некорректная сумма или адрес")
 
 # ----- ИСТОРИЯ -----
 with tabs[6]:
     st.subheader("📜 История сделок")
     if st.session_state.trade_mode == "Реальный":
-        hist = st.session_state.real_history[-50:]
+        hist = st.session_state.real_history[-50:] if st.session_state.real_history else []
     else:
-        hist = st.session_state.demo_data['history'][-50:] if st.session_state.demo_data else []
+        hist = st.session_state.demo_data.get('history', [])[-50:] if st.session_state.demo_data else []
     if hist:
         for h in reversed(hist):
             st.text(h)
@@ -914,15 +897,15 @@ with tabs[7]:
     with col2:
         trades = st.session_state.real_trades if st.session_state.trade_mode == "Реальный" else (st.session_state.demo_data.get('trade_count', 0) if st.session_state.demo_data else 0)
         profit = st.session_state.real_profit if st.session_state.trade_mode == "Реальный" else (st.session_state.demo_data.get('total_profit', 0) if st.session_state.demo_data else 0)
-        st.write(f"**Всего сделок:** {trades}")
-        st.write(f"**Общая прибыль:** {profit:.2f} USDT")
-        st.write(f"**Общий капитал:** {total_capital:.2f} USDT")
+        st.write(f"**Сделок:** {trades}")
+        st.write(f"**Прибыль:** {profit:.2f} USDT")
+        st.write(f"**Капитал:** {total_capital:.2f} USDT")
 
 # ----- ЧАТ -----
 with tabs[8]:
     st.subheader("💬 Чат поддержки")
     if st.session_state.chat_unread > 0:
-        st.info(f"📬 У вас {st.session_state.chat_unread} непрочитанных сообщений от администратора")
+        st.info(f"📬 У вас {st.session_state.chat_unread} непрочитанных сообщений")
     messages = get_messages(st.session_state.user_id, 50)
     for msg in reversed(messages):
         if msg['is_admin_reply']:
@@ -930,7 +913,7 @@ with tabs[8]:
         else:
             st.markdown(f"**👤 {msg['user_name']}:** {msg['message']}  \n*{msg['created_at'][:16]}*")
     with st.form("chat_form"):
-        new_msg = st.text_area("Ваше сообщение")
+        new_msg = st.text_area("Сообщение")
         if st.form_submit_button("Отправить"):
             if new_msg:
                 add_message(st.session_state.user_id, st.session_state.email, st.session_state.username, new_msg, False)
@@ -938,49 +921,48 @@ with tabs[8]:
     mark_messages_read(st.session_state.user_id)
     st.session_state.chat_unread = 0
 
+# ----- АДМИН-ПАНЕЛЬ -----
 if show_admin:
     with tabs[9]:
         st.subheader("👑 Административная панель")
         admin_tabs = st.tabs(["Пользователи", "API ключи", "Выводы", "Конфиг", "Сообщения"])
         with admin_tabs[0]:
-            st.markdown("#### Управление пользователями")
-            users = get_all_users_for_admin()
-            for user in users:
-                with st.expander(f"{user['email']} - {user['full_name']}"):
-                    st.write(f"Статус: {user['registration_status']}")
-                    st.write(f"Сделок: {user.get('trade_count', 0)}")
-                    new_status = st.selectbox("Изменить статус", ["approved", "blocked"], key=f"status_{user['id']}")
-                    if st.button("Обновить", key=f"update_{user['id']}"):
-                        update_user_status(user['id'], new_status)
-                        st.rerun()
+            with st.spinner("Загрузка пользователей..."):
+                users = get_all_users_for_admin()
+                for user in users:
+                    with st.expander(f"{user['email']} - {user['full_name']}"):
+                        st.write(f"Статус: {user['registration_status']}")
+                        st.write(f"Сделок: {user.get('trade_count', 0)}")
+                        new_status = st.selectbox("Статус", ["approved", "blocked"], key=f"status_{user['id']}")
+                        if st.button("Обновить", key=f"update_{user['id']}"):
+                            update_user_status(user['id'], new_status)
+                            st.rerun()
         with admin_tabs[1]:
-            st.markdown("#### API ключи бирж")
             for ex in EXCHANGES:
                 with st.expander(f"{ex.upper()}"):
-                    api_key = st.text_input(f"API Key ({ex})", type="password", key=f"api_{ex}")
-                    secret = st.text_input(f"Secret Key ({ex})", type="password", key=f"sec_{ex}")
+                    api_key = st.text_input(f"API Key", type="password", key=f"api_{ex}")
+                    secret = st.text_input(f"Secret Key", type="password", key=f"sec_{ex}")
                     if st.button(f"Сохранить {ex}", key=f"save_{ex}"):
                         save_api_key(ex, api_key, secret, st.session_state.email)
                         st.success(f"Ключи для {ex} сохранены")
                         st.rerun()
         with admin_tabs[2]:
-            st.markdown("#### Заявки на вывод")
-            withdrawals = get_pending_withdrawals()
-            for w in withdrawals:
-                with st.expander(f"{w['users']['email']} - {w['amount']} USDT"):
-                    st.write(f"Сумма: {w['amount']} USDT, комиссия 22%: {w['admin_fee']:.2f}, к получению: {w['user_receives']:.2f}")
-                    st.write(f"Кошелёк: {w['wallet_address']}")
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if st.button("✅ Одобрить", key=f"approve_{w['id']}"):
-                            update_withdrawal_status(w['id'], 'approved')
-                            st.rerun()
-                    with col2:
-                        if st.button("❌ Отклонить", key=f"reject_{w['id']}"):
-                            update_withdrawal_status(w['id'], 'rejected')
-                            st.rerun()
+            with st.spinner("Загрузка заявок..."):
+                withdrawals = get_pending_withdrawals()
+                for w in withdrawals:
+                    with st.expander(f"{w['users']['email']} - {w['amount']} USDT"):
+                        st.write(f"Сумма: {w['amount']} USDT, комиссия 22%: {w['admin_fee']:.2f}, к получению: {w['user_receives']:.2f}")
+                        st.write(f"Кошелёк: {w['wallet_address']}")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            if st.button("✅ Одобрить", key=f"approve_{w['id']}"):
+                                update_withdrawal_status(w['id'], 'approved')
+                                st.rerun()
+                        with col2:
+                            if st.button("❌ Отклонить", key=f"reject_{w['id']}"):
+                                update_withdrawal_status(w['id'], 'rejected')
+                                st.rerun()
         with admin_tabs[3]:
-            st.markdown("#### Конфигурация токенов")
             current_tokens = get_available_tokens()
             tokens_input = st.text_area("Список токенов (через запятую)", value=", ".join(current_tokens))
             if st.button("Сохранить токены"):
@@ -990,13 +972,13 @@ if show_admin:
                     st.success("Список токенов обновлён")
                     st.rerun()
         with admin_tabs[4]:
-            st.markdown("#### Сообщения пользователей")
-            all_messages = get_messages(limit=100)
-            for msg in all_messages:
-                if not msg['is_admin_reply']:
-                    st.markdown(f"**{msg['user_name']}** ({msg['user_email']}): {msg['message']}  \n*{msg['created_at'][:16]}*")
-                    reply = st.text_area("Ответ", key=f"reply_{msg['id']}")
-                    if st.button("Отправить ответ", key=f"send_{msg['id']}"):
-                        add_message(msg['user_id'], msg['user_email'], "Admin", reply, True)
-                        st.rerun()
-                    st.divider()
+            with st.spinner("Загрузка сообщений..."):
+                all_messages = get_messages(limit=100)
+                for msg in all_messages:
+                    if not msg['is_admin_reply']:
+                        st.markdown(f"**{msg['user_name']}** ({msg['user_email']}): {msg['message']}  \n*{msg['created_at'][:16]}*")
+                        reply = st.text_area("Ответ", key=f"reply_{msg['id']}")
+                        if st.button("Отправить ответ", key=f"send_{msg['id']}"):
+                            add_message(msg['user_id'], msg['user_email'], "Admin", reply, True)
+                            st.rerun()
+                        st.divider()
