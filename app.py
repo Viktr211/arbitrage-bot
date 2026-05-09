@@ -80,8 +80,11 @@ def get_cached_trades(limit=100):
     return supabase.table('trades').select('*, users(email,full_name)').order('trade_time', desc=True).limit(limit).execute().data
 
 @st.cache_data(ttl=15)
-def get_cached_messages(user_id, limit=50):
-    return supabase.table('messages').select('*').eq('user_id', user_id).order('created_at', desc=True).limit(limit).execute().data
+def get_cached_messages(user_id=None, limit=50):
+    query = supabase.table('messages').select('*, users(full_name)').order('created_at', desc=True).limit(limit)
+    if user_id is not None:
+        query = query.eq('user_id', user_id)
+    return query.execute().data
 
 @st.cache_data(ttl=15)
 def get_cached_withdrawals():
@@ -130,7 +133,6 @@ def save_demo_data(user_id, data):
         'trade_count':data['trade_count'],
         'withdrawable_balance':data['withdrawable_balance']
     }).eq('id', user_id).execute()
-    # Очищаем кэш после изменения данных
     st.cache_data.clear()
 
 def add_trade(user_id, mode, asset, amount, profit, buy_ex, sell_ex):
@@ -264,13 +266,11 @@ def get_cached_price(exchange_name, symbol):
     return None
 
 def get_price(exchange, symbol):
-    # если передан объект биржи, используем его напрямую (для реального режима)
     if exchange is not None:
         try:
             return exchange.fetch_ticker(f"{symbol}/USDT")['last']
         except:
             return None
-    # иначе используем кэшированную версию по имени биржи
     return get_cached_price(symbol, exchange)  # осторожно, порядок аргументов
 
 # ------------------- ДЕМО-ФУНКЦИИ -------------------
@@ -521,7 +521,7 @@ if st.session_state.get('auto_trade_enabled', False) and st.session_state.get('l
                 st.session_state.auto_log.append(f"✅ Исполнено! +{profit:.2f} USDT")
             else:
                 st.session_state.auto_log.append(f"❌ Ошибка: {msg}")
-        # Сообщение "❌ Возможностей не найдено" убрано из лога
+        # Сообщение "❌ Возможностей не найдено" убрано
 
 # ------------------- ЛОГИН / РЕГИСТРАЦИЯ -------------------
 if not st.session_state.logged_in:
