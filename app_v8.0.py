@@ -36,15 +36,17 @@ st.markdown("""
 .subtitle { text-align: center; color: #aaa; margin-top: -0.8rem; margin-bottom: 1.5rem; }
 .status-running { color: #00FF88; font-weight: bold; }
 .status-stopped { color: #FF4444; font-weight: bold; }
+div[data-testid="stMetric"] { font-size: 0.9rem; }
+div[data-testid="stMetric"] label { font-size: 0.8rem; }
+div[data-testid="stMetric"] div { font-size: 1.2rem; }
 </style>
 """, unsafe_allow_html=True)
 
-# ------------------- SUPABASE (с проверкой секретов) -------------------
+# ------------------- SUPABASE -------------------
 try:
     SUPABASE_URL = st.secrets["SUPABASE_URL"]
     SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 except Exception:
-    # Если secrets не заданы, пробуем взять из переменных окружения (для локального теста)
     SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
     SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
     if not SUPABASE_URL or not SUPABASE_KEY:
@@ -56,13 +58,13 @@ except Exception:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-EXCHANGES = ["kucoin", "okx", "hitbtc"]
-TOKENS = ["BTC", "ETH", "SOL", "XRP", "HYPE"]   # можно менять через админ-панель
+EXCHANGES = ["kucoin", "okx"]
+TOKENS = ["DOGE", "SHIB", "PEPE", "WIF", "FLOKI", "BONK", "MEME", "BOME", "NEIRO", "BRETT"]
 ADMIN_EMAILS = ["cb777899@gmail.com", "admin@arbitrage.com"]
 
 def is_admin(email): return email in ADMIN_EMAILS
 
-# ------------------- ФУНКЦИИ БД (без изменений) -------------------
+# ------------------- БАЗА ДАННЫХ -------------------
 def get_user_by_email(email):
     res = supabase.table('users').select('*').eq('email', email).execute()
     return res.data[0] if res.data else None
@@ -77,7 +79,7 @@ def create_user(email, pwd, name, country, city, phone, wallet):
     }).execute()
 
 def load_demo_data(user_id):
-    res = supabase.table('users').select('demo_balances, demo_history, total_profit, trade_count').eq('id', user_id).execute()
+    res = supabase.table('users').select('demo_balances, demo_history, total_profit, trade_count, withdrawable_balance').eq('id', user_id).execute()
     if res.data:
         u = res.data[0]
         balances = json.loads(u['demo_balances']) if isinstance(u['demo_balances'], str) else u['demo_balances']
@@ -86,18 +88,20 @@ def load_demo_data(user_id):
             'balances': balances.get('exchanges', {ex:{"USDT":0,"portfolio":{t:0 for t in TOKENS}} for ex in EXCHANGES}),
             'total_profit': u.get('total_profit',0),
             'trade_count': u.get('trade_count',0),
+            'withdrawable_balance': u.get('withdrawable_balance',0),
             'history': history
         }
     return None
 
 def save_demo_data(user_id, data):
     to_save = {'main_balance':0,'exchanges':data['balances'],'total_profit':data['total_profit'],
-               'trade_count':data['trade_count'],'withdrawable_balance':0,'total_admin_fee_paid':0}
+               'trade_count':data['trade_count'],'withdrawable_balance':data['withdrawable_balance'],'total_admin_fee_paid':0}
     supabase.table('users').update({
         'demo_balances':json.dumps(to_save),
-        'demo_history':json.dumps(data['history'][-500:]),
+        'demo_history':json.dumps(data['history']),
         'total_profit':data['total_profit'],
-        'trade_count':data['trade_count']
+        'trade_count':data['trade_count'],
+        'withdrawable_balance':data['withdrawable_balance']
     }).eq('id', user_id).execute()
 
 def add_trade(user_id, mode, asset, amount, profit, buy_ex, sell_ex):
@@ -170,6 +174,35 @@ def create_withdrawal_request(user_id, amount, wallet):
         'user_receives': amount - admin_fee, 'wallet_address': wallet, 'status': 'pending'
     }).execute()
 
+# ------------------- НАСТРОЙКИ ПОЛЬЗОВАТЕЛЯ (сохранение в БД) -------------------
+def load_user_settings(user_id):
+    try:
+        res = supabase.table('user_settings').select('*').eq('user_id', user_id).execute()
+        if res.data:
+            return res.data[0]
+    except:
+        pass
+    default = {
+        'user_id': user_id,
+        'fee': 0.1,
+        'min_profit': 0.05,
+        'min_trade': 12.0,
+        'max_trade': 10000.0,
+        'scan_interval': 30,
+        'reinvest_percent': 100
+    }
+    try:
+        supabase.table('user_settings').upsert(default, on_conflict='user_id').execute()
+    except:
+        pass
+    return default
+
+def save_user_settings(user_id, settings):
+    try:
+        supabase.table('user_settings').update(settings).eq('user_id', user_id).execute()
+    except:
+        pass
+
 # ------------------- БИРЖИ -------------------
 @st.cache_resource
 def init_public_clients():
@@ -220,7 +253,7 @@ def update_demo_balance(user_id, exchange, asset, delta, data):
         data['balances'][exchange]['portfolio'][asset] += delta
     save_demo_data(user_id, data)
 
-def demo_buy(user_id, exchange, token, usdt_amount, data, clients):
+def demo_buy(user_id, exchange, token, usdt_amount, data, clients, is_manual=False):
     price = get_price(clients[exchange], token)
     if not price:
         return False, "Цена не получена"
@@ -229,9 +262,14 @@ def demo_buy(user_id, exchange, token, usdt_amount, data, clients):
         return False, f"Не хватает USDT (есть {data['balances'][exchange]['USDT']:.2f})"
     update_demo_balance(user_id, exchange, 'USDT', -usdt_amount, data)
     update_demo_balance(user_id, exchange, token, amount_token, data)
+    if is_manual:
+        data['trade_count'] += 1
+        entry = f"🟢 {datetime.now()} | Ручная операция: покупка {token} на {exchange.upper()} на {usdt_amount} USDT"
+        data['history'].append(entry)
+        save_demo_data(user_id, data)
     return True, f"Куплено {amount_token:.8f} {token} за {usdt_amount} USDT"
 
-def demo_sell(user_id, exchange, token, amount_token, data, clients):
+def demo_sell(user_id, exchange, token, amount_token, data, clients, is_manual=False):
     price = get_price(clients[exchange], token)
     if not price:
         return False, "Цена не получена"
@@ -241,11 +279,16 @@ def demo_sell(user_id, exchange, token, amount_token, data, clients):
     usdt_received = amount_token * price
     update_demo_balance(user_id, exchange, token, -amount_token, data)
     update_demo_balance(user_id, exchange, 'USDT', usdt_received, data)
+    if is_manual:
+        data['trade_count'] += 1
+        entry = f"🔴 {datetime.now()} | Ручная операция: продажа {token} на {exchange.upper()} {amount_token} шт"
+        data['history'].append(entry)
+        save_demo_data(user_id, data)
     return True, f"Продано {amount_token:.8f} {token} за {usdt_received:.2f} USDT"
 
 def reset_demo_data(user_id):
     init_bal = {ex:{"USDT":0,"portfolio":{t:0 for t in get_available_tokens()}} for ex in EXCHANGES}
-    st.session_state.demo_data = {'balances':init_bal,'total_profit':0,'trade_count':0,'history':[]}
+    st.session_state.demo_data = {'balances':init_bal,'total_profit':0,'trade_count':0,'withdrawable_balance':0,'history':[]}
     save_demo_data(user_id, st.session_state.demo_data)
 
 # ------------------- РЕАЛЬНЫЕ ФУНКЦИИ -------------------
@@ -277,7 +320,7 @@ def real_sell(exchange, token, amount_token):
     except Exception as e:
         return False, str(e)
 
-# ------------------- АРБИТРАЖ (использует настройки min/max из session_state) -------------------
+# ------------------- АРБИТРАЖ -------------------
 def find_opportunity(mode, fee, min_profit, min_trade, max_trade, demo_data, real_exchanges, public_clients):
     opportunities = []
     tokens = get_available_tokens()
@@ -303,6 +346,7 @@ def find_opportunity(mode, fee, min_profit, min_trade, max_trade, demo_data, rea
                 else:
                     usdt = demo_data['balances'].get(buy_ex, {}).get('USDT', 0)
                     token_amt = demo_data['balances'].get(sell_ex, {}).get('portfolio', {}).get(token, 0)
+                if usdt < min_trade: continue
                 max_by_usdt = usdt
                 max_by_token = token_amt * sell_p
                 max_possible = min(max_by_usdt, max_by_token)
@@ -310,9 +354,8 @@ def find_opportunity(mode, fee, min_profit, min_trade, max_trade, demo_data, rea
                 trade_usdt = min(max_possible, max_trade)
                 if trade_usdt < min_trade: continue
                 amount = trade_usdt / buy_p
-                required_token = amount * 1.02   # небольшой запас
-                if required_token > token_amt:
-                    continue
+                required_token = amount * 1.02
+                if required_token > token_amt: continue
                 profit_before = (sell_p - buy_p) * amount
                 profit = profit_before * (1 - fee/100)
                 if profit < min_profit: continue
@@ -324,42 +367,78 @@ def find_opportunity(mode, fee, min_profit, min_trade, max_trade, demo_data, rea
     if not opportunities: return None
     return max(opportunities, key=lambda x: x['profit'])
 
-def execute_arbitrage(mode, opp, user_id, demo_data, real_exchanges, public_clients):
+def execute_arbitrage(mode, opp, user_id, demo_data, real_exchanges, public_clients, reinvest_percent):
     buy_ex = opp['buy_ex']; sell_ex = opp['sell_ex']; token = opp['token']
     amount = opp['amount']; trade_usdt = opp['trade_usdt']; sell_price = opp['sell_price']
     if mode == "Реальный":
-        ok_buy, msg_buy = real_buy(real_exchanges[buy_ex], token, trade_usdt)
-        if not ok_buy: return None, msg_buy
-        token_available = get_real_balance(real_exchanges[sell_ex], token)
-        if token_available < amount:
-            return None, f"После покупки не хватает {token} на {sell_ex}: нужно {amount:.8f}, доступно {token_available:.8f}"
-        ok_sell, msg_sell = real_sell(real_exchanges[sell_ex], token, amount)
-        if not ok_sell: return None, msg_sell
-        real_profit = amount * sell_price - trade_usdt
-        if 'real_profit' not in st.session_state: st.session_state.real_profit = 0
-        if 'real_trades' not in st.session_state: st.session_state.real_trades = 0
-        st.session_state.real_profit += real_profit
-        st.session_state.real_trades += 1
-        if 'real_history' not in st.session_state: st.session_state.real_history = []
-        st.session_state.real_history.append(f"✅ {datetime.now()} | {token} | {buy_ex}→{sell_ex} | {amount:.8f} | +{real_profit:.2f} USDT")
-        add_trade(user_id, mode, token, amount, real_profit, buy_ex, sell_ex)
-        return real_profit, None
+        ex_buy = real_exchanges.get(buy_ex)
+        ex_sell = real_exchanges.get(sell_ex)
+        if not ex_buy or not ex_sell:
+            return None, "Биржа не подключена"
+        usdt_balance = get_real_balance(ex_buy, 'USDT')
+        token_balance = get_real_balance(ex_sell, token)
+        if usdt_balance < trade_usdt:
+            return None, f"Не хватает USDT на {buy_ex}: {usdt_balance:.2f} < {trade_usdt:.2f}"
+        if token_balance < amount * 1.02:
+            return None, f"Не хватает {token} на {sell_ex}: {token_balance:.8f} < {amount:.8f}"
+        try:
+            ex_buy.create_market_buy_order(f"{token}/USDT", amount)
+            ex_sell.create_market_sell_order(f"{token}/USDT", amount)
+            real_profit = amount * sell_price - trade_usdt
+            if 'real_profit' not in st.session_state: st.session_state.real_profit = 0
+            if 'real_trades' not in st.session_state: st.session_state.real_trades = 0
+            st.session_state.real_profit += real_profit
+            st.session_state.real_trades += 1
+            if 'real_history' not in st.session_state: st.session_state.real_history = []
+            st.session_state.real_history.append(f"✅ {datetime.now()} | {token} | {buy_ex}→{sell_ex} | profit {real_profit:.2f}")
+            add_trade(user_id, mode, token, amount, real_profit, buy_ex, sell_ex)
+            return real_profit, None
+        except Exception as e:
+            return None, str(e)
     else:
-        ok_buy, msg_buy = demo_buy(user_id, buy_ex, token, trade_usdt, demo_data, public_clients)
+        if not demo_data:
+            return None, "Демо-данные не загружены"
+        usdt_balance = demo_data['balances'].get(buy_ex, {}).get('USDT', 0)
+        token_balance = demo_data['balances'].get(sell_ex, {}).get('portfolio', {}).get(token, 0)
+        if usdt_balance < trade_usdt:
+            return None, f"Не хватает USDT на {buy_ex}: {usdt_balance:.2f} < {trade_usdt:.2f}"
+        if token_balance < amount * 1.02:
+            return None, f"Не хватает {token} на {sell_ex}: {token_balance:.8f} < {amount:.8f}"
+        ok_buy, msg_buy = demo_buy(user_id, buy_ex, token, trade_usdt, demo_data, public_clients, is_manual=False)
         if not ok_buy: return None, msg_buy
-        token_available = demo_data['balances'].get(sell_ex, {}).get('portfolio', {}).get(token, 0)
-        if token_available < amount:
-            return None, f"После покупки не хватает {token} на {sell_ex}: нужно {amount:.8f}, доступно {token_available:.8f}"
-        ok_sell, msg_sell = demo_sell(user_id, sell_ex, token, amount, demo_data, public_clients)
+        ok_sell, msg_sell = demo_sell(user_id, sell_ex, token, amount, demo_data, public_clients, is_manual=False)
         if not ok_sell: return None, msg_sell
         real_profit = amount * sell_price - trade_usdt
+        # Сбалансированная реинвестиция (50/50)
+        if reinvest_percent > 0:
+            usdt_on_sell = demo_data['balances'].get(sell_ex, {}).get('USDT', 0)
+            token_on_sell = demo_data['balances'].get(sell_ex, {}).get('portfolio', {}).get(token, 0)
+            token_value = token_on_sell * sell_price
+            total_value = usdt_on_sell + token_value
+            target_usdt_ratio = 0.5
+            target_usdt = total_value * target_usdt_ratio
+            needed_usdt = max(0, target_usdt - usdt_on_sell)
+            reinvest_amount = real_profit * reinvest_percent / 100
+            reinvest_to_usdt = min(reinvest_amount, needed_usdt) if needed_usdt > 0 else 0
+            reinvest_to_tokens = reinvest_amount - reinvest_to_usdt
+            if reinvest_to_usdt > 0:
+                update_demo_balance(user_id, sell_ex, 'USDT', reinvest_to_usdt, demo_data)
+            if reinvest_to_tokens > 0:
+                ok, _ = demo_buy(user_id, sell_ex, token, reinvest_to_tokens, demo_data, public_clients, is_manual=False)
+                if not ok:
+                    update_demo_balance(user_id, sell_ex, 'USDT', reinvest_to_tokens, demo_data)
+        else:
+            reinvest_amount = 0
+        withdrawable_amount = real_profit - reinvest_amount if reinvest_percent > 0 else real_profit
+        if withdrawable_amount > 0:
+            demo_data['withdrawable_balance'] += withdrawable_amount
         demo_data['total_profit'] += real_profit
         demo_data['trade_count'] += 1
-        entry = f"✅ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {token} | {buy_ex}→{sell_ex} | {amount:.8f} | +{real_profit:.2f} USDT"
+        entry = f"✅ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {token} | {buy_ex}→{sell_ex} | +{real_profit:.2f} USDT | Реинвест {reinvest_percent}%"
         demo_data['history'].append(entry)
         save_demo_data(user_id, demo_data)
         add_trade(user_id, mode, token, amount, real_profit, buy_ex, sell_ex)
-        return real_profit, None
+        return real_profit, entry
 
 # ------------------- СЕССИЯ -------------------
 if 'logged_in' not in st.session_state:
@@ -374,43 +453,49 @@ if 'logged_in' not in st.session_state:
     st.session_state.real_history = []
     st.session_state.trade_mode = "Демо"
     st.session_state.auto_log = []
-    st.session_state.fee = 0.1
-    st.session_state.min_profit = 0.1
-    st.session_state.min_trade = 12.0
-    st.session_state.max_trade = 1000.0
     st.session_state.auto_trade_enabled = False
-    st.session_state.scan_interval = 15
     st.session_state.last_scan_time = None
     st.session_state.chat_unread = 0
-    # ДОБАВИТЬ ЭТИ ТРИ СТРОКИ:
-    st.session_state.reinvest_percent = 0
-    st.session_state.use_orderbook = False
-    st.session_state.max_slippage = 0.2
+    # Настройки (будут загружены из БД после логина)
+    st.session_state.fee = 0.1
+    st.session_state.min_profit = 0.05
+    st.session_state.min_trade = 12.0
+    st.session_state.max_trade = 10000.0
+    st.session_state.scan_interval = 30
+    st.session_state.reinvest_percent = 100
+
 public_clients = init_public_clients()
 real_exchanges = init_real_exchanges()
 
-# ------------------- АВТО-ОБНОВЛЕНИЕ И СКАНИРОВАНИЕ -------------------
-if st.session_state.get('auto_trade_enabled', False) and st.session_state.get('logged_in', False):
-    interval = st.session_state.get('scan_interval', 15)
+# ------------------- АВТО-СКАНИРОВАНИЕ -------------------
+if st.session_state.get('auto_trade_enabled', False) and st.session_state.get('logged_in', False) and st.session_state.demo_data is not None:
+    interval = st.session_state.get('scan_interval', 30)
     st_autorefresh(interval=interval * 1000, key="auto_refresh")
-    
     now = datetime.now()
     last = st.session_state.get('last_scan_time')
     if last is None or (now - last).total_seconds() >= interval:
         st.session_state.last_scan_time = now
-        opp = find_opportunity(st.session_state.trade_mode, st.session_state.fee, st.session_state.min_profit,
-                               st.session_state.min_trade, st.session_state.max_trade,
-                               st.session_state.demo_data, real_exchanges, public_clients)
+        opp = find_opportunity(
+            st.session_state.trade_mode, st.session_state.fee, st.session_state.min_profit,
+            st.session_state.min_trade, st.session_state.max_trade,
+            st.session_state.demo_data, real_exchanges, public_clients
+        )
         if opp:
             st.session_state.auto_log.append(f"🔍 Найдено: {opp['token']} {opp['buy_ex']}→{opp['sell_ex']} | прибыль {opp['profit']:.4f} USDT")
-            profit, err = execute_arbitrage(st.session_state.trade_mode, opp, st.session_state.user_id,
-                                            st.session_state.demo_data, real_exchanges, public_clients)
+            profit, msg = execute_arbitrage(
+                st.session_state.trade_mode, opp, st.session_state.user_id,
+                st.session_state.demo_data, real_exchanges, public_clients,
+                st.session_state.reinvest_percent
+            )
             if profit:
-                st.session_state.auto_log.append(f"✅ Сделка исполнена! +{profit:.2f} USDT")
+                st.session_state.auto_log.append(f"✅ Исполнено! +{profit:.2f} USDT")
             else:
-                st.session_state.auto_log.append(f"❌ Ошибка: {err}")
+                st.session_state.auto_log.append(f"❌ Ошибка: {msg}")
+        else:
+            if len(st.session_state.auto_log) == 0 or "Найдено" not in st.session_state.auto_log[-1]:
+                st.session_state.auto_log.append("❌ Возможностей не найдено")
 
-# ------------------- ЛОГИН -------------------
+# ------------------- ЛОГИН / РЕГИСТРАЦИЯ -------------------
 if not st.session_state.logged_in:
     st.markdown('<div class="main-header"><h1>Арбитражный бот <span class="hovmel-highlight">HOVMEL</span></h1></div><div class="subtitle">⚡ Автоматический поиск межбиржевого арбитража 24/7 ⚡</div>', unsafe_allow_html=True)
     tab1, tab2 = st.tabs(["Вход", "Регистрация"])
@@ -425,11 +510,20 @@ if not st.session_state.logged_in:
                 st.session_state.email = user['email']
                 st.session_state.username = user['full_name']
                 st.session_state.wallet = user.get('wallet_address', '')
+                # Загружаем демо-данные
                 st.session_state.demo_data = load_demo_data(user['id'])
                 if not st.session_state.demo_data:
                     init_bal = {ex:{"USDT":0,"portfolio":{t:0 for t in get_available_tokens()}} for ex in EXCHANGES}
-                    st.session_state.demo_data = {'balances':init_bal,'total_profit':0,'trade_count':0,'history':[]}
+                    st.session_state.demo_data = {'balances':init_bal,'total_profit':0,'trade_count':0,'withdrawable_balance':0,'history':[]}
                     save_demo_data(user['id'], st.session_state.demo_data)
+                # Загружаем настройки пользователя
+                settings = load_user_settings(user['id'])
+                st.session_state.fee = settings.get('fee', 0.1)
+                st.session_state.min_profit = settings.get('min_profit', 0.05)
+                st.session_state.min_trade = settings.get('min_trade', 12.0)
+                st.session_state.max_trade = settings.get('max_trade', 10000.0)
+                st.session_state.scan_interval = settings.get('scan_interval', 30)
+                st.session_state.reinvest_percent = settings.get('reinvest_percent', 100)
                 st.session_state.chat_unread = get_unread_count(user['id'])
                 st.rerun()
             else:
@@ -480,7 +574,6 @@ with col4:
 connected = [ex.upper() for ex, cl in public_clients.items() if cl is not None]
 st.success(f"🔌 Биржи для мониторинга: {', '.join(connected)}")
 
-# Кнопки СТАРТ и СТОП
 col_start, col_stop, col_mode, _ = st.columns([1,1,2,1])
 with col_start:
     if st.button("▶ СТАРТ АВТО-ТОРГОВЛИ", use_container_width=True):
@@ -509,12 +602,15 @@ if st.session_state.trade_mode == "Реальный":
                     if price: total_portfolio += amt * price
     total_capital = total_usdt + total_portfolio
 else:
-    balances = st.session_state.demo_data['balances']
-    total_usdt = sum(balances.get(ex, {}).get('USDT',0) for ex in EXCHANGES)
+    if st.session_state.demo_data and 'balances' in st.session_state.demo_data:
+        balances = st.session_state.demo_data['balances']
+    else:
+        balances = {ex: {"USDT": 0, "portfolio": {t: 0 for t in get_available_tokens()}} for ex in EXCHANGES}
+    total_usdt = sum(balances.get(ex, {}).get('USDT', 0) for ex in EXCHANGES)
     total_portfolio = 0
     for ex in EXCHANGES:
-        for token, amt in balances.get(ex, {}).get('portfolio',{}).items():
-            if amt>0 and public_clients[ex]:
+        for token, amt in balances.get(ex, {}).get('portfolio', {}).items():
+            if amt > 0 and public_clients[ex]:
                 price = get_price(public_clients[ex], token)
                 if price: total_portfolio += amt * price
     total_capital = total_usdt + total_portfolio
@@ -523,32 +619,43 @@ col_a, col_b, col_c, col_d = st.columns(4)
 col_a.metric("💰 USDT на биржах", f"{total_usdt:.2f}")
 col_b.metric("📦 Портфель (токены)", f"{total_portfolio:.2f}")
 col_c.metric("💎 Общий капитал", f"{total_capital:.2f}")
-trade_count = st.session_state.real_trades if st.session_state.trade_mode == "Реальный" else st.session_state.demo_data['trade_count']
+trade_count = st.session_state.real_trades if st.session_state.trade_mode == "Реальный" else st.session_state.demo_data.get('trade_count', 0)
 col_d.metric("📊 Сделок", trade_count)
 
-# ------------------- НАСТРОЙКИ АРБИТРАЖА (теперь вы сами задаёте min и max сумму) -------------------
-with st.expander("⚙️ Настройки арбитража"):
-    st.session_state.fee = st.number_input("Комиссия (%)", 0.0, 0.5, st.session_state.fee, 0.01, format="%.2f")
-    st.session_state.min_profit = st.number_input("Мин. прибыль (USDT)", 0.001, 10.0, st.session_state.min_profit, 0.01, format="%.3f")
-    st.markdown("---")
-    st.markdown("**💰 Настройки суммы сделки (для авто-торговли и ручного поиска)**")
-    new_min = st.number_input("Минимальная сумма сделки (USDT)", min_value=1.0, max_value=100000.0, value=st.session_state.min_trade, step=10.0)
-    new_max = st.number_input("Максимальная сумма сделки (USDT)", min_value=1.0, max_value=100000.0, value=st.session_state.max_trade, step=50.0)
-    if new_min != st.session_state.min_trade or new_max != st.session_state.max_trade:
-        st.session_state.min_trade = new_min
-        st.session_state.max_trade = new_max
-        st.rerun()
-    st.info(f"Авто-торговля будет использовать сумму в диапазоне от {st.session_state.min_trade:.0f} до {st.session_state.max_trade:.0f} USDT (с учётом доступных средств).")
-    st.markdown("---")
-    interval = st.number_input("Интервал сканирования (сек)", 5, 180, st.session_state.scan_interval, 5)
-    if interval != st.session_state.scan_interval:
-        st.session_state.scan_interval = interval
+# ------------------- НАСТРОЙКИ -------------------
+with st.expander("⚙️ Настройки арбитража", expanded=True):
+    fee = st.number_input("Комиссия (%)", 0.0, 0.5, st.session_state.fee, 0.01, format="%.2f")
+    min_profit = st.number_input("Мин. прибыль (USDT)", 0.001, 10.0, st.session_state.min_profit, 0.01, format="%.3f")
+    min_trade = st.number_input("Минимальная сумма сделки (USDT)", 1.0, 1e9, st.session_state.min_trade, 5.0)
+    max_trade = st.number_input("Максимальная сумма сделки (USDT)", 1.0, 1e9, st.session_state.max_trade, 50.0)
+    scan_interval = st.number_input("Интервал сканирования (сек)", 10, 300, st.session_state.scan_interval, 5)
+    reinvest_percent = st.slider("Процент реинвестиции (%)", 0, 100, st.session_state.reinvest_percent, 5)
+
+    if (fee != st.session_state.fee or min_profit != st.session_state.min_profit or
+        min_trade != st.session_state.min_trade or max_trade != st.session_state.max_trade or
+        scan_interval != st.session_state.scan_interval or reinvest_percent != st.session_state.reinvest_percent):
+        st.session_state.fee = fee
+        st.session_state.min_profit = min_profit
+        st.session_state.min_trade = min_trade
+        st.session_state.max_trade = max_trade
+        st.session_state.scan_interval = scan_interval
+        st.session_state.reinvest_percent = reinvest_percent
+        if st.session_state.user_id:
+            save_user_settings(st.session_state.user_id, {
+                'fee': fee,
+                'min_profit': min_profit,
+                'min_trade': min_trade,
+                'max_trade': max_trade,
+                'scan_interval': scan_interval,
+                'reinvest_percent': reinvest_percent
+            })
         st.rerun()
 
-# Лог авто-торговли
+    st.info(f"Настройки сохранены в базе данных. Текущая максимальная сумма: {st.session_state.max_trade:.0f} USDT.")
+
 with st.expander("📋 Лог авто-торговли", expanded=True):
     if st.session_state.auto_log:
-        for log in st.session_state.auto_log[-30:]:
+        for log in st.session_state.auto_log[-50:]:
             st.text(log)
     else:
         st.info("Нет событий. Запустите авто-торговлю кнопкой СТАРТ.")
@@ -560,15 +667,39 @@ if show_admin:
     tabs_list.append("👑 Админ-панель")
 tabs = st.tabs(tabs_list)
 
-# ---------- DASHBOARD ----------
+# ----- DASHBOARD -----
 with tabs[0]:
     st.subheader("📊 Dashboard")
-    st.write("Добро пожаловать в арбитражного бота **HOVMEL**.")
+    st.write("Добро пожаловать в арбитражного бота **HOVMEL** (мем-коины + сбалансированная реинвестиция).")
     st.write(f"Активные токены: {', '.join(get_available_tokens())}")
     st.write(f"Текущие настройки суммы сделки: от **{st.session_state.min_trade:.0f}** до **{st.session_state.max_trade:.0f}** USDT.")
-    st.write("Вы можете изменить эти значения в настройках арбитража.")
+    st.write(f"**Реинвестиция:** {st.session_state.reinvest_percent}% прибыли (сбалансировано: 50% USDT / 50% токены).")
+    st.write(f"**Минимальная прибыль:** {st.session_state.min_profit:.2f} USDT.")
+    st.markdown("---")
+    st.markdown("### 💹 Текущие цены токенов")
+    token_prices = []
+    for token in get_available_tokens():
+        row = {"Токен": token}
+        for ex in EXCHANGES:
+            if public_clients[ex]:
+                price = get_price(public_clients[ex], token)
+                row[ex.upper()] = f"{price:.8f}" if price else "—"
+            else:
+                row[ex.upper()] = "—"
+        if row.get("KUCOIN", "—") != "—" and row.get("OKX", "—") != "—":
+            try:
+                diff = abs(float(row["KUCOIN"]) - float(row["OKX"])) / float(row["KUCOIN"]) * 100
+                row["Спред %"] = f"{diff:.2f}%"
+            except:
+                row["Спред %"] = "—"
+        else:
+            row["Спред %"] = "—"
+        token_prices.append(row)
+    df_prices = pd.DataFrame(token_prices)
+    st.dataframe(df_prices, use_container_width=True, hide_index=True)
+    st.caption("Спред >0.2% + комиссия 0.1% даёт чистую прибыль >0.1%.")
 
-# ---------- ГРАФИКИ ----------
+# ----- ГРАФИКИ -----
 with tabs[1]:
     st.subheader("📈 Графики цен")
     tok = st.selectbox("Выберите токен", get_available_tokens())
@@ -584,44 +715,59 @@ with tabs[1]:
             fig = px.bar(df, x="Биржа", y="Цена", title=f"{tok}/USDT", color="Биржа")
             st.plotly_chart(fig, use_container_width=True)
 
-# ---------- АРБИТРАЖ (ручной) ----------
+# ----- АРБИТРАЖ (ручной) -----
 with tabs[2]:
     st.subheader("🔄 Ручной поиск арбитража")
-    # Здесь можно дополнительно ввести желаемую сумму, но мы просто используем общие настройки min/max.
-    # Если хотите отдельную сумму – раскомментируйте следующую строку и замените min_trade/max_trade.
-    # manual_amount = st.number_input("💰 Желаемая сумма сделки (USDT)", min_value=1.0, max_value=st.session_state.max_trade, value=st.session_state.min_trade, step=10.0)
-    # Но по просьбе "в настройки вставил минимум и максимум" – будем использовать их.
-    if st.button("🔍 Найти лучшую возможность (с учётом текущих настроек сумм)"):
-        opp = find_opportunity(st.session_state.trade_mode, st.session_state.fee, st.session_state.min_profit,
-                               st.session_state.min_trade, st.session_state.max_trade,
-                               st.session_state.demo_data, real_exchanges, public_clients)
-        if opp:
-            st.success(f"Найдена возможность: {opp['token']}")
-            st.write(f"**Покупка:** {opp['buy_ex'].upper()} по {opp['buy_price']:.2f} USDT")
-            st.write(f"**Продажа:** {opp['sell_ex'].upper()} по {opp['sell_price']:.2f} USDT")
-            st.write(f"**Сумма сделки:** {opp['trade_usdt']:.2f} USDT")
-            st.write(f"**Прибыль:** {opp['profit']:.4f} USDT")
-            if st.button("✅ Выполнить сделку"):
-                profit, err = execute_arbitrage(st.session_state.trade_mode, opp, st.session_state.user_id,
-                                                st.session_state.demo_data, real_exchanges, public_clients)
-                if profit:
-                    st.success(f"Сделка выполнена! Прибыль: {profit:.2f} USDT")
-                    st.rerun()
-                else:
-                    st.error(f"Ошибка: {err}")
+    if st.button("🔍 Найти лучшую возможность (с учётом текущих настроек)"):
+        if not st.session_state.demo_data:
+            st.error("Данные демо-счёта не загружены. Пожалуйста, войдите снова.")
         else:
-            st.warning("Арбитражных возможностей не найдено")
+            opp = find_opportunity(
+                st.session_state.trade_mode, st.session_state.fee, st.session_state.min_profit,
+                st.session_state.min_trade, st.session_state.max_trade,
+                st.session_state.demo_data, real_exchanges, public_clients
+            )
+            if opp:
+                st.success(f"Найдена возможность: {opp['token']}")
+                st.write(f"**Покупка:** {opp['buy_ex'].upper()} по {opp['buy_price']:.8f} USDT")
+                st.write(f"**Продажа:** {opp['sell_ex'].upper()} по {opp['sell_price']:.8f} USDT")
+                st.write(f"**Сумма сделки:** {opp['trade_usdt']:.2f} USDT")
+                st.write(f"**Прибыль:** {opp['profit']:.4f} USDT")
+                if st.button("✅ Выполнить сделку"):
+                    profit, msg = execute_arbitrage(
+                        st.session_state.trade_mode, opp, st.session_state.user_id,
+                        st.session_state.demo_data, real_exchanges, public_clients,
+                        st.session_state.reinvest_percent
+                    )
+                    if profit:
+                        st.success(f"Сделка выполнена! Прибыль: {profit:.2f} USDT. {msg}")
+                        st.rerun()
+                    else:
+                        st.error(f"Ошибка: {msg}")
+            else:
+                st.warning("Арбитражных возможностей не найдено")
 
-# ---------- СТАТИСТИКА ----------
+# ----- СТАТИСТИКА -----
 with tabs[3]:
     st.subheader("📊 Статистика")
-    profit = st.session_state.real_profit if st.session_state.trade_mode == "Реальный" else st.session_state.demo_data['total_profit']
-    trades = st.session_state.real_trades if st.session_state.trade_mode == "Реальный" else st.session_state.demo_data['trade_count']
-    col1, col2 = st.columns(2)
+    if st.session_state.trade_mode == "Реальный":
+        profit = st.session_state.real_profit
+        trades = st.session_state.real_trades
+        withdrawable = 0
+    else:
+        if st.session_state.demo_data:
+            profit = st.session_state.demo_data.get('total_profit', 0)
+            trades = st.session_state.demo_data.get('trade_count', 0)
+            withdrawable = st.session_state.demo_data.get('withdrawable_balance', 0)
+        else:
+            profit, trades, withdrawable = 0, 0, 0
+    col1, col2, col3 = st.columns(3)
     col1.metric("📈 Общая прибыль", f"{profit:.2f} USDT")
     col2.metric("🔄 Количество сделок", trades)
+    col3.metric("💰 Доступно для вывода", f"{withdrawable:.2f} USDT")
     if trades > 0:
-        st.metric("📊 Средняя прибыль на сделку", f"{profit/trades:.2f} USDT")
+        avg = profit / trades
+        st.metric("📊 Средняя прибыль на сделку", f"{avg:.4f} USDT")
     all_trades = get_all_trades(100)
     if all_trades:
         df_trades = pd.DataFrame(all_trades)
@@ -631,12 +777,13 @@ with tabs[3]:
         fig = px.line(df_trades, x='trade_time', y='cumulative_profit', title="Накопленная прибыль (все сделки)")
         st.plotly_chart(fig, use_container_width=True)
 
-# ---------- БАЛАНСЫ ----------
+# ----- БАЛАНСЫ -----
 with tabs[4]:
     st.subheader("💼 Балансы и ручная торговля")
-    
-    if st.session_state.trade_mode == "Демо":
-        st.markdown("### 💰 Пополнение демо-балансов")
+    if st.session_state.trade_mode == "Демо" and st.session_state.demo_data:
+        st.markdown(f"**💰 Доступно для вывода (от реинвестиции):** {st.session_state.demo_data.get('withdrawable_balance',0):.2f} USDT")
+        st.markdown("---")
+        st.markdown("### 💰 Пополнение демо-балансов (не влияет на счётчик сделок)")
         col1, col2, col3 = st.columns(3)
         with col1:
             demo_exchange = st.selectbox("Биржа", EXCHANGES, key="demo_ex")
@@ -645,7 +792,7 @@ with tabs[4]:
         with col3:
             amount_add = st.number_input("Количество", min_value=0.0, step=10.0, key="demo_amount")
         if st.button("➕ Добавить на демо-счёт"):
-            if amount_add > 0:
+            if amount_add > 0 and st.session_state.demo_data:
                 update_demo_balance(st.session_state.user_id, demo_exchange, asset_type, amount_add, st.session_state.demo_data)
                 st.success(f"Добавлено {amount_add} {asset_type} на {demo_exchange.upper()}")
                 st.rerun()
@@ -672,33 +819,38 @@ with tabs[4]:
             balances = {ex: {'USDT': 0, 'portfolio': {t: 0 for t in TOKENS}} for ex in EXCHANGES}
             st.warning("Реальные биржи не подключены. Добавьте API-ключи в админ-панели.")
     else:
-        balances = st.session_state.demo_data['balances']
+        if st.session_state.demo_data and 'balances' in st.session_state.demo_data:
+            balances = st.session_state.demo_data['balances']
+        else:
+            balances = {ex: {'USDT': 0, 'portfolio': {t: 0 for t in TOKENS}} for ex in EXCHANGES}
     
     for ex in EXCHANGES:
         with st.expander(f"{ex.upper()}"):
-            st.write(f"**USDT:** {balances[ex]['USDT']:.2f}")
-            port = balances[ex]['portfolio']
-            for token, amt in port.items():
-                if amt > 0:
-                    price = get_price(public_clients[ex], token) if public_clients[ex] else None
-                    val = amt * price if price else 0
-                    st.write(f"{token}: {amt:.8f} ≈ {val:.2f} USDT")
+            if ex in balances:
+                st.write(f"**USDT:** {balances[ex].get('USDT', 0):.2f}")
+                port = balances[ex].get('portfolio', {})
+                for token, amt in port.items():
+                    if amt > 0:
+                        price = get_price(public_clients.get(ex), token) if public_clients.get(ex) else None
+                        val = amt * price if price else 0
+                        st.write(f"{token}: {amt:.8f} ≈ {val:.2f} USDT")
+            else:
+                st.write(f"**USDT:** 0.00")
+                st.write(f"**Токены:** нет данных")
             st.markdown("---")
             colA, colB = st.columns(2)
             with colA:
                 token_buy = st.selectbox("Купить", get_available_tokens(), key=f"buy_{ex}")
-                usdt_amt = st.number_input("Сумма в USDT", min_value=1.0, max_value=st.session_state.max_trade, value=min(15.0, st.session_state.max_trade), step=10.0, key=f"usdt_{ex}")
+                usdt_amt = st.number_input("Сумма в USDT", min_value=1.0, value=15.0, step=10.0, key=f"usdt_{ex}")
                 if st.button(f"Купить {token_buy}", key=f"btn_buy_{ex}"):
                     if st.session_state.trade_mode == "Реальный":
-                        ok, msg = real_buy(real_exchanges[ex], token_buy, usdt_amt)
+                        ok, msg = real_buy(real_exchanges.get(ex), token_buy, usdt_amt)
                     else:
-                        ok, msg = demo_buy(st.session_state.user_id, ex, token_buy, usdt_amt, st.session_state.demo_data, public_clients)
+                        if not st.session_state.demo_data:
+                            st.error("Нет демо-данных")
+                        else:
+                            ok, msg = demo_buy(st.session_state.user_id, ex, token_buy, usdt_amt, st.session_state.demo_data, public_clients, is_manual=True)
                     if ok:
-                        if st.session_state.trade_mode == "Демо":
-                            st.session_state.demo_data['trade_count'] += 1
-                            entry = f"🟢 {datetime.now()} | Ручная покупка {token_buy} на {ex.upper()} на {usdt_amt} USDT"
-                            st.session_state.demo_data['history'].append(entry)
-                            save_demo_data(st.session_state.user_id, st.session_state.demo_data)
                         st.success(msg)
                         st.rerun()
                     else:
@@ -708,25 +860,26 @@ with tabs[4]:
                 token_amt = st.number_input("Количество токенов", min_value=0.000001, step=0.001, format="%.6f", key=f"amt_{ex}")
                 if st.button(f"Продать {token_sell}", key=f"btn_sell_{ex}"):
                     if st.session_state.trade_mode == "Реальный":
-                        ok, msg = real_sell(real_exchanges[ex], token_sell, token_amt)
+                        ok, msg = real_sell(real_exchanges.get(ex), token_sell, token_amt)
                     else:
-                        ok, msg = demo_sell(st.session_state.user_id, ex, token_sell, token_amt, st.session_state.demo_data, public_clients)
+                        if not st.session_state.demo_data:
+                            st.error("Нет демо-данных")
+                        else:
+                            ok, msg = demo_sell(st.session_state.user_id, ex, token_sell, token_amt, st.session_state.demo_data, public_clients, is_manual=True)
                     if ok:
-                        if st.session_state.trade_mode == "Демо":
-                            st.session_state.demo_data['trade_count'] += 1
-                            entry = f"🔴 {datetime.now()} | Ручная продажа {token_sell} на {ex.upper()} {token_amt} шт"
-                            st.session_state.demo_data['history'].append(entry)
-                            save_demo_data(st.session_state.user_id, st.session_state.demo_data)
                         st.success(msg)
                         st.rerun()
                     else:
                         st.error(msg)
 
-# ---------- ВЫВОД ----------
+# ----- ВЫВОД -----
 with tabs[5]:
     st.subheader("💰 Вывод средств")
     st.info("Вывод возможен только после одобрения администратором (комиссия 22%).")
-    withdrawable = st.session_state.demo_data.get('withdrawable_balance', 0.0) if st.session_state.trade_mode == "Демо" else 0.0
+    if st.session_state.trade_mode == "Реальный":
+        withdrawable = 0.0
+    else:
+        withdrawable = st.session_state.demo_data.get('withdrawable_balance', 0.0) if st.session_state.demo_data else 0.0
     st.write(f"Доступно для вывода: **{withdrawable:.2f} USDT**")
     amount = st.number_input("Сумма вывода (USDT)", min_value=1.0, max_value=max(1.0, withdrawable), step=10.0)
     wallet = st.text_input("Адрес USDT (TRC20)", value=st.session_state.wallet)
@@ -737,20 +890,20 @@ with tabs[5]:
         else:
             st.error("Введите корректную сумму и адрес")
 
-# ---------- ИСТОРИЯ ----------
+# ----- ИСТОРИЯ -----
 with tabs[6]:
     st.subheader("📜 История сделок")
     if st.session_state.trade_mode == "Реальный":
         hist = st.session_state.real_history[-50:]
     else:
-        hist = st.session_state.demo_data['history'][-50:]
+        hist = st.session_state.demo_data['history'][-50:] if st.session_state.demo_data else []
     if hist:
         for h in reversed(hist):
             st.text(h)
     else:
         st.info("Сделок пока нет")
 
-# ---------- КАБИНЕТ ----------
+# ----- КАБИНЕТ -----
 with tabs[7]:
     st.subheader("👤 Личный кабинет")
     col1, col2 = st.columns(2)
@@ -759,13 +912,13 @@ with tabs[7]:
         st.write(f"**Email:** {st.session_state.email}")
         st.write(f"**Кошелёк:** {st.session_state.wallet}")
     with col2:
-        trades = st.session_state.real_trades if st.session_state.trade_mode == "Реальный" else st.session_state.demo_data['trade_count']
-        profit = st.session_state.real_profit if st.session_state.trade_mode == "Реальный" else st.session_state.demo_data['total_profit']
+        trades = st.session_state.real_trades if st.session_state.trade_mode == "Реальный" else (st.session_state.demo_data.get('trade_count', 0) if st.session_state.demo_data else 0)
+        profit = st.session_state.real_profit if st.session_state.trade_mode == "Реальный" else (st.session_state.demo_data.get('total_profit', 0) if st.session_state.demo_data else 0)
         st.write(f"**Всего сделок:** {trades}")
         st.write(f"**Общая прибыль:** {profit:.2f} USDT")
         st.write(f"**Общий капитал:** {total_capital:.2f} USDT")
 
-# ---------- ЧАТ ----------
+# ----- ЧАТ -----
 with tabs[8]:
     st.subheader("💬 Чат поддержки")
     if st.session_state.chat_unread > 0:
@@ -785,12 +938,10 @@ with tabs[8]:
     mark_messages_read(st.session_state.user_id)
     st.session_state.chat_unread = 0
 
-# ---------- АДМИН-ПАНЕЛЬ ----------
 if show_admin:
     with tabs[9]:
         st.subheader("👑 Административная панель")
         admin_tabs = st.tabs(["Пользователи", "API ключи", "Выводы", "Конфиг", "Сообщения"])
-        
         with admin_tabs[0]:
             st.markdown("#### Управление пользователями")
             users = get_all_users_for_admin()
@@ -802,9 +953,8 @@ if show_admin:
                     if st.button("Обновить", key=f"update_{user['id']}"):
                         update_user_status(user['id'], new_status)
                         st.rerun()
-        
         with admin_tabs[1]:
-            st.markdown("#### API ключи бирж (для реального режима)")
+            st.markdown("#### API ключи бирж")
             for ex in EXCHANGES:
                 with st.expander(f"{ex.upper()}"):
                     api_key = st.text_input(f"API Key ({ex})", type="password", key=f"api_{ex}")
@@ -813,7 +963,6 @@ if show_admin:
                         save_api_key(ex, api_key, secret, st.session_state.email)
                         st.success(f"Ключи для {ex} сохранены")
                         st.rerun()
-        
         with admin_tabs[2]:
             st.markdown("#### Заявки на вывод")
             withdrawals = get_pending_withdrawals()
@@ -830,7 +979,6 @@ if show_admin:
                         if st.button("❌ Отклонить", key=f"reject_{w['id']}"):
                             update_withdrawal_status(w['id'], 'rejected')
                             st.rerun()
-        
         with admin_tabs[3]:
             st.markdown("#### Конфигурация токенов")
             current_tokens = get_available_tokens()
@@ -841,7 +989,6 @@ if show_admin:
                     set_config('tokens', new_tokens)
                     st.success("Список токенов обновлён")
                     st.rerun()
-        
         with admin_tabs[4]:
             st.markdown("#### Сообщения пользователей")
             all_messages = get_messages(limit=100)
