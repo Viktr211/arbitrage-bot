@@ -53,8 +53,7 @@ except Exception:
     if not SUPABASE_URL or not SUPABASE_KEY:
         st.error("❌ Ошибка: не заданы SUPABASE_URL и SUPABASE_KEY.\n\n"
                  "Для локального запуска создайте файл `.streamlit/secrets.toml`:\n"
-                 "```\nSUPABASE_URL = 'https://your-project.supabase.co'\nSUPABASE_KEY = 'your-anon-key'\n```\n"
-                 "Или установите переменные окружения SUPABASE_URL и SUPABASE_KEY.")
+                 "```\nSUPABASE_URL = 'https://your-project.supabase.co'\nSUPABASE_KEY = 'your-anon-key'\n```")
         st.stop()
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -81,7 +80,7 @@ def decrypt_key(encrypted: str) -> str:
         return ""
 
 EXCHANGES = ["kucoin", "okx"]
-TOKENS = ["DOGE", "SHIB", "PEPE", "WIF", "FLOKI", "BONK", "MEME", "BOME", "DOGS", "NOT"]
+TOKENS = ["DOGE", "SHIB", "PEPE", "WIF", "FLOKI", "BONK", "MEME", "BOME", "NEIRO", "BRETT"]
 ADMIN_EMAILS = ["cb777899@gmail.com", "admin@arbitrage.com"]
 REAL_MODE_ALLOWED_USERS = ["cb777899@gmail.com"]
 
@@ -330,6 +329,7 @@ def get_order_book_price(exchange, symbol, side, amount_usdt, depth=10):
 
 # ------------------- ДЕМО-ФУНКЦИИ -------------------
 def update_demo_balance(user_id, exchange, asset, delta, data):
+    """Пополнение баланса (не увеличивает trade_count)"""
     if exchange not in data['balances']:
         data['balances'][exchange] = {'USDT':0.0, 'portfolio':{t:0.0 for t in get_available_tokens()}}
     if asset == 'USDT':
@@ -349,7 +349,6 @@ def demo_buy(user_id, exchange, token, usdt_amount, data, clients, is_manual=Fal
         return False, f"Не хватает USDT (есть {data['balances'][exchange]['USDT']:.2f})"
     update_demo_balance(user_id, exchange, 'USDT', -usdt_amount, data)
     update_demo_balance(user_id, exchange, token, amount_token, data)
-    # Ручные операции (is_manual=True) увеличивают trade_count
     if is_manual:
         data['trade_count'] += 1
         entry = f"🟢 {datetime.now()} | Ручная операция: покупка {token} на {exchange.upper()} на {usdt_amount} USDT"
@@ -524,7 +523,7 @@ def execute_real_arbitrage(opp, user_id):
     add_trade(user_id, "Реальный", token, amount, real_profit, buy_ex, sell_ex)
     return real_profit, msg_buy + " | " + msg_sell
 
-def find_demo_opportunity(mode, fee, min_profit, min_trade, max_trade, demo_data, real_exchanges, public_clients):
+def find_demo_opportunity(fee, min_profit, min_trade, max_trade, demo_data, public_clients):
     opportunities = []
     tokens = get_available_tokens()
     prices = {}
@@ -646,6 +645,7 @@ if st.session_state.get('auto_trade_enabled', False) and st.session_state.get('l
                         st.session_state.auto_log.append(f"✅ Исполнено! +{profit:.2f} USDT")
                     else:
                         st.session_state.auto_log.append(f"❌ Ошибка: {msg}")
+                # не спамим "не найдено"
         else:
             st.warning("🔐 Реальный режим требует API-ключей. Добавьте их в админ-панели.")
     else:
@@ -657,9 +657,9 @@ if st.session_state.get('auto_trade_enabled', False) and st.session_state.get('l
             if last is None or (now - last).total_seconds() >= interval:
                 st.session_state.last_scan_time = now
                 opp = find_demo_opportunity(
-                    st.session_state.trade_mode, st.session_state.fee, st.session_state.min_profit,
+                    st.session_state.fee, st.session_state.min_profit,
                     st.session_state.min_trade, st.session_state.max_trade,
-                    st.session_state.demo_data, st.session_state.real_exchanges, public_clients
+                    st.session_state.demo_data, public_clients
                 )
                 if opp:
                     st.session_state.auto_log.append(f"🔍 Найдено (демо): {opp['token']} {opp['buy_ex']}→{opp['sell_ex']} | прибыль {opp['profit']:.4f} USDT")
@@ -933,9 +933,9 @@ with tabs[2]:
                 st.error("Данные демо-счёта не загружены.")
             else:
                 opp = find_demo_opportunity(
-                    st.session_state.trade_mode, st.session_state.fee, st.session_state.min_profit,
+                    st.session_state.fee, st.session_state.min_profit,
                     st.session_state.min_trade, st.session_state.max_trade,
-                    st.session_state.demo_data, st.session_state.real_exchanges, public_clients
+                    st.session_state.demo_data, public_clients
                 )
                 if opp:
                     st.success(f"Найдена возможность: {opp['token']}")
@@ -1002,7 +1002,6 @@ with tabs[4]:
             amount_add = st.number_input("Количество", min_value=0.0, step=10.0, key="demo_amount")
         if st.button("➕ Добавить на демо-счёт"):
             if amount_add > 0 and st.session_state.demo_data:
-                # Пополнение не меняет trade_count
                 update_demo_balance(st.session_state.user_id, demo_exchange, asset_type, amount_add, st.session_state.demo_data)
                 st.success(f"Добавлено {amount_add} {asset_type} на {demo_exchange.upper()}")
                 st.rerun()
@@ -1066,7 +1065,6 @@ with tabs[4]:
                             if client is None:
                                 st.error(f"Биржа {ex.upper()} не подключена для получения цен")
                             else:
-                                # Ручная покупка is_manual=True увеличивает trade_count
                                 ok, msg = demo_buy(st.session_state.user_id, ex, token_buy, usdt_amt, st.session_state.demo_data, public_clients, is_manual=True)
                     if ok:
                         st.success(msg)
@@ -1090,7 +1088,6 @@ with tabs[4]:
                             if client is None:
                                 st.error(f"Биржа {ex.upper()} не подключена для получения цен")
                             else:
-                                # Ручная продажа is_manual=True увеличивает trade_count
                                 ok, msg = demo_sell(st.session_state.user_id, ex, token_sell, token_amt, st.session_state.demo_data, public_clients, is_manual=True)
                     if ok:
                         st.success(msg)
