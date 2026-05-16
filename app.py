@@ -327,9 +327,8 @@ def get_order_book_price(exchange, symbol, side, amount_usdt, depth=10):
     except Exception as e:
         return None, 0
 
-# ------------------- ДЕМО-ФУНКЦИИ -------------------
+# ------------------- ДЕМО-ФУНКЦИИ (исправлены: ручные операции не увеличивают trade_count) -------------------
 def update_demo_balance(user_id, exchange, asset, delta, data):
-    """Пополнение баланса (не увеличивает trade_count)"""
     if exchange not in data['balances']:
         data['balances'][exchange] = {'USDT':0.0, 'portfolio':{t:0.0 for t in get_available_tokens()}}
     if asset == 'USDT':
@@ -350,7 +349,7 @@ def demo_buy(user_id, exchange, token, usdt_amount, data, clients, is_manual=Fal
     update_demo_balance(user_id, exchange, 'USDT', -usdt_amount, data)
     update_demo_balance(user_id, exchange, token, amount_token, data)
     if is_manual:
-        data['trade_count'] += 1
+        # Ручная операция: добавляем в историю, НО НЕ УВЕЛИЧИВАЕМ trade_count
         entry = f"🟢 {datetime.now()} | Ручная операция: покупка {token} на {exchange.upper()} на {usdt_amount} USDT"
         data['history'].append(entry)
         save_demo_data(user_id, data)
@@ -367,7 +366,6 @@ def demo_sell(user_id, exchange, token, amount_token, data, clients, is_manual=F
     update_demo_balance(user_id, exchange, token, -amount_token, data)
     update_demo_balance(user_id, exchange, 'USDT', usdt_received, data)
     if is_manual:
-        data['trade_count'] += 1
         entry = f"🔴 {datetime.now()} | Ручная операция: продажа {token} на {exchange.upper()} {amount_token} шт"
         data['history'].append(entry)
         save_demo_data(user_id, data)
@@ -645,7 +643,6 @@ if st.session_state.get('auto_trade_enabled', False) and st.session_state.get('l
                         st.session_state.auto_log.append(f"✅ Исполнено! +{profit:.2f} USDT")
                     else:
                         st.session_state.auto_log.append(f"❌ Ошибка: {msg}")
-                # не спамим "не найдено"
         else:
             st.warning("🔐 Реальный режим требует API-ключей. Добавьте их в админ-панели.")
     else:
