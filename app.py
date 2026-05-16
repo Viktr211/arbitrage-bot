@@ -43,42 +43,6 @@ div[data-testid="stMetric"] div { font-size: 1.2rem; }
 </style>
 """, unsafe_allow_html=True)
 
-# ------------------- ЗВУК (Web Audio, надёжно) -------------------
-st.markdown("""
-<script>
-    let audioCtx = null;
-    let soundEnabled = false;
-
-    function initAudio() {
-        if (audioCtx) return;
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        soundEnabled = true;
-        // "разбудим" контекст
-        if (audioCtx.state === 'suspended') {
-            audioCtx.resume();
-        }
-    }
-
-    function playTradeSound() {
-        if (!soundEnabled || !audioCtx) return;
-        const now = audioCtx.currentTime;
-        const osc = audioCtx.createOscillator();
-        const gain = audioCtx.createGain();
-        osc.connect(gain);
-        gain.connect(audioCtx.destination);
-        osc.type = 'sine';
-        osc.frequency.value = 880; // высокий звук
-        gain.gain.value = 0.2;
-        osc.start();
-        gain.gain.exponentialRampToValueAtTime(0.00001, now + 0.5);
-        osc.stop(now + 0.5);
-    }
-
-    window.initAudio = initAudio;
-    window.playTradeSound = playTradeSound;
-</script>
-""", unsafe_allow_html=True)
-
 # ------------------- SUPABASE -------------------
 try:
     SUPABASE_URL = st.secrets["SUPABASE_URL"]
@@ -555,7 +519,6 @@ def execute_real_arbitrage(opp, user_id):
     st.session_state.real_profit_total += real_profit
     add_trade(user_id, "Реальный", token, amount, real_profit, buy_ex, sell_ex)
     st.toast(f"💰 Реальная сделка: +{real_profit:.2f} USDT", icon="✅")
-    st.components.v1.html("<script>playTradeSound();</script>", height=0, width=0)
     return real_profit, msg_buy + " | " + msg_sell
 
 def find_demo_opportunity(fee, min_profit, min_trade, max_trade, demo_data, public_clients):
@@ -628,7 +591,6 @@ def execute_demo_arbitrage(opp, user_id, demo_data, public_clients, reinvest_per
     save_demo_data(user_id, demo_data)
     add_trade(user_id, "Демо", token, amount, real_profit, buy_ex, sell_ex)
     st.toast(f"💰 Демо-сделка: +{real_profit:.2f} USDT", icon="🎉")
-    st.components.v1.html("<script>playTradeSound();</script>", height=0, width=0)
     return real_profit, entry
 
 # ------------------- СЕССИЯ -------------------
@@ -784,12 +746,6 @@ with col4:
         st.session_state.auto_trade_enabled = False
         st.rerun()
 
-# ---------- КНОПКА ВКЛЮЧЕНИЯ ЗВУКА ----------
-if st.button("🔊 Включить звук", use_container_width=True):
-    st.components.v1.html("<script>initAudio();</script>", height=0, width=0)
-    st.session_state.sound_enabled = True
-    st.success("Звук включён! Теперь при каждой сделке будет звуковой сигнал.")
-
 connected = [ex.upper() for ex, cl in public_clients.items() if cl is not None]
 st.success(f"🔌 Биржи для мониторинга: {', '.join(connected)}")
 
@@ -847,8 +803,8 @@ col_c.metric("💎 Общий капитал", f"{total_capital:.2f}")
 trade_count = st.session_state.real_trades if st.session_state.trade_mode == "Реальный" else (st.session_state.demo_data.get('trade_count', 0) if st.session_state.demo_data else 0)
 col_d.metric("📊 Сделок", trade_count)
 
-# ------------------- НАСТРОЙКИ -------------------
-with st.expander("⚙️ Настройки арбитража", expanded=True):
+# ------------------- НАСТРОЙКИ (закрыты по умолчанию) -------------------
+with st.expander("⚙️ Настройки арбитража", expanded=False):
     fee = st.number_input("Комиссия (%)", 0.0, 0.5, st.session_state.fee, 0.01, format="%.2f")
     min_profit = st.number_input("Мин. прибыль (USDT)", 0.001, 1.0, st.session_state.min_profit, 0.01, format="%.3f")
     min_trade = st.number_input("Минимальная сумма сделки (USDT)", 1.0, 100.0, st.session_state.min_trade, 5.0)
@@ -878,7 +834,8 @@ with st.expander("⚙️ Настройки арбитража", expanded=True):
 
     st.info(f"Настройки сохранены. Для реальной торговли сумма сделки рекомендуется 15–30 USDT при капитале 1000 USDT.")
 
-with st.expander("📋 Лог авто-торговли", expanded=True):
+# ------------------- ЛОГ АВТО-ТОРГОВЛИ (закрыт по умолчанию) -------------------
+with st.expander("📋 Лог авто-торговли", expanded=False):
     if st.session_state.auto_log:
         for log in st.session_state.auto_log[-50:]:
             st.text(log)
