@@ -43,35 +43,38 @@ div[data-testid="stMetric"] div { font-size: 1.2rem; }
 </style>
 """, unsafe_allow_html=True)
 
-# ------------------- ЗВУКОВОЕ УВЕДОМЛЕНИЕ (гарантированно работает) -------------------
+# ------------------- ЗВУК (Web Audio, надёжно) -------------------
 st.markdown("""
-<audio id="trade-sound" preload="auto" style="display:none">
-    <source src="https://www.soundjay.com/misc/sounds/bell-ringing-05.mp3" type="audio/mpeg">
-</audio>
 <script>
-    let audioEnabled = false;
-    function enableSound() {
-        var audio = document.getElementById("trade-sound");
-        if (audio && !audioEnabled) {
-            audio.volume = 0.5;
-            audio.play().then(() => {
-                audio.pause();
-                audio.currentTime = 0;
-                audioEnabled = true;
-                console.log("Sound enabled");
-            }).catch(e => console.log("Enable sound failed:", e));
+    let audioCtx = null;
+    let soundEnabled = false;
+
+    function initAudio() {
+        if (audioCtx) return;
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        soundEnabled = true;
+        // "разбудим" контекст
+        if (audioCtx.state === 'suspended') {
+            audioCtx.resume();
         }
-        return audioEnabled;
     }
+
     function playTradeSound() {
-        var audio = document.getElementById("trade-sound");
-        if (audio && audioEnabled) {
-            audio.currentTime = 0;
-            audio.play().catch(e => console.log("Play failed:", e));
-        }
+        if (!soundEnabled || !audioCtx) return;
+        const now = audioCtx.currentTime;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.type = 'sine';
+        osc.frequency.value = 880; // высокий звук
+        gain.gain.value = 0.2;
+        osc.start();
+        gain.gain.exponentialRampToValueAtTime(0.00001, now + 0.5);
+        osc.stop(now + 0.5);
     }
-    // Для отладки
-    window.enableSound = enableSound;
+
+    window.initAudio = initAudio;
     window.playTradeSound = playTradeSound;
 </script>
 """, unsafe_allow_html=True)
@@ -551,7 +554,6 @@ def execute_real_arbitrage(opp, user_id):
     st.session_state.real_trades += 1
     st.session_state.real_profit_total += real_profit
     add_trade(user_id, "Реальный", token, amount, real_profit, buy_ex, sell_ex)
-    # Уведомление и звук
     st.toast(f"💰 Реальная сделка: +{real_profit:.2f} USDT", icon="✅")
     st.components.v1.html("<script>playTradeSound();</script>", height=0, width=0)
     return real_profit, msg_buy + " | " + msg_sell
@@ -625,7 +627,6 @@ def execute_demo_arbitrage(opp, user_id, demo_data, public_clients, reinvest_per
     demo_data['history'].append(entry)
     save_demo_data(user_id, demo_data)
     add_trade(user_id, "Демо", token, amount, real_profit, buy_ex, sell_ex)
-    # Уведомление и звук
     st.toast(f"💰 Демо-сделка: +{real_profit:.2f} USDT", icon="🎉")
     st.components.v1.html("<script>playTradeSound();</script>", height=0, width=0)
     return real_profit, entry
@@ -652,7 +653,7 @@ if 'logged_in' not in st.session_state:
     st.session_state.scan_interval = 20
     st.session_state.reinvest_percent = 0
     st.session_state.real_exchanges = None
-    st.session_state.sound_enabled = False   # флаг, что звук разрешён
+    st.session_state.sound_enabled = False
 
 public_clients = init_public_clients()
 st.session_state.real_exchanges = init_real_exchanges()
@@ -783,9 +784,9 @@ with col4:
         st.session_state.auto_trade_enabled = False
         st.rerun()
 
-# ---------- КНОПКА ВКЛЮЧЕНИЯ ЗВУКА (обязательная) ----------
+# ---------- КНОПКА ВКЛЮЧЕНИЯ ЗВУКА ----------
 if st.button("🔊 Включить звук", use_container_width=True):
-    st.components.v1.html("<script>enableSound();</script>", height=0, width=0)
+    st.components.v1.html("<script>initAudio();</script>", height=0, width=0)
     st.session_state.sound_enabled = True
     st.success("Звук включён! Теперь при каждой сделке будет звуковой сигнал.")
 
