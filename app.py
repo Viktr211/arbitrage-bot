@@ -43,6 +43,34 @@ div[data-testid="stMetric"] div { font-size: 1.2rem; }
 </style>
 """, unsafe_allow_html=True)
 
+# ------------------- ЗВУКОВОЕ УВЕДОМЛЕНИЕ -------------------
+st.markdown("""
+<audio id="trade-sound" preload="auto" style="display:none">
+    <source src="https://www.soundjay.com/misc/sounds/bell-ringing-05.mp3" type="audio/mpeg">
+</audio>
+<script>
+    let audioInitialized = false;
+    function initAudio() {
+        var audio = document.getElementById("trade-sound");
+        if (audio && !audioInitialized) {
+            audio.volume = 0.5;
+            audio.play().then(() => {
+                audio.pause();
+                audio.currentTime = 0;
+                audioInitialized = true;
+            }).catch(e => console.log("Audio init failed:", e));
+        }
+    }
+    function playTradeSound() {
+        var audio = document.getElementById("trade-sound");
+        if (audio && audioInitialized) {
+            audio.currentTime = 0;
+            audio.play().catch(e => console.log("Play failed:", e));
+        }
+    }
+</script>
+""", unsafe_allow_html=True)
+
 # ------------------- SUPABASE -------------------
 try:
     SUPABASE_URL = st.secrets["SUPABASE_URL"]
@@ -327,7 +355,7 @@ def get_order_book_price(exchange, symbol, side, amount_usdt, depth=10):
     except Exception as e:
         return None, 0
 
-# ------------------- ДЕМО-ФУНКЦИИ (исправлены: ручные операции не увеличивают trade_count) -------------------
+# ------------------- ДЕМО-ФУНКЦИИ -------------------
 def update_demo_balance(user_id, exchange, asset, delta, data):
     if exchange not in data['balances']:
         data['balances'][exchange] = {'USDT':0.0, 'portfolio':{t:0.0 for t in get_available_tokens()}}
@@ -349,7 +377,6 @@ def demo_buy(user_id, exchange, token, usdt_amount, data, clients, is_manual=Fal
     update_demo_balance(user_id, exchange, 'USDT', -usdt_amount, data)
     update_demo_balance(user_id, exchange, token, amount_token, data)
     if is_manual:
-        # Ручная операция: добавляем в историю, НО НЕ УВЕЛИЧИВАЕМ trade_count
         entry = f"🟢 {datetime.now()} | Ручная операция: покупка {token} на {exchange.upper()} на {usdt_amount} USDT"
         data['history'].append(entry)
         save_demo_data(user_id, data)
@@ -519,6 +546,9 @@ def execute_real_arbitrage(opp, user_id):
     st.session_state.real_trades += 1
     st.session_state.real_profit_total += real_profit
     add_trade(user_id, "Реальный", token, amount, real_profit, buy_ex, sell_ex)
+    # Уведомления
+    st.toast(f"💰 Реальная сделка: +{real_profit:.2f} USDT", icon="✅")
+    st.components.v1.html("<script>playTradeSound();</script>", height=0, width=0)
     return real_profit, msg_buy + " | " + msg_sell
 
 def find_demo_opportunity(fee, min_profit, min_trade, max_trade, demo_data, public_clients):
@@ -590,6 +620,9 @@ def execute_demo_arbitrage(opp, user_id, demo_data, public_clients, reinvest_per
     demo_data['history'].append(entry)
     save_demo_data(user_id, demo_data)
     add_trade(user_id, "Демо", token, amount, real_profit, buy_ex, sell_ex)
+    # Уведомления
+    st.toast(f"🎉 Демо-сделка: +{real_profit:.2f} USDT", icon="💰")
+    st.components.v1.html("<script>playTradeSound();</script>", height=0, width=0)
     return real_profit, entry
 
 # ------------------- СЕССИЯ -------------------
@@ -747,10 +780,12 @@ with col4:
 connected = [ex.upper() for ex, cl in public_clients.items() if cl is not None]
 st.success(f"🔌 Биржи для мониторинга: {', '.join(connected)}")
 
+# Кнопки СТАРТ и СТОП с инициализацией звука
 col_start, col_stop, col_mode, _ = st.columns([1,1,2,1])
 with col_start:
-    if st.button("▶ СТАРТ АВТО-ТОРГОВЛИ", use_container_width=True):
+    if st.button("▶ СТАРТ АВТО-ТОРГОВЛИ (со звуком)", use_container_width=True):
         st.session_state.auto_trade_enabled = True
+        st.components.v1.html("<script>initAudio();</script>", height=0, width=0)
         st.rerun()
 with col_stop:
     if st.button("⏹ СТОП АВТО-ТОРГОВЛИ", use_container_width=True):
