@@ -915,7 +915,7 @@ if show_admin:
     tabs_list.append("👑 Админ-панель")
 tabs = st.tabs(tabs_list)
 
-# ----- DASHBOARD -----
+# ----- DASHBOARD (с зелёной подсветкой подходящих спредов) -----
 with tabs[0]:
     st.subheader("📊 Dashboard")
     st.write("Добро пожаловать в арбитражного бота **HOVMEL** (Реальная торговля для администратора).")
@@ -928,6 +928,12 @@ with tabs[0]:
         st.info("🔸 Режим демо. Переключитесь на «Реальный» и добавьте API-ключи в админ-панели, чтобы начать реальную торговлю.")
     st.markdown("---")
     st.markdown("### 💹 Текущие цены токенов")
+    
+    # Порог спреда для зелёной подсветки (0.2% + комиссия 0.1% = 0.3%)
+    spread_threshold = st.session_state.min_profit / (st.session_state.max_trade / 100) if st.session_state.max_trade > 0 else 0.3
+    # Альтернативно, можно задать фиксированный порог, например 0.3%
+    # spread_threshold = 0.3
+    
     token_prices = []
     for token in get_available_tokens():
         row = {"Токен": token}
@@ -941,14 +947,34 @@ with tabs[0]:
             try:
                 diff = abs(float(row["KUCOIN"]) - float(row["OKX"])) / float(row["KUCOIN"]) * 100
                 row["Спред %"] = f"{diff:.2f}%"
+                # Определяем, подходит ли для арбитража (спред > порога)
+                is_profitable = diff > spread_threshold
+                row["Арбитраж"] = "✅" if is_profitable else "❌"
             except:
                 row["Спред %"] = "—"
+                row["Арбитраж"] = "?"
         else:
             row["Спред %"] = "—"
+            row["Арбитраж"] = "?"
         token_prices.append(row)
+    
+    # Преобразуем в DataFrame для стилизации
     df_prices = pd.DataFrame(token_prices)
-    st.dataframe(df_prices, use_container_width=True, hide_index=True)
-    st.caption("Спред >0.2% + комиссия 0.1% даёт чистую прибыль >0.1%.")
+    
+    # Функция для подсветки строк
+    def highlight_profitable(row):
+        if row.get("Арбитраж") == "✅":
+            return ['background-color: #00FF88; color: black'] * len(row)
+        else:
+            return [''] * len(row)
+    
+    # Отображаем таблицу с подсветкой
+    st.dataframe(df_prices.style.apply(highlight_profitable, axis=1), 
+                 use_container_width=True, hide_index=True)
+    
+    st.caption("🟢 Зелёным выделены токены, спред по которым превышает минимальную прибыль (учитывая комиссию).")
+
+
 
 # ----- ГРАФИКИ -----
 with tabs[1]:
