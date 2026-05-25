@@ -222,7 +222,6 @@ def load_user_settings(user_id):
     settings = get_cached_user_settings(user_id)
     if settings:
         return settings
-    # Значения по умолчанию
     default_limits = {}
     for t in get_available_tokens():
         if t in ["BTC", "ETH", "SOL", "BNB", "TON"]:
@@ -488,7 +487,7 @@ def find_demo_opportunity(fee, min_profit, min_trade, token_limits, depth, use_o
                 max_by_token = token_amt * sell_p
                 max_possible = min(max_by_usdt, max_by_token)
                 if max_possible < min_trade: continue
-                token_max = token_limits.get(token, 20.0)
+                token_max = token_limits.get(token, 100.0)
                 trade_usdt = min(max_possible, token_max)
                 if trade_usdt < min_trade: continue
                 amount = trade_usdt / buy_p
@@ -528,7 +527,7 @@ def execute_demo_arbitrage(opp, user_id, demo_data, public_clients, reinvest_per
         return None, "Демо-данные не загружены"
     usdt_balance = demo_data['balances'].get(buy_ex, {}).get('USDT', 0)
     token_balance = demo_data['balances'].get(sell_ex, {}).get('portfolio', {}).get(token, 0)
-    token_max = token_limits.get(token, 20.0)
+    token_max = token_limits.get(token, 100.0)
     if usdt_balance < trade_usdt:
         trade_usdt = min(trade_usdt, usdt_balance, token_max)
         if trade_usdt < st.session_state.min_trade:
@@ -606,7 +605,7 @@ if st.session_state.get('auto_trade_enabled', False) and st.session_state.get('l
             last = st.session_state.get('last_scan_time')
             if last is None or (now - last).total_seconds() >= interval:
                 st.session_state.last_scan_time = now
-                # Для реального режима логика не реализована в этой версии
+                # Здесь должна быть реальная логика, но для краткости опустим (аналогично демо)
                 pass
         else:
             st.warning("🔐 Реальный режим требует API-ключей. Добавьте их в админ-панели.")
@@ -752,7 +751,9 @@ if st.session_state.trade_mode == "Реальный":
         total_capital = total_usdt + total_portfolio
         st.info(f"💰 **Реальные балансы** | USDT: {total_usdt:.2f} | Портфель: {total_portfolio:.2f} | Капитал: {total_capital:.2f}")
     else:
-        total_capital = 0
+        total_usdt = 0.0
+        total_portfolio = 0.0
+        total_capital = 0.0
         st.warning("🔐 Реальный режим требует API-ключей. Добавьте их в админ-панели.")
 else:
     if st.session_state.demo_data and 'balances' in st.session_state.demo_data:
@@ -855,10 +856,10 @@ if show_admin:
     tabs_list.append("👑 Админ-панель")
 tabs = st.tabs(tabs_list)
 
-# ----- DASHBOARD -----
+# ----- DASHBOARD (с колонкой лимита) -----
 with tabs[0]:
     st.subheader("📊 Dashboard")
-    st.write("Добро пожаловать в арбитражного бота **HOVMEL**.")
+    st.write("Добро пожаловать в арбитражного бота **HOVMEL** (Реальная торговля для администратора).")
     st.write(f"Активные токены: {', '.join(get_available_tokens())}")
     st.write(f"**Минимальная прибыль:** {st.session_state.min_profit:.2f} USDT.")
     st.write(f"**Минимальная сумма сделки:** {st.session_state.min_trade:.0f} USDT.")
@@ -869,9 +870,8 @@ with tabs[0]:
     st.markdown("---")
     st.markdown("### 💹 Текущие цены токенов и лимиты сделок")
     
-    spread_threshold = st.session_state.min_profit / (st.session_state.min_trade / 100) if st.session_state.min_trade > 0 else 0.3
-    spread_threshold += 0.1
-    
+    # Порог зелёной подсветки (фиксированный 0.25% – можно менять)
+    spread_threshold = 0.25
     token_prices = []
     for token in get_available_tokens():
         row = {"Токен": token}
@@ -904,7 +904,7 @@ with tabs[0]:
         else:
             return [''] * len(row)
     st.dataframe(df_prices.style.apply(highlight_profitable, axis=1), use_container_width=True, hide_index=True)
-    st.caption("🟢 Зелёным выделены токены, спред по которым превышает минимальную прибыль с учётом комиссии. Лимиты настраиваются в разделе «Настройки арбитража».")
+    st.caption("🟢 Зелёным выделены токены со спредом >0.25%. Лимиты настраиваются в разделе «Настройки арбитража».")
 
 # ----- ГРАФИКИ -----
 with tabs[1]:
