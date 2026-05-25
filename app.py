@@ -81,6 +81,26 @@ def decrypt_key(encrypted: str) -> str:
 
 EXCHANGES = ["kucoin", "okx"]
 TOKENS = ["DOGE", "SHIB", "PEPE", "WIF", "FLOKI", "BONK", "MEME", "BOME", "NEIRO", "BRETT", "BTC", "ETH", "SOL", "BNB", "TON"]
+
+# 🔽 Индивидуальные максимальные суммы для каждого токена (USDT)
+TOKEN_MAX_TRADE = {
+    "BTC": 300,
+    "ETH": 250,
+    "SOL": 200,
+    "BNB": 200,
+    "TON": 150,
+    "DOGE": 100,
+    "SHIB": 100,
+    "PEPE": 20,
+    "WIF": 20,
+    "FLOKI": 20,
+    "BONK": 20,
+    "MEME": 20,
+    "BOME": 20,
+    "NEIRO": 20,
+    "BRETT": 20
+}
+
 ADMIN_EMAILS = ["cb777899@gmail.com", "admin@arbitrage.com"]
 REAL_MODE_ALLOWED_USERS = ["cb777899@gmail.com"]
 
@@ -454,7 +474,7 @@ def real_sell_with_liquidity(exchange, token, amount_token, max_slippage=0.3, de
     except Exception as e:
         return False, str(e), None
 
-# ------------------- АРБИТРАЖ С АДАПТАЦИЕЙ СУММЫ -------------------
+# ------------------- АРБИТРАЖ С ИНДИВИДУАЛЬНЫМИ ЛИМИТАМИ -------------------
 def find_demo_opportunity(fee, min_profit, min_trade, max_trade, depth, use_orderbook, demo_data, public_clients, max_slippage=0.3):
     opportunities = []
     tokens = get_available_tokens()
@@ -472,7 +492,8 @@ def find_demo_opportunity(fee, min_profit, min_trade, max_trade, depth, use_orde
                 if token not in prices.get(buy_ex,{}) or token not in prices.get(sell_ex,{}): continue
                 buy_p = prices[buy_ex][token]
                 sell_p = prices[sell_ex][token]
-                if sell_p <= buy_p: continue
+                if sell_p <= buy_p:
+                    continue
                 usdt = demo_data['balances'].get(buy_ex, {}).get('USDT', 0)
                 token_amt = demo_data['balances'].get(sell_ex, {}).get('portfolio', {}).get(token, 0)
                 if usdt < min_trade: continue
@@ -480,14 +501,16 @@ def find_demo_opportunity(fee, min_profit, min_trade, max_trade, depth, use_orde
                 max_by_token = token_amt * sell_p
                 max_possible = min(max_by_usdt, max_by_token)
                 if max_possible < min_trade: continue
-                trade_usdt = min(max_possible, max_trade)
+                # Индивидуальный лимит для токена
+                token_max = TOKEN_MAX_TRADE.get(token, max_trade)
+                trade_usdt = min(max_possible, token_max)
                 if trade_usdt < min_trade: continue
                 amount = trade_usdt / buy_p
                 required_token = amount * 1.02
                 if required_token > token_amt:
-                    # Уменьшаем сумму сделки под доступные токены
+                    # Уменьшаем сумму под доступные токены
                     max_sell_usdt = token_amt * sell_p * 0.98
-                    trade_usdt = min(trade_usdt, max_sell_usdt, max_trade)
+                    trade_usdt = min(trade_usdt, max_sell_usdt, token_max)
                     if trade_usdt < min_trade:
                         continue
                     amount = trade_usdt / buy_p
@@ -521,15 +544,16 @@ def execute_demo_arbitrage(opp, user_id, demo_data, public_clients, reinvest_per
     usdt_balance = demo_data['balances'].get(buy_ex, {}).get('USDT', 0)
     token_balance = demo_data['balances'].get(sell_ex, {}).get('portfolio', {}).get(token, 0)
     # Адаптация суммы под USDT
+    token_max = TOKEN_MAX_TRADE.get(token, st.session_state.max_trade)
     if usdt_balance < trade_usdt:
-        trade_usdt = min(trade_usdt, usdt_balance, st.session_state.max_trade)
+        trade_usdt = min(trade_usdt, usdt_balance, token_max)
         if trade_usdt < st.session_state.min_trade:
             return None, f"Не хватает USDT на {buy_ex}: {usdt_balance:.2f} < {trade_usdt:.2f}"
         amount = trade_usdt / opp['buy_price']
     # Адаптация суммы под токены
     if token_balance < amount * 1.02:
         max_sell_usdt = token_balance * sell_price * 0.98
-        trade_usdt = min(trade_usdt, max_sell_usdt, st.session_state.max_trade)
+        trade_usdt = min(trade_usdt, max_sell_usdt, token_max)
         if trade_usdt < st.session_state.min_trade:
             return None, f"Не хватает {token} на {sell_ex}: нужно {amount:.8f}, доступно {token_balance:.8f}"
         amount = trade_usdt / opp['buy_price']
@@ -601,7 +625,7 @@ if st.session_state.get('auto_trade_enabled', False) and st.session_state.get('l
             last = st.session_state.get('last_scan_time')
             if last is None or (now - last).total_seconds() >= interval:
                 st.session_state.last_scan_time = now
-                # Для реального режима здесь должна быть аналогичная логика, но для краткости опущена
+                # Для реального режима аналогичная логика (здесь упрощённо, но в реальном коде нужно добавить аналогичную функцию)
                 pass
         else:
             st.warning("🔐 Реальный режим требует API-ключей. Добавьте их в админ-панели.")
@@ -773,7 +797,7 @@ with st.expander("⚙️ Настройки арбитража", expanded=False)
     fee = st.number_input("Комиссия (%)", 0.0, 0.5, st.session_state.fee, 0.01, format="%.2f")
     min_profit = st.number_input("Мин. прибыль (USDT)", 0.001, 1.0, st.session_state.min_profit, 0.01, format="%.3f")
     min_trade = st.number_input("Минимальная сумма сделки (USDT)", 1.0, 1000.0, st.session_state.min_trade, 5.0)
-    max_trade = st.number_input("Максимальная сумма сделки (USDT)", 1.0, 1000.0, st.session_state.max_trade, 10.0)
+    max_trade = st.number_input("Максимальная сумма сделки (USDT) (общий лимит)", 1.0, 1000.0, st.session_state.max_trade, 10.0)
     scan_interval = st.number_input("Интервал сканирования (сек)", 10, 120, st.session_state.scan_interval, 5)
     reinvest_percent = st.slider("Процент реинвестиции (только демо)", 0, 100, st.session_state.reinvest_percent, 5)
     
@@ -812,7 +836,7 @@ with st.expander("⚙️ Настройки арбитража", expanded=False)
             })
         st.rerun()
     
-    st.info(f"Настройки сохранены. Учёт стакана: {'включён' if use_orderbook else 'выключен'}.")
+    st.info(f"Настройки сохранены. Учёт стакана: {'включён' if use_orderbook else 'выключен'}. Для токенов действуют индивидуальные лимиты (см. код).")
 
 with st.expander("📋 Лог авто-торговли", expanded=False):
     if st.session_state.auto_log:
@@ -833,7 +857,7 @@ with tabs[0]:
     st.subheader("📊 Dashboard")
     st.write("Добро пожаловать в арбитражного бота **HOVMEL** (Реальная торговля для администратора).")
     st.write(f"Активные токены: {', '.join(get_available_tokens())}")
-    st.write(f"Текущие настройки суммы сделки: от **{st.session_state.min_trade:.0f}** до **{st.session_state.max_trade:.0f}** USDT.")
+    st.write(f"Текущие настройки суммы сделки: от **{st.session_state.min_trade:.0f}** до **{st.session_state.max_trade:.0f}** USDT (общий лимит).")
     st.write(f"**Минимальная прибыль:** {st.session_state.min_profit:.2f} USDT.")
     if st.session_state.trade_mode == "Реальный":
         st.success("✅ Реальный режим активен. Бот торгует вашими реальными средствами на KuCoin и OKX.")
@@ -843,7 +867,7 @@ with tabs[0]:
     st.markdown("### 💹 Текущие цены токенов")
     
     spread_threshold = st.session_state.min_profit / (st.session_state.max_trade / 100) if st.session_state.max_trade > 0 else 0.3
-    spread_threshold += 0.1  # добавляем комиссию
+    spread_threshold += 0.1
     
     token_prices = []
     for token in get_available_tokens():
