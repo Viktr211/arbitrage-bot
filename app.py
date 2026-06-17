@@ -186,14 +186,32 @@ def add_trade(user_id, mode, asset, amount, profit, buy_ex, sell_ex):
     }).execute()
     st.cache_data.clear()
 
+# ------------------- ИСПРАВЛЕННЫЕ ФУНКЦИИ ДЛЯ API-КЛЮЧЕЙ -------------------
 def get_all_api_keys():
-    res = supabase.table('api_keys').select('exchange, api_key, secret_key').execute()
-    return {r['exchange']:{'api_key':r['api_key'],'secret_key':r['secret_key']} for r in res.data}
+    """Возвращает словарь с данными API-ключей, включая passphrase"""
+    res = supabase.table('api_keys').select('exchange, api_key, secret_key, passphrase').execute()
+    result = {}
+    for row in res.data:
+        result[row['exchange']] = {
+            'api_key': row.get('api_key', ''),
+            'secret_key': row.get('secret_key', ''),
+            'passphrase': row.get('passphrase', '')
+        }
+    return result
 
-def save_api_key(exchange, api_key, secret, admin):
+def save_api_key(exchange, api_key, secret, passphrase, admin):
+    """Сохраняет API-ключ с passphrase в Supabase"""
     enc_key = encrypt_key(api_key) if api_key else ""
     enc_secret = encrypt_key(secret) if secret else ""
-    supabase.table('api_keys').upsert({'exchange':exchange,'api_key':enc_key,'secret_key':enc_secret,'updated_by':admin}, on_conflict='exchange').execute()
+    enc_passphrase = encrypt_key(passphrase) if passphrase else ""
+    supabase.table('api_keys').upsert({
+        'exchange': exchange,
+        'api_key': enc_key,
+        'secret_key': enc_secret,
+        'passphrase': enc_passphrase,
+        'updated_at': datetime.now().isoformat(),
+        'updated_by': admin
+    }, on_conflict='exchange').execute()
     st.cache_data.clear()
 
 def get_config(key):
@@ -268,7 +286,7 @@ def save_user_settings(user_id, settings):
     except:
         pass
 
-# ------------------- БИРЖИ -------------------
+# ------------------- БИРЖИ (исправлены для работы с passphrase) -------------------
 @st.cache_resource
 def init_public_clients():
     clients = {}
@@ -283,17 +301,28 @@ def init_public_clients():
 
 @st.cache_resource
 def init_real_exchanges():
+    """Инициализирует реальные биржи с API-ключами, включая passphrase"""
     exchanges = {}
     api_keys = get_all_api_keys()
     for ex in EXCHANGES:
-        api_key = decrypt_key(api_keys.get(ex, {}).get('api_key', ''))
-        secret = decrypt_key(api_keys.get(ex, {}).get('secret_key', ''))
+        key_data = api_keys.get(ex, {})
+        api_key = decrypt_key(key_data.get('api_key', ''))
+        secret = decrypt_key(key_data.get('secret_key', ''))
+        passphrase = decrypt_key(key_data.get('passphrase', ''))
         if api_key and secret:
             try:
                 cls = getattr(ccxt, ex)
-                exchanges[ex] = cls({'apiKey':api_key, 'secret':secret, 'enableRateLimit':True, 'options':{'defaultType':'spot'}})
+                # Для KuCoin и OKX passphrase передаётся как 'password'
+                exchanges[ex] = cls({
+                    'apiKey': api_key,
+                    'secret': secret,
+                    'password': passphrase,
+                    'enableRateLimit': True,
+                    'options': {'defaultType': 'spot'}
+                })
                 exchanges[ex].load_markets()
-            except:
+            except Exception as e:
+                st.warning(f"Ошибка подключения к {ex}: {str(e)}")
                 exchanges[ex] = None
         else:
             exchanges[ex] = None
@@ -425,13 +454,16 @@ def reset_demo_data(user_id):
     st.session_state.demo_data = {'balances':init_bal,'total_profit':0,'trade_count':0,'withdrawable_balance':0,'history':[]}
     save_demo_data(user_id, st.session_state.demo_data)
 
-# ------------------- РЕАЛЬНЫЕ ФУНКЦИИ -------------------
+# ------------------- РЕАЛЬНЫЕ ФУНКЦИИ (исправлены) -------------------
 def get_real_balance(exchange, asset):
     if not exchange: return 0.0
     try:
         bal = exchange.fetch_balance()
-        return bal.get(asset, {}).get('free', 0.0) if asset == 'USDT' else bal.get(asset, {}).get('free', 0.0)
-    except:
+        if asset == 'USDT':
+            return bal.get('USDT', {}).get('free', 0.0)
+        else:
+            return bal.get(asset, {}).get('free', 0.0)
+    except Exception as e:
         return 0.0
 
 def real_buy_with_liquidity(exchange, token, usdt_amount, max_slippage=0.3, depth=10, use_orderbook=True):
@@ -599,25 +631,31 @@ if 'logged_in' not in st.session_state:
     st.session_state.real_exchanges = None
 
 public_clients = init_public_clients()
-st.session_state.real_exchanges = init_real_exchanges()
+# Реальные биржи инициализируются только после входа (чтобы ключи были загружены)
+st.session_state.real_exchanges = None
 
-# ------------------- АВТО-СКАНИРОВАНИЕ -------------------
+# ------------------- АВТО-СКАНИРОВАНИЕ (исправлено) -------------------
 if st.session_state.get('auto_trade_enabled', False) and st.session_state.get('logged_in', False):
     if st.session_state.trade_mode == "Реальный":
         if not can_trade_real(st.session_state.email):
             st.warning("⚠️ Реальный режим доступен только администратору")
             st.session_state.auto_trade_enabled = False
-        elif st.session_state.real_exchanges and any(st.session_state.real_exchanges.values()):
-            interval = st.session_state.get('scan_interval', 20)
-            st_autorefresh(interval=interval * 1000, key="auto_refresh")
-            now = datetime.now()
-            last = st.session_state.get('last_scan_time')
-            if last is None or (now - last).total_seconds() >= interval:
-                st.session_state.last_scan_time = now
-                # Для реального режима здесь должна быть аналогичная логика (пока упрощённо)
-                pass
         else:
-            st.warning("🔐 Реальный режим требует API-ключей. Добавьте их в админ-панели.")
+            # Инициализируем реальные биржи, если ещё не сделано
+            if st.session_state.real_exchanges is None:
+                st.session_state.real_exchanges = init_real_exchanges()
+            if st.session_state.real_exchanges and any(st.session_state.real_exchanges.values()):
+                interval = st.session_state.get('scan_interval', 20)
+                st_autorefresh(interval=interval * 1000, key="auto_refresh")
+                now = datetime.now()
+                last = st.session_state.get('last_scan_time')
+                if last is None or (now - last).total_seconds() >= interval:
+                    st.session_state.last_scan_time = now
+                    # Реальная логика (аналогично демо) – здесь упрощённо
+                    # В реальном коде здесь будет вызов find_real_opportunity
+                    pass
+            else:
+                st.warning("🔐 Реальный режим требует корректных API-ключей. Проверьте их в админ-панели.")
     else:
         if st.session_state.demo_data is not None:
             interval = st.session_state.get('scan_interval', 20)
@@ -677,6 +715,9 @@ if not st.session_state.logged_in:
                 st.session_state.use_orderbook = settings.get('use_orderbook', True)
                 st.session_state.max_slippage = settings.get('max_slippage', 0.3)
                 st.session_state.orderbook_depth = settings.get('orderbook_depth', 10)
+                # Инициализируем реальные биржи после загрузки ключей
+                if st.session_state.trade_mode == "Реальный":
+                    st.session_state.real_exchanges = init_real_exchanges()
                 st.session_state.chat_unread = get_unread_count(user['id'])
                 st.rerun()
             else:
@@ -731,6 +772,9 @@ col_start, col_stop, col_mode, _ = st.columns([1,1,2,1])
 with col_start:
     if st.button("▶ СТАРТ АВТО-ТОРГОВЛИ", use_container_width=True):
         st.session_state.auto_trade_enabled = True
+        # Если реальный режим, переинициализируем биржи
+        if st.session_state.trade_mode == "Реальный":
+            st.session_state.real_exchanges = init_real_exchanges()
         st.rerun()
 with col_stop:
     if st.button("⏹ СТОП АВТО-ТОРГОВЛИ", use_container_width=True):
@@ -740,19 +784,25 @@ with col_mode:
     new_mode = st.radio("Режим", ["Демо", "Реальный"], horizontal=True, index=0 if st.session_state.trade_mode=="Демо" else 1)
     if new_mode != st.session_state.trade_mode:
         st.session_state.trade_mode = new_mode
+        # При переключении в реальный режим инициализируем биржи
+        if new_mode == "Реальный":
+            st.session_state.real_exchanges = init_real_exchanges()
+        else:
+            st.session_state.real_exchanges = None
         st.rerun()
 
-# ------------------- РАСЧЁТ КАПИТАЛА -------------------
+# ------------------- РАСЧЁТ КАПИТАЛА (исправлено) -------------------
 if st.session_state.trade_mode == "Реальный":
     if st.session_state.real_exchanges and any(st.session_state.real_exchanges.values()):
-        total_usdt = sum(get_real_balance(st.session_state.real_exchanges.get(ex), 'USDT') for ex in EXCHANGES)
+        total_usdt = sum(get_real_balance(st.session_state.real_exchanges.get(ex), 'USDT') for ex in EXCHANGES if st.session_state.real_exchanges.get(ex))
         total_portfolio = 0
         for ex in EXCHANGES:
-            if st.session_state.real_exchanges.get(ex):
+            exch = st.session_state.real_exchanges.get(ex)
+            if exch:
                 for token in get_available_tokens():
-                    amt = get_real_balance(st.session_state.real_exchanges[ex], token)
+                    amt = get_real_balance(exch, token)
                     if amt > 0:
-                        price = get_price(st.session_state.real_exchanges[ex], token)
+                        price = get_price(exch, token)
                         if price: total_portfolio += amt * price
         total_capital = total_usdt + total_portfolio
         st.info(f"💰 **Реальные балансы** | USDT: {total_usdt:.2f} | Портфель: {total_portfolio:.2f} | Капитал: {total_capital:.2f}")
@@ -760,7 +810,7 @@ if st.session_state.trade_mode == "Реальный":
         total_usdt = 0.0
         total_portfolio = 0.0
         total_capital = 0.0
-        st.warning("🔐 Реальный режим требует API-ключей. Добавьте их в админ-панели.")
+        st.warning("🔐 Реальный режим требует корректных API-ключей. Проверьте их в админ-панели.")
 else:
     if st.session_state.demo_data and 'balances' in st.session_state.demo_data:
         balances = st.session_state.demo_data['balances']
@@ -1153,11 +1203,12 @@ with tabs[8]:
     mark_messages_read(st.session_state.user_id)
     st.session_state.chat_unread = 0
 
-# ----- АДМИН-ПАНЕЛЬ -----
+# ----- АДМИН-ПАНЕЛЬ (исправлена для ввода passphrase) -----
 if show_admin:
     with tabs[9]:
         st.subheader("👑 Административная панель")
         admin_tabs = st.tabs(["Пользователи", "API ключи", "Выводы", "Конфиг", "Сообщения"])
+        
         with admin_tabs[0]:
             st.markdown("#### Управление пользователями")
             users = get_cached_users()
@@ -1169,17 +1220,28 @@ if show_admin:
                     if st.button("Обновить", key=f"update_{user['id']}"):
                         update_user_status(user['id'], new_status)
                         st.rerun()
+        
         with admin_tabs[1]:
             st.markdown("#### API ключи бирж (реальная торговля)")
-            st.warning("⚠️ Введите свои реальные API-ключи от KuCoin и OKX с правами на спотовую торговлю. Они будут зашифрованы.")
+            st.warning("⚠️ Введите свои реальные API-ключи от KuCoin и OKX с правами на спотовую торговлю. Они будут зашифрованы. Для KuCoin и OKX обязательно укажите Passphrase.")
             for ex in EXCHANGES:
                 with st.expander(f"{ex.upper()}"):
-                    api_key = st.text_input(f"API Key ({ex})", type="password", key=f"api_{ex}")
-                    secret = st.text_input(f"Secret Key ({ex})", type="password", key=f"sec_{ex}")
+                    # Загружаем текущие ключи, если есть
+                    current_keys = get_all_api_keys().get(ex, {})
+                    # Показываем заглушки, чтобы не сбрасывать при обновлении
+                    api_key = st.text_input(f"API Key ({ex})", type="password", value="", key=f"api_{ex}")
+                    secret = st.text_input(f"Secret Key ({ex})", type="password", value="", key=f"sec_{ex}")
+                    passphrase = st.text_input(f"Passphrase ({ex})", type="password", value="", key=f"pass_{ex}")
                     if st.button(f"Сохранить {ex}", key=f"save_{ex}"):
-                        save_api_key(ex, api_key, secret, st.session_state.email)
-                        st.success(f"Ключи для {ex} сохранены и зашифрованы")
-                        st.rerun()
+                        if api_key and secret and passphrase:
+                            save_api_key(ex, api_key, secret, passphrase, st.session_state.email)
+                            st.success(f"Ключи для {ex} сохранены и зашифрованы")
+                            # Обновляем реальные биржи
+                            st.session_state.real_exchanges = init_real_exchanges()
+                            st.rerun()
+                        else:
+                            st.error(f"Для {ex} необходимо заполнить все поля: API Key, Secret Key и Passphrase.")
+        
         with admin_tabs[2]:
             st.markdown("#### Заявки на вывод")
             withdrawals = get_cached_withdrawals()
@@ -1196,6 +1258,7 @@ if show_admin:
                         if st.button("❌ Отклонить", key=f"reject_{w['id']}"):
                             update_withdrawal_status(w['id'], 'rejected')
                             st.rerun()
+        
         with admin_tabs[3]:
             st.markdown("#### Конфигурация токенов")
             current_tokens = get_available_tokens()
@@ -1206,6 +1269,7 @@ if show_admin:
                     set_config('tokens', new_tokens)
                     st.success("Список токенов обновлён")
                     st.rerun()
+        
         with admin_tabs[4]:
             st.markdown("#### Сообщения пользователей")
             all_messages = get_cached_messages(None, 100)
