@@ -44,19 +44,18 @@ div[data-testid="stMetric"] div { font-size: 1.2rem; }
 """, unsafe_allow_html=True)
 
 # ------------------- SUPABASE -------------------
-try:
-    SUPABASE_URL = st.secrets["SUPABASE_URL"]
-    SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
-except Exception:
-    SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
-    SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
-    if not SUPABASE_URL or not SUPABASE_KEY:
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+
+if not SUPABASE_URL or not SUPABASE_KEY:
+    try:
+        SUPABASE_URL = st.secrets["SUPABASE_URL"]
+        SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+    except:
         st.error("❌ Ошибка: не заданы SUPABASE_URL и SUPABASE_KEY.\n\n"
                  "Для локального запуска создайте файл `.streamlit/secrets.toml`:\n"
                  "```\nSUPABASE_URL = 'https://your-project.supabase.co'\nSUPABASE_KEY = 'your-anon-key'\n```")
         st.stop()
-
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ------------------- ШИФРОВАНИЕ -------------------
 ENCRYPTION_KEY = st.secrets.get("ENCRYPTION_KEY", None)
