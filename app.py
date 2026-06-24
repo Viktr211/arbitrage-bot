@@ -59,7 +59,7 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # ------------------- ШИФРОВАНИЕ -------------------
-ENCRYPTION_KEY = st.secrets.get("ENCRYPTION_KEY", None)
+ENCRYPTION_KEY = os.environ.get("ENCRYPTION_KEY", st.secrets.get("ENCRYPTION_KEY", None))
 if ENCRYPTION_KEY is None:
     fernet = Fernet.generate_key()
     ENCRYPTION_KEY = fernet.decode()
