@@ -604,34 +604,75 @@ def execute_demo_arbitrage(opp, user_id, demo_data, public_clients, reinvest_per
     st.toast(f"💰 Демо-сделка: +{real_profit:.2f} USDT", icon="🎉")
     return real_profit, entry
 
-# ------------------- СЕССИЯ -------------------
+# ------------------- СЕССИЯ (ИСПРАВЛЕННАЯ) -------------------
+# Инициализация переменных сессии (без сброса существующих значений)
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
+if 'user_id' not in st.session_state:
     st.session_state.user_id = None
+if 'email' not in st.session_state:
     st.session_state.email = None
+if 'username' not in st.session_state:
     st.session_state.username = None
+if 'wallet' not in st.session_state:
     st.session_state.wallet = ''
+if 'demo_data' not in st.session_state:
     st.session_state.demo_data = None
+if 'real_trades' not in st.session_state:
     st.session_state.real_trades = 0
+if 'real_profit_total' not in st.session_state:
     st.session_state.real_profit_total = 0
+if 'trade_mode' not in st.session_state:
     st.session_state.trade_mode = "Демо"
+if 'auto_log' not in st.session_state:
     st.session_state.auto_log = []
+if 'auto_trade_enabled' not in st.session_state:
     st.session_state.auto_trade_enabled = False
+if 'last_scan_time' not in st.session_state:
     st.session_state.last_scan_time = None
+if 'chat_unread' not in st.session_state:
     st.session_state.chat_unread = 0
+if 'fee' not in st.session_state:
     st.session_state.fee = 0.1
+if 'min_profit' not in st.session_state:
     st.session_state.min_profit = 0.07
+if 'min_trade' not in st.session_state:
     st.session_state.min_trade = 12.0
+if 'max_trade' not in st.session_state:
     st.session_state.max_trade = 100.0
+if 'scan_interval' not in st.session_state:
     st.session_state.scan_interval = 20
+if 'reinvest_percent' not in st.session_state:
     st.session_state.reinvest_percent = 0
+if 'use_orderbook' not in st.session_state:
     st.session_state.use_orderbook = True
+if 'max_slippage' not in st.session_state:
     st.session_state.max_slippage = 0.3
+if 'orderbook_depth' not in st.session_state:
     st.session_state.orderbook_depth = 10
+if 'real_exchanges' not in st.session_state:
     st.session_state.real_exchanges = None
 
+# Восстановление сессии, если пользователь уже вошёл (данные есть в session_state)
+if st.session_state.user_id and st.session_state.email:
+    user = get_user_by_email(st.session_state.email)
+    if user:
+        st.session_state.logged_in = True
+        st.session_state.username = user['full_name']
+        st.session_state.wallet = user.get('wallet_address', '')
+        # Загружаем настройки из базы
+        settings = load_user_settings(st.session_state.user_id)
+        if settings:
+            for key, value in settings.items():
+                if key in st.session_state:
+                    st.session_state[key] = value
+    else:
+        # Если пользователь не найден, сбрасываем сессию
+        st.session_state.logged_in = False
+        st.session_state.user_id = None
+        st.session_state.email = None
+
 public_clients = init_public_clients()
-# Реальные биржи инициализируются только после входа (чтобы ключи были загружены)
 st.session_state.real_exchanges = None
 
 # ------------------- АВТО-СКАНИРОВАНИЕ (исправлено) -------------------
