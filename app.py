@@ -57,6 +57,7 @@ if not SUPABASE_URL or not SUPABASE_KEY:
                  "```\nSUPABASE_URL = 'https://your-project.supabase.co'\nSUPABASE_KEY = 'your-anon-key'\n```")
         st.stop()
 
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # ------------------- ШИФРОВАНИЕ -------------------
 ENCRYPTION_KEY = st.secrets.get("ENCRYPTION_KEY", None)
 if ENCRYPTION_KEY is None:
