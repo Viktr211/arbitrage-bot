@@ -850,35 +850,22 @@ with st.expander("⚙️ Настройки арбитража", expanded=False)
         max_slippage = st.session_state.max_slippage
         depth = st.session_state.orderbook_depth
 
-    if (fee != st.session_state.fee or min_profit != st.session_state.min_profit or
-        min_trade != st.session_state.min_trade or max_trade != st.session_state.max_trade or
-        scan_interval != st.session_state.scan_interval or reinvest_percent != st.session_state.reinvest_percent or
-        use_orderbook != st.session_state.use_orderbook or max_slippage != st.session_state.max_slippage or depth != st.session_state.orderbook_depth):
-        st.session_state.fee = fee
-        st.session_state.min_profit = min_profit
-        st.session_state.min_trade = min_trade
-        st.session_state.max_trade = max_trade
-        st.session_state.scan_interval = scan_interval
-        st.session_state.reinvest_percent = reinvest_percent
-        st.session_state.use_orderbook = use_orderbook
-        st.session_state.max_slippage = max_slippage
-        st.session_state.orderbook_depth = depth
-        if st.session_state.user_id:
-            save_user_settings(st.session_state.user_id, {
-                'fee': fee,
-                'min_profit': min_profit,
-                'min_trade': min_trade,
-                'max_trade': max_trade,
-                'scan_interval': scan_interval,
-                'reinvest_percent': reinvest_percent,
-                'use_orderbook': use_orderbook,
-                'max_slippage': max_slippage,
-                'orderbook_depth': depth
-            })
-        st.rerun()
-    
-    st.info(f"Настройки сохранены. Учёт стакана: {'включён' if use_orderbook else 'выключен'}. Для токенов действуют индивидуальные лимиты (см. код).")
+    # КНОПКА СОХРАНЕНИЯ НАСТРОЕК
+    if st.button("💾 Сохранить настройки в Supabase"):
+        save_user_settings(st.session_state.user_id, {
+            'fee': fee,
+            'min_profit': min_profit,
+            'min_trade': min_trade,
+            'max_trade': max_trade,
+            'scan_interval': scan_interval,
+            'reinvest_percent': reinvest_percent,
+            'use_orderbook': use_orderbook,
+            'max_slippage': max_slippage,
+            'orderbook_depth': depth
+        })
+        st.success("Настройки сохранены!")
 
+    st.info(f"Настройки сохранены. Учёт стакана: {'включён' if use_orderbook else 'выключен'}.")
 with st.expander("📋 Лог авто-торговли", expanded=False):
     if st.session_state.auto_log:
         for log in st.session_state.auto_log[-50:]:
