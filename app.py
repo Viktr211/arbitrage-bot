@@ -627,7 +627,7 @@ if 'logged_in' not in st.session_state:
     st.session_state.orderbook_depth = 10
     st.session_state.real_exchanges = None
 
-# Восстановление сессии из URL (если есть email в параметрах)
+# Восстановление сессии из URL (если есть email в параметрах) ИЛИ из session_state
 if 'email' in st.query_params:
     email = st.query_params['email']
     user = get_user_by_email(email)
@@ -655,10 +655,14 @@ if 'email' in st.query_params:
             st.session_state.use_orderbook = bool(settings.get('use_orderbook', True))
             st.session_state.max_slippage = float(settings.get('max_slippage', 0.3))
             st.session_state.orderbook_depth = int(settings.get('orderbook_depth', 10))
-            # Восстановление статуса авто-сделок
             st.session_state.auto_trade_enabled = bool(settings.get('auto_trade_enabled', False))
         # Загрузка сообщений
         st.session_state.chat_unread = get_unread_count(st.session_state.user_id)
+
+# Если пользователь уже залогинен, но query_params пуст – добавим email
+if st.session_state.logged_in and st.session_state.email:
+    if 'email' not in st.query_params:
+        st.query_params.email = st.session_state.email
 
 public_clients = init_public_clients()
 st.session_state.real_exchanges = None
