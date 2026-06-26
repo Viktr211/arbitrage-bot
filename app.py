@@ -52,9 +52,9 @@ if not SUPABASE_URL or not SUPABASE_KEY:
         SUPABASE_URL = st.secrets["SUPABASE_URL"]
         SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
     except:
-        st.error("Ошибка: не заданы SUPABASE_URL и SUPABASE_KEY.\n\n"
-                 "Для локального запуска создайте файл .streamlit/secrets.toml:\n"
-                 "SUPABASE_URL = 'https://your-project.supabase.co'\nSUPABASE_KEY = 'your-anon-key'")
+        st.error("❌ Ошибка: не заданы SUPABASE_URL и SUPABASE_KEY.\n\n"
+                 "Для локального запуска создайте файл `.streamlit/secrets.toml`:\n"
+                 "```\nSUPABASE_URL = 'https://your-project.supabase.co'\nSUPABASE_KEY = 'your-anon-key'\n```")
         st.stop()
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -63,7 +63,7 @@ ENCRYPTION_KEY = "GuYCOf40_nXM-QjdvhsI6gniIPU-j01t6jUbqmi01WU="
 if ENCRYPTION_KEY is None:
     fernet = Fernet.generate_key()
     ENCRYPTION_KEY = fernet.decode()
-    st.warning(f"Сгенерирован новый ключ шифрования. Сохраните его в secrets.toml:\nENCRYPTION_KEY = '{ENCRYPTION_KEY}'")
+    st.warning(f"⚠️ Сгенерирован новый ключ шифрования. Сохраните его в secrets.toml:\nENCRYPTION_KEY = '{ENCRYPTION_KEY}'")
     st.stop()
 else:
     fernet = Fernet(ENCRYPTION_KEY.encode())
@@ -597,10 +597,10 @@ def execute_demo_arbitrage(opp, user_id, demo_data, public_clients, reinvest_per
     demo_data['history'].append(entry)
     save_demo_data(user_id, demo_data)
     add_trade(user_id, "Демо", token, amount, real_profit, buy_ex, sell_ex)
-    st.toast(f"Демо-сделка: +{real_profit:.2f} USDT", icon="🎉")
+    st.toast(f"💰 Демо-сделка: +{real_profit:.2f} USDT", icon="🎉")
     return real_profit, entry
 
-# ------------------- СЕССИЯ -------------------
+# ------------------- СЕССИЯ (СОХРАНЕНИЕ В URL) -------------------
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.user_id = None
@@ -626,11 +626,14 @@ if 'logged_in' not in st.session_state:
     st.session_state.orderbook_depth = 10
     st.session_state.real_exchanges = None
 
-# Восстановление сессии
-if st.session_state.user_id and st.session_state.email:
-    user = get_user_by_email(st.session_state.email)
+# Восстановление сессии из URL (если есть email в параметрах)
+if 'email' in st.query_params:
+    email = st.query_params['email']
+    user = get_user_by_email(email)
     if user:
         st.session_state.logged_in = True
+        st.session_state.user_id = user['id']
+        st.session_state.email = user['email']
         st.session_state.username = user['full_name']
         st.session_state.wallet = user.get('wallet_address', '')
         settings = load_user_settings(st.session_state.user_id)
@@ -644,10 +647,6 @@ if st.session_state.user_id and st.session_state.email:
             st.session_state.use_orderbook = bool(settings.get('use_orderbook', True))
             st.session_state.max_slippage = float(settings.get('max_slippage', 0.3))
             st.session_state.orderbook_depth = int(settings.get('orderbook_depth', 10))
-    else:
-        st.session_state.logged_in = False
-        st.session_state.user_id = None
-        st.session_state.email = None
 
 public_clients = init_public_clients()
 st.session_state.real_exchanges = None
@@ -656,7 +655,7 @@ st.session_state.real_exchanges = None
 if st.session_state.get('auto_trade_enabled', False) and st.session_state.get('logged_in', False):
     if st.session_state.trade_mode == "Реальный":
         if not can_trade_real(st.session_state.email):
-            st.warning("Реальный режим доступен только администратору")
+            st.warning("⚠️ Реальный режим доступен только администратору")
             st.session_state.auto_trade_enabled = False
         else:
             if st.session_state.real_exchanges is None:
@@ -669,7 +668,7 @@ if st.session_state.get('auto_trade_enabled', False) and st.session_state.get('l
                 if last is None or (now - last).total_seconds() >= interval:
                     st.session_state.last_scan_time = now
             else:
-                st.warning("Реальный режим требует корректных API-ключей. Проверьте их в админ-панели.")
+                st.warning("🔐 Реальный режим требует корректных API-ключей. Проверьте их в админ-панели.")
     else:
         if st.session_state.demo_data is not None:
             interval = st.session_state.get('scan_interval', 20)
@@ -686,7 +685,7 @@ if st.session_state.get('auto_trade_enabled', False) and st.session_state.get('l
                     st.session_state.max_slippage
                 )
                 if opp:
-                    st.session_state.auto_log.append(f"Найдено (демо): {opp['token']} {opp['buy_ex']}->{opp['sell_ex']} | прибыль {opp['profit']:.4f} USDT")
+                    st.session_state.auto_log.append(f"🔍 Найдено (демо): {opp['token']} {opp['buy_ex']}→{opp['sell_ex']} | прибыль {opp['profit']:.4f} USDT")
                     profit, msg = execute_demo_arbitrage(
                         opp, st.session_state.user_id, st.session_state.demo_data,
                         public_clients, st.session_state.reinvest_percent,
@@ -694,9 +693,9 @@ if st.session_state.get('auto_trade_enabled', False) and st.session_state.get('l
                         st.session_state.max_slippage
                     )
                     if profit:
-                        st.session_state.auto_log.append(f"Исполнено! +{profit:.2f} USDT")
+                        st.session_state.auto_log.append(f"✅ Исполнено! +{profit:.2f} USDT")
                     else:
-                        st.session_state.auto_log.append(f"Ошибка: {msg}")
+                        st.session_state.auto_log.append(f"❌ Ошибка: {msg}")
 
 # ------------------- ЛОГИН / РЕГИСТРАЦИЯ -------------------
 if not st.session_state.logged_in:
@@ -714,6 +713,7 @@ if not st.session_state.logged_in:
                 st.session_state.email = user['email']
                 st.session_state.username = user['full_name']
                 st.session_state.wallet = user.get('wallet_address', '')
+                st.query_params.email = user['email']
                 st.session_state.demo_data = load_demo_data(user['id'])
                 if not st.session_state.demo_data:
                     init_bal = {ex:{"USDT":0,"portfolio":{t:0 for t in get_available_tokens()}} for ex in EXCHANGES}
@@ -776,10 +776,11 @@ with col4:
     if st.button("🚪 Выйти"):
         st.session_state.logged_in = False
         st.session_state.auto_trade_enabled = False
+        st.query_params.clear()
         st.rerun()
 
 connected = [ex.upper() for ex, cl in public_clients.items() if cl is not None]
-st.success(f"Биржи для мониторинга: {', '.join(connected)}")
+st.success(f"🔌 Биржи для мониторинга: {', '.join(connected)}")
 
 col_start, col_stop, col_mode, _ = st.columns([1,1,2,1])
 with col_start:
@@ -821,7 +822,7 @@ if st.session_state.trade_mode == "Реальный":
         total_usdt = 0.0
         total_portfolio = 0.0
         total_capital = 0.0
-        st.warning("Реальный режим требует корректных API-ключей. Проверьте их в админ-панели.")
+        st.warning("🔐 Реальный режим требует корректных API-ключей. Проверьте их в админ-панели.")
 else:
     if st.session_state.demo_data and 'balances' in st.session_state.demo_data:
         balances = st.session_state.demo_data['balances']
@@ -893,15 +894,15 @@ tabs = st.tabs(tabs_list)
 # ----- DASHBOARD -----
 with tabs[0]:
     st.subheader("📊 Dashboard")
-    st.write("Добро пожаловать в арбитражного бота HOVMEL.")
+    st.write("Добро пожаловать в арбитражного бота **HOVMEL**.")
     st.write(f"Активные токены: {', '.join(get_available_tokens())}")
-    st.write(f"Текущие настройки суммы сделки: от {st.session_state.min_trade:.0f} до {st.session_state.max_trade:.0f} USDT (общий лимит).")
-    st.write(f"Минимальная прибыль: {st.session_state.min_profit:.2f} USDT.")
-    st.write(f"Индивидуальные лимиты токенов: заданы в коде (TOKEN_MAX_TRADE).")
+    st.write(f"Текущие настройки суммы сделки: от **{st.session_state.min_trade:.0f}** до **{st.session_state.max_trade:.0f}** USDT (общий лимит).")
+    st.write(f"**Минимальная прибыль:** {st.session_state.min_profit:.2f} USDT.")
+    st.write(f"**Индивидуальные лимиты токенов:** заданы в коде (TOKEN_MAX_TRADE).")
     if st.session_state.trade_mode == "Реальный":
-        st.success("Реальный режим активен. Бот торгует вашими реальными средствами на KuCoin и OKX.")
+        st.success("✅ Реальный режим активен. Бот торгует вашими реальными средствами на KuCoin и OKX.")
     else:
-        st.info("Режим демо. Переключитесь на Реальный и добавьте API-ключи в админ-панели, чтобы начать реальную торговлю.")
+        st.info("🔸 Режим демо. Переключитесь на «Реальный» и добавьте API-ключи в админ-панели, чтобы начать реальную торговлю.")
     st.markdown("---")
     st.markdown("### 💹 Текущие цены токенов")
     spread_threshold = st.session_state.min_profit / (st.session_state.min_trade / 100) if st.session_state.min_trade > 0 else 0.3
@@ -935,7 +936,7 @@ with tabs[0]:
         else:
             return [''] * len(row)
     st.dataframe(df_prices.style.apply(highlight_profitable, axis=1), use_container_width=True, hide_index=True)
-    st.caption("Зелёным выделены токены, спред по которым превышает минимальную прибыль с учётом комиссии.")
+    st.caption("🟢 Зелёным выделены токены, спред по которым превышает минимальную прибыль с учётом комиссии.")
 
 # ----- ГРАФИКИ -----
 with tabs[1]:
@@ -1025,7 +1026,7 @@ with tabs[3]:
 with tabs[4]:
     st.subheader("💼 Балансы и ручная торговля")
     if st.session_state.trade_mode == "Демо" and st.session_state.demo_data:
-        st.markdown(f"💰 Доступно для вывода (от реинвестиции): {st.session_state.demo_data.get('withdrawable_balance',0):.2f} USDT")
+        st.markdown(f"**💰 Доступно для вывода (от реинвестиции):** {st.session_state.demo_data.get('withdrawable_balance',0):.2f} USDT")
         st.markdown("---")
         st.markdown("### 💰 Пополнение демо-балансов (не влияет на счётчик сделок)")
         col1, col2, col3 = st.columns(3)
@@ -1220,7 +1221,7 @@ if show_admin:
         
         with admin_tabs[1]:
             st.markdown("#### API ключи бирж (реальная торговля)")
-            st.warning("Введите свои реальные API-ключи от KuCoin и OKX с правами на спотовую торговлю. Они будут зашифрованы. Для KuCoin и OKX обязательно укажите Passphrase.")
+            st.warning("⚠️ Введите свои реальные API-ключи от KuCoin и OKX с правами на спотовую торговлю. Они будут зашифрованы. Для KuCoin и OKX обязательно укажите Passphrase.")
             for ex in EXCHANGES:
                 with st.expander(f"{ex.upper()}"):
                     api_key = st.text_input(f"API Key ({ex})", type="password", value="", key=f"api_{ex}")
