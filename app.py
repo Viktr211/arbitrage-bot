@@ -59,9 +59,16 @@ except Exception:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ------------------- ШИФРОВАНИЕ -------------------
-# ФИКСИРОВАННЫЙ КЛЮЧ (он правильный и работает)
-ENCRYPTION_KEY = "LHiBLyxFE1Z4BZSGFRPfy0AZ_ADKi0WV1ZwjUo9jjzE="
-fernet = Fernet(ENCRYPTION_KEY.encode())
+# Используем правильный ключ из переменной окружения или secrets
+ENCRYPTION_KEY = os.environ.get("ENCRYPTION_KEY", st.secrets.get("ENCRYPTION_KEY", None))
+if ENCRYPTION_KEY is None:
+    # Генерируем новый ключ, если его нет
+    fernet = Fernet.generate_key()
+    ENCRYPTION_KEY = fernet.decode()
+    st.warning(f"⚠️ Сгенерирован новый ключ шифрования. Сохраните его в secrets.toml или переменных Render:\nENCRYPTION_KEY = '{ENCRYPTION_KEY}'")
+    st.stop()
+else:
+    fernet = Fernet(ENCRYPTION_KEY.encode())
 
 def encrypt_key(key: str) -> str:
     if not key: return ""
@@ -151,7 +158,6 @@ def load_demo_data(user_id):
     res = supabase.table('users').select('demo_balances, demo_history, total_profit, trade_count, withdrawable_balance').eq('id', user_id).execute()
     if res.data:
         u = res.data[0]
-        # Защита от повреждённых данных
         try:
             balances = json.loads(u['demo_balances']) if isinstance(u['demo_balances'], str) else u['demo_balances']
             if not isinstance(balances, dict):
@@ -263,6 +269,9 @@ def create_withdrawal_request(user_id, amount, wallet):
 def load_user_settings(user_id):
     settings = get_cached_user_settings(user_id)
     if settings:
+        # Проверяем наличие колонки auto_trade_enabled
+        if 'auto_trade_enabled' not in settings:
+            settings['auto_trade_enabled'] = False
         return settings
     default = {
         'user_id': user_id,
@@ -286,6 +295,9 @@ def load_user_settings(user_id):
 
 def save_user_settings(user_id, settings):
     try:
+        # Убеждаемся, что auto_trade_enabled есть в словаре
+        if 'auto_trade_enabled' not in settings:
+            settings['auto_trade_enabled'] = False
         supabase.table('user_settings').update(settings).eq('user_id', user_id).execute()
         st.cache_data.clear()
     except:
@@ -607,7 +619,7 @@ def execute_demo_arbitrage(opp, user_id, demo_data, public_clients, reinvest_per
     st.toast(f"💰 Демо-сделка: +{real_profit:.2f} USDT", icon="🎉")
     return real_profit, entry
 
-# ------------------- СЕССИЯ -------------------
+# ------------------- СЕССИЯ (СОХРАНЕНИЕ В URL + ВОССТАНОВЛЕНИЕ) -------------------
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.user_id = None
@@ -632,6 +644,45 @@ if 'logged_in' not in st.session_state:
     st.session_state.max_slippage = 0.3
     st.session_state.orderbook_depth = 10
     st.session_state.real_exchanges = None
+
+# Восстановление сессии из URL (если есть email в параметрах)
+if 'email' in st.query_params:
+    email = st.query_params['email']
+    user = get_user_by_email(email)
+    if user:
+        st.session_state.logged_in = True
+        st.session_state.user_id = user['id']
+        st.session_state.email = user['email']
+        st.session_state.username = user['full_name']
+        st.session_state.wallet = user.get('wallet_address', '')
+        # Загрузка демо-данных
+        demo = load_demo_data(st.session_state.user_id)
+        if demo:
+            st.session_state.demo_data = demo
+        else:
+            init_bal = {ex:{"USDT":0,"portfolio":{t:0 for t in get_available_tokens()}} for ex in EXCHANGES}
+            st.session_state.demo_data = {'balances':init_bal,'total_profit':0,'trade_count':0,'withdrawable_balance':0,'history':[]}
+            save_demo_data(st.session_state.user_id, st.session_state.demo_data)
+        # Загрузка настроек
+        settings = load_user_settings(st.session_state.user_id)
+        if settings:
+            st.session_state.fee = settings.get('fee', 0.1)
+            st.session_state.min_profit = settings.get('min_profit', 0.07)
+            st.session_state.min_trade = settings.get('min_trade', 12.0)
+            st.session_state.max_trade = settings.get('max_trade', 100.0)
+            st.session_state.scan_interval = settings.get('scan_interval', 20)
+            st.session_state.reinvest_percent = settings.get('reinvest_percent', 0)
+            st.session_state.use_orderbook = settings.get('use_orderbook', True)
+            st.session_state.max_slippage = settings.get('max_slippage', 0.3)
+            st.session_state.orderbook_depth = settings.get('orderbook_depth', 10)
+            st.session_state.auto_trade_enabled = settings.get('auto_trade_enabled', False)
+        # Загрузка сообщений
+        st.session_state.chat_unread = get_unread_count(st.session_state.user_id)
+
+# Если сессия уже есть — добавляем email в URL (чтобы при обновлении не сбрасывалось)
+if st.session_state.logged_in and st.session_state.email:
+    if 'email' not in st.query_params:
+        st.query_params.email = st.session_state.email
 
 public_clients = init_public_clients()
 st.session_state.real_exchanges = None
@@ -698,12 +749,17 @@ if not st.session_state.logged_in:
                 st.session_state.email = user['email']
                 st.session_state.username = user['full_name']
                 st.session_state.wallet = user.get('wallet_address', '')
-                st.session_state.demo_data = load_demo_data(user['id'])
-                if not st.session_state.demo_data:
+                st.query_params.email = user['email']  # Сохраняем email в URL
+                # Загрузка демо-данных
+                demo = load_demo_data(st.session_state.user_id)
+                if demo:
+                    st.session_state.demo_data = demo
+                else:
                     init_bal = {ex:{"USDT":0,"portfolio":{t:0 for t in get_available_tokens()}} for ex in EXCHANGES}
                     st.session_state.demo_data = {'balances':init_bal,'total_profit':0,'trade_count':0,'withdrawable_balance':0,'history':[]}
-                    save_demo_data(user['id'], st.session_state.demo_data)
-                settings = load_user_settings(user['id'])
+                    save_demo_data(st.session_state.user_id, st.session_state.demo_data)
+                # Загрузка настроек
+                settings = load_user_settings(st.session_state.user_id)
                 st.session_state.fee = settings.get('fee', 0.1)
                 st.session_state.min_profit = settings.get('min_profit', 0.07)
                 st.session_state.min_trade = settings.get('min_trade', 12.0)
@@ -713,9 +769,10 @@ if not st.session_state.logged_in:
                 st.session_state.use_orderbook = settings.get('use_orderbook', True)
                 st.session_state.max_slippage = settings.get('max_slippage', 0.3)
                 st.session_state.orderbook_depth = settings.get('orderbook_depth', 10)
+                st.session_state.auto_trade_enabled = settings.get('auto_trade_enabled', False)
                 if st.session_state.trade_mode == "Реальный":
                     st.session_state.real_exchanges = init_real_exchanges()
-                st.session_state.chat_unread = get_unread_count(user['id'])
+                st.session_state.chat_unread = get_unread_count(st.session_state.user_id)
                 st.rerun()
             else:
                 st.error("Неверные данные")
@@ -760,6 +817,7 @@ with col4:
     if st.button("🚪 Выйти"):
         st.session_state.logged_in = False
         st.session_state.auto_trade_enabled = False
+        st.query_params.clear()
         st.rerun()
 
 connected = [ex.upper() for ex, cl in public_clients.items() if cl is not None]
@@ -769,12 +827,20 @@ col_start, col_stop, col_mode, _ = st.columns([1,1,2,1])
 with col_start:
     if st.button("▶ СТАРТ АВТО-ТОРГОВЛИ", use_container_width=True):
         st.session_state.auto_trade_enabled = True
+        if st.session_state.user_id:
+            settings = load_user_settings(st.session_state.user_id)
+            settings['auto_trade_enabled'] = True
+            save_user_settings(st.session_state.user_id, settings)
         if st.session_state.trade_mode == "Реальный":
             st.session_state.real_exchanges = init_real_exchanges()
         st.rerun()
 with col_stop:
     if st.button("⏹ СТОП АВТО-ТОРГОВЛИ", use_container_width=True):
         st.session_state.auto_trade_enabled = False
+        if st.session_state.user_id:
+            settings = load_user_settings(st.session_state.user_id)
+            settings['auto_trade_enabled'] = False
+            save_user_settings(st.session_state.user_id, settings)
         st.rerun()
 with col_mode:
     new_mode = st.radio("Режим", ["Демо", "Реальный"], horizontal=True, index=0 if st.session_state.trade_mode=="Демо" else 1)
@@ -845,19 +911,8 @@ with st.expander("⚙️ Настройки арбитража", expanded=False)
         max_slippage = st.session_state.max_slippage
         depth = st.session_state.orderbook_depth
 
-    if (fee != st.session_state.fee or min_profit != st.session_state.min_profit or
-        min_trade != st.session_state.min_trade or max_trade != st.session_state.max_trade or
-        scan_interval != st.session_state.scan_interval or reinvest_percent != st.session_state.reinvest_percent or
-        use_orderbook != st.session_state.use_orderbook or max_slippage != st.session_state.max_slippage or depth != st.session_state.orderbook_depth):
-        st.session_state.fee = fee
-        st.session_state.min_profit = min_profit
-        st.session_state.min_trade = min_trade
-        st.session_state.max_trade = max_trade
-        st.session_state.scan_interval = scan_interval
-        st.session_state.reinvest_percent = reinvest_percent
-        st.session_state.use_orderbook = use_orderbook
-        st.session_state.max_slippage = max_slippage
-        st.session_state.orderbook_depth = depth
+    # КНОПКА СОХРАНЕНИЯ НАСТРОЕК
+    if st.button("💾 Сохранить настройки"):
         if st.session_state.user_id:
             save_user_settings(st.session_state.user_id, {
                 'fee': fee,
@@ -868,10 +923,13 @@ with st.expander("⚙️ Настройки арбитража", expanded=False)
                 'reinvest_percent': reinvest_percent,
                 'use_orderbook': use_orderbook,
                 'max_slippage': max_slippage,
-                'orderbook_depth': depth
+                'orderbook_depth': depth,
+                'auto_trade_enabled': st.session_state.auto_trade_enabled
             })
-        st.rerun()
-    
+            st.success("Настройки сохранены!")
+        else:
+            st.error("Пользователь не авторизован")
+
     st.info(f"Настройки сохранены. Учёт стакана: {'включён' if use_orderbook else 'выключен'}.")
 
 with st.expander("📋 Лог авто-торговли", expanded=False):
