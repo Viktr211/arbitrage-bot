@@ -60,7 +60,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ------------------- ШИФРОВАНИЕ -------------------
 # ФИКСИРОВАННЫЙ КЛЮЧ (он правильный и работает)
-ENCRYPTION_KEY = "xK8f9G2nQ5vM7pL3wR6tY1uE4aBcD0eF=7a8f9G2nQ5vM7pL3wR6tY1uE"
+ENCRYPTION_KEY = "LHiBLyxFE1Z4BZSGFRPfy0AZ_ADKi0WV1ZwjUo9jjzE="
 fernet = Fernet(ENCRYPTION_KEY.encode())
 
 def encrypt_key(key: str) -> str:
