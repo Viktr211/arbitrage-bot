@@ -59,14 +59,9 @@ except Exception:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ------------------- ШИФРОВАНИЕ -------------------
-ENCRYPTION_KEY = st.secrets.get("ENCRYPTION_KEY", None)
-if ENCRYPTION_KEY is None:
-    fernet = Fernet.generate_key()
-    ENCRYPTION_KEY = fernet.decode()
-    st.warning(f"⚠️ Сгенерирован новый ключ шифрования. Сохраните его в secrets.toml:\nENCRYPTION_KEY = '{ENCRYPTION_KEY}'")
-    st.stop()
-else:
-    fernet = Fernet(ENCRYPTION_KEY.encode())
+# ФИКСИРОВАННЫЙ КЛЮЧ (он правильный и работает)
+ENCRYPTION_KEY = "GuYCOf40_nXM-QjdvhsI6gniIPU-j01t6jUbqmi01WU="
+fernet = Fernet(ENCRYPTION_KEY.encode())
 
 def encrypt_key(key: str) -> str:
     if not key: return ""
@@ -156,8 +151,19 @@ def load_demo_data(user_id):
     res = supabase.table('users').select('demo_balances, demo_history, total_profit, trade_count, withdrawable_balance').eq('id', user_id).execute()
     if res.data:
         u = res.data[0]
-        balances = json.loads(u['demo_balances']) if isinstance(u['demo_balances'], str) else u['demo_balances']
-        history = json.loads(u['demo_history']) if isinstance(u['demo_history'], str) else u['demo_history']
+        # Защита от повреждённых данных
+        try:
+            balances = json.loads(u['demo_balances']) if isinstance(u['demo_balances'], str) else u['demo_balances']
+            if not isinstance(balances, dict):
+                balances = {}
+        except:
+            balances = {}
+        try:
+            history = json.loads(u['demo_history']) if isinstance(u['demo_history'], str) else u['demo_history']
+            if not isinstance(history, list):
+                history = []
+        except:
+            history = []
         return {
             'balances': balances.get('exchanges', {ex:{"USDT":0,"portfolio":{t:0 for t in TOKENS}} for ex in EXCHANGES}),
             'total_profit': u.get('total_profit',0),
@@ -188,7 +194,6 @@ def add_trade(user_id, mode, asset, amount, profit, buy_ex, sell_ex):
 
 # ------------------- ИСПРАВЛЕННЫЕ ФУНКЦИИ ДЛЯ API-КЛЮЧЕЙ -------------------
 def get_all_api_keys():
-    """Возвращает словарь с данными API-ключей, включая passphrase"""
     res = supabase.table('api_keys').select('exchange, api_key, secret_key, passphrase').execute()
     result = {}
     for row in res.data:
@@ -200,7 +205,6 @@ def get_all_api_keys():
     return result
 
 def save_api_key(exchange, api_key, secret, passphrase, admin):
-    """Сохраняет API-ключ с passphrase в Supabase"""
     enc_key = encrypt_key(api_key) if api_key else ""
     enc_secret = encrypt_key(secret) if secret else ""
     enc_passphrase = encrypt_key(passphrase) if passphrase else ""
@@ -270,7 +274,8 @@ def load_user_settings(user_id):
         'reinvest_percent': 0,
         'use_orderbook': True,
         'max_slippage': 0.3,
-        'orderbook_depth': 10
+        'orderbook_depth': 10,
+        'auto_trade_enabled': False
     }
     try:
         supabase.table('user_settings').upsert(default, on_conflict='user_id').execute()
@@ -286,7 +291,7 @@ def save_user_settings(user_id, settings):
     except:
         pass
 
-# ------------------- БИРЖИ (исправлены для работы с passphrase) -------------------
+# ------------------- БИРЖИ -------------------
 @st.cache_resource
 def init_public_clients():
     clients = {}
@@ -301,7 +306,6 @@ def init_public_clients():
 
 @st.cache_resource
 def init_real_exchanges():
-    """Инициализирует реальные биржи с API-ключами, включая passphrase"""
     exchanges = {}
     api_keys = get_all_api_keys()
     for ex in EXCHANGES:
@@ -312,7 +316,6 @@ def init_real_exchanges():
         if api_key and secret:
             try:
                 cls = getattr(ccxt, ex)
-                # Для KuCoin и OKX passphrase передаётся как 'password'
                 exchanges[ex] = cls({
                     'apiKey': api_key,
                     'secret': secret,
@@ -454,7 +457,7 @@ def reset_demo_data(user_id):
     st.session_state.demo_data = {'balances':init_bal,'total_profit':0,'trade_count':0,'withdrawable_balance':0,'history':[]}
     save_demo_data(user_id, st.session_state.demo_data)
 
-# ------------------- РЕАЛЬНЫЕ ФУНКЦИИ (исправлены) -------------------
+# ------------------- РЕАЛЬНЫЕ ФУНКЦИИ -------------------
 def get_real_balance(exchange, asset):
     if not exchange: return 0.0
     try:
@@ -631,17 +634,15 @@ if 'logged_in' not in st.session_state:
     st.session_state.real_exchanges = None
 
 public_clients = init_public_clients()
-# Реальные биржи инициализируются только после входа (чтобы ключи были загружены)
 st.session_state.real_exchanges = None
 
-# ------------------- АВТО-СКАНИРОВАНИЕ (исправлено) -------------------
+# ------------------- АВТО-СКАНИРОВАНИЕ -------------------
 if st.session_state.get('auto_trade_enabled', False) and st.session_state.get('logged_in', False):
     if st.session_state.trade_mode == "Реальный":
         if not can_trade_real(st.session_state.email):
             st.warning("⚠️ Реальный режим доступен только администратору")
             st.session_state.auto_trade_enabled = False
         else:
-            # Инициализируем реальные биржи, если ещё не сделано
             if st.session_state.real_exchanges is None:
                 st.session_state.real_exchanges = init_real_exchanges()
             if st.session_state.real_exchanges and any(st.session_state.real_exchanges.values()):
@@ -651,9 +652,6 @@ if st.session_state.get('auto_trade_enabled', False) and st.session_state.get('l
                 last = st.session_state.get('last_scan_time')
                 if last is None or (now - last).total_seconds() >= interval:
                     st.session_state.last_scan_time = now
-                    # Реальная логика (аналогично демо) – здесь упрощённо
-                    # В реальном коде здесь будет вызов find_real_opportunity
-                    pass
             else:
                 st.warning("🔐 Реальный режим требует корректных API-ключей. Проверьте их в админ-панели.")
     else:
@@ -715,7 +713,6 @@ if not st.session_state.logged_in:
                 st.session_state.use_orderbook = settings.get('use_orderbook', True)
                 st.session_state.max_slippage = settings.get('max_slippage', 0.3)
                 st.session_state.orderbook_depth = settings.get('orderbook_depth', 10)
-                # Инициализируем реальные биржи после загрузки ключей
                 if st.session_state.trade_mode == "Реальный":
                     st.session_state.real_exchanges = init_real_exchanges()
                 st.session_state.chat_unread = get_unread_count(user['id'])
@@ -772,7 +769,6 @@ col_start, col_stop, col_mode, _ = st.columns([1,1,2,1])
 with col_start:
     if st.button("▶ СТАРТ АВТО-ТОРГОВЛИ", use_container_width=True):
         st.session_state.auto_trade_enabled = True
-        # Если реальный режим, переинициализируем биржи
         if st.session_state.trade_mode == "Реальный":
             st.session_state.real_exchanges = init_real_exchanges()
         st.rerun()
@@ -784,14 +780,13 @@ with col_mode:
     new_mode = st.radio("Режим", ["Демо", "Реальный"], horizontal=True, index=0 if st.session_state.trade_mode=="Демо" else 1)
     if new_mode != st.session_state.trade_mode:
         st.session_state.trade_mode = new_mode
-        # При переключении в реальный режим инициализируем биржи
         if new_mode == "Реальный":
             st.session_state.real_exchanges = init_real_exchanges()
         else:
             st.session_state.real_exchanges = None
         st.rerun()
 
-# ------------------- РАСЧЁТ КАПИТАЛА (исправлено) -------------------
+# ------------------- РАСЧЁТ КАПИТАЛА -------------------
 if st.session_state.trade_mode == "Реальный":
     if st.session_state.real_exchanges and any(st.session_state.real_exchanges.values()):
         total_usdt = sum(get_real_balance(st.session_state.real_exchanges.get(ex), 'USDT') for ex in EXCHANGES if st.session_state.real_exchanges.get(ex))
@@ -877,7 +872,7 @@ with st.expander("⚙️ Настройки арбитража", expanded=False)
             })
         st.rerun()
     
-    st.info(f"Настройки сохранены. Учёт стакана: {'включён' if use_orderbook else 'выключен'}. Для токенов действуют индивидуальные лимиты (см. код).")
+    st.info(f"Настройки сохранены. Учёт стакана: {'включён' if use_orderbook else 'выключен'}.")
 
 with st.expander("📋 Лог авто-торговли", expanded=False):
     if st.session_state.auto_log:
@@ -1203,7 +1198,7 @@ with tabs[8]:
     mark_messages_read(st.session_state.user_id)
     st.session_state.chat_unread = 0
 
-# ----- АДМИН-ПАНЕЛЬ (исправлена для ввода passphrase) -----
+# ----- АДМИН-ПАНЕЛЬ -----
 if show_admin:
     with tabs[9]:
         st.subheader("👑 Административная панель")
@@ -1226,9 +1221,6 @@ if show_admin:
             st.warning("⚠️ Введите свои реальные API-ключи от KuCoin и OKX с правами на спотовую торговлю. Они будут зашифрованы. Для KuCoin и OKX обязательно укажите Passphrase.")
             for ex in EXCHANGES:
                 with st.expander(f"{ex.upper()}"):
-                    # Загружаем текущие ключи, если есть
-                    current_keys = get_all_api_keys().get(ex, {})
-                    # Показываем заглушки, чтобы не сбрасывать при обновлении
                     api_key = st.text_input(f"API Key ({ex})", type="password", value="", key=f"api_{ex}")
                     secret = st.text_input(f"Secret Key ({ex})", type="password", value="", key=f"sec_{ex}")
                     passphrase = st.text_input(f"Passphrase ({ex})", type="password", value="", key=f"pass_{ex}")
@@ -1236,7 +1228,6 @@ if show_admin:
                         if api_key and secret and passphrase:
                             save_api_key(ex, api_key, secret, passphrase, st.session_state.email)
                             st.success(f"Ключи для {ex} сохранены и зашифрованы")
-                            # Обновляем реальные биржи
                             st.session_state.real_exchanges = init_real_exchanges()
                             st.rerun()
                         else:
