@@ -1,3 +1,4 @@
+python
 import streamlit as st
 import time
 import json
@@ -156,12 +157,17 @@ def load_demo_data(user_id):
     res = supabase.table('users').select('demo_balances, demo_history, total_profit, trade_count, withdrawable_balance').eq('id', user_id).execute()
     if res.data:
         u = res.data[0]
+        # Защита от повреждённых данных
         try:
             balances = json.loads(u['demo_balances']) if isinstance(u['demo_balances'], str) else u['demo_balances']
+            if not isinstance(balances, dict):
+                balances = {}
         except:
-            balances = {'exchanges': {ex: {"USDT": 0, "portfolio": {t: 0 for t in TOKENS}} for ex in EXCHANGES}}
+            balances = {}
         try:
             history = json.loads(u['demo_history']) if isinstance(u['demo_history'], str) else u['demo_history']
+            if not isinstance(history, list):
+                history = []
         except:
             history = []
         return {
@@ -607,7 +613,7 @@ def execute_demo_arbitrage(opp, user_id, demo_data, public_clients, reinvest_per
     st.toast(f"💰 Демо-сделка: +{real_profit:.2f} USDT", icon="🎉")
     return real_profit, entry
 
-# ------------------- СЕССИЯ (ФИНАЛЬНАЯ) -------------------
+# ------------------- СЕССИЯ (СОХРАНЕНИЕ В URL + ПОЛНОЕ ВОССТАНОВЛЕНИЕ) -------------------
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.user_id = None
@@ -633,13 +639,11 @@ if 'logged_in' not in st.session_state:
     st.session_state.orderbook_depth = 10
     st.session_state.real_exchanges = None
 
-# Восстановление сессии из URL или session_state
-restored = False
+# Восстановление сессии из URL (если есть email в параметрах)
 if 'email' in st.query_params:
     email = st.query_params['email']
     user = get_user_by_email(email)
     if user:
-        restored = True
         st.session_state.logged_in = True
         st.session_state.user_id = user['id']
         st.session_state.email = user['email']
