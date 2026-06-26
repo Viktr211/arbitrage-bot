@@ -156,8 +156,14 @@ def load_demo_data(user_id):
     res = supabase.table('users').select('demo_balances, demo_history, total_profit, trade_count, withdrawable_balance').eq('id', user_id).execute()
     if res.data:
         u = res.data[0]
-        balances = json.loads(u['demo_balances']) if isinstance(u['demo_balances'], str) else u['demo_balances']
-        history = json.loads(u['demo_history']) if isinstance(u['demo_history'], str) else u['demo_history']
+        try:
+            balances = json.loads(u['demo_balances']) if isinstance(u['demo_balances'], str) else u['demo_balances']
+        except:
+            balances = {'exchanges': {ex: {"USDT": 0, "portfolio": {t: 0 for t in TOKENS}} for ex in EXCHANGES}}
+        try:
+            history = json.loads(u['demo_history']) if isinstance(u['demo_history'], str) else u['demo_history']
+        except:
+            history = []
         return {
             'balances': balances.get('exchanges', {ex:{"USDT":0,"portfolio":{t:0 for t in TOKENS}} for ex in EXCHANGES}),
             'total_profit': u.get('total_profit',0),
@@ -601,7 +607,7 @@ def execute_demo_arbitrage(opp, user_id, demo_data, public_clients, reinvest_per
     st.toast(f"💰 Демо-сделка: +{real_profit:.2f} USDT", icon="🎉")
     return real_profit, entry
 
-# ------------------- СЕССИЯ (СОХРАНЕНИЕ В URL + ПОЛНОЕ ВОССТАНОВЛЕНИЕ) -------------------
+# ------------------- СЕССИЯ (ФИНАЛЬНАЯ) -------------------
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.user_id = None
@@ -627,19 +633,23 @@ if 'logged_in' not in st.session_state:
     st.session_state.orderbook_depth = 10
     st.session_state.real_exchanges = None
 
-# Восстановление сессии из URL (если есть email в параметрах) ИЛИ из session_state
+# Восстановление сессии из URL или session_state
+restored = False
 if 'email' in st.query_params:
     email = st.query_params['email']
     user = get_user_by_email(email)
     if user:
+        restored = True
         st.session_state.logged_in = True
         st.session_state.user_id = user['id']
         st.session_state.email = user['email']
         st.session_state.username = user['full_name']
         st.session_state.wallet = user.get('wallet_address', '')
         # Загрузка демо-данных
-        st.session_state.demo_data = load_demo_data(st.session_state.user_id)
-        if not st.session_state.demo_data:
+        demo = load_demo_data(st.session_state.user_id)
+        if demo:
+            st.session_state.demo_data = demo
+        else:
             init_bal = {ex:{"USDT":0,"portfolio":{t:0 for t in get_available_tokens()}} for ex in EXCHANGES}
             st.session_state.demo_data = {'balances':init_bal,'total_profit':0,'trade_count':0,'withdrawable_balance':0,'history':[]}
             save_demo_data(st.session_state.user_id, st.session_state.demo_data)
@@ -659,7 +669,7 @@ if 'email' in st.query_params:
         # Загрузка сообщений
         st.session_state.chat_unread = get_unread_count(st.session_state.user_id)
 
-# Если пользователь уже залогинен, но query_params пуст – добавим email
+# Если сессия уже есть — добавляем email в URL
 if st.session_state.logged_in and st.session_state.email:
     if 'email' not in st.query_params:
         st.query_params.email = st.session_state.email
@@ -731,8 +741,10 @@ if not st.session_state.logged_in:
                 st.session_state.wallet = user.get('wallet_address', '')
                 st.query_params.email = user['email']
                 # Загрузка демо-данных
-                st.session_state.demo_data = load_demo_data(st.session_state.user_id)
-                if not st.session_state.demo_data:
+                demo = load_demo_data(st.session_state.user_id)
+                if demo:
+                    st.session_state.demo_data = demo
+                else:
                     init_bal = {ex:{"USDT":0,"portfolio":{t:0 for t in get_available_tokens()}} for ex in EXCHANGES}
                     st.session_state.demo_data = {'balances':init_bal,'total_profit':0,'trade_count':0,'withdrawable_balance':0,'history':[]}
                     save_demo_data(st.session_state.user_id, st.session_state.demo_data)
@@ -807,8 +819,9 @@ with col_start:
         st.session_state.auto_trade_enabled = True
         if st.session_state.user_id:
             settings = load_user_settings(st.session_state.user_id)
-            settings['auto_trade_enabled'] = True
-            save_user_settings(st.session_state.user_id, settings)
+            if isinstance(settings, dict):
+                settings['auto_trade_enabled'] = True
+                save_user_settings(st.session_state.user_id, settings)
         if st.session_state.trade_mode == "Реальный":
             st.session_state.real_exchanges = init_real_exchanges()
         st.rerun()
@@ -817,8 +830,9 @@ with col_stop:
         st.session_state.auto_trade_enabled = False
         if st.session_state.user_id:
             settings = load_user_settings(st.session_state.user_id)
-            settings['auto_trade_enabled'] = False
-            save_user_settings(st.session_state.user_id, settings)
+            if isinstance(settings, dict):
+                settings['auto_trade_enabled'] = False
+                save_user_settings(st.session_state.user_id, settings)
         st.rerun()
 with col_mode:
     new_mode = st.radio("Режим", ["Демо", "Реальный"], horizontal=True, index=0 if st.session_state.trade_mode=="Демо" else 1)
