@@ -603,17 +603,34 @@ def execute_demo_arbitrage(opp, user_id, demo_data, public_clients, reinvest_per
     st.toast(f"💰 Демо-сделка: +{real_profit:.2f} USDT", icon="🎉")
     return real_profit, entry
 
-# ------------------- СЕССИЯ (СОХРАНЕНИЕ ВХОДА) -------------------
+# ------------------- СЕССИЯ (ПОЛНАЯ ИНИЦИАЛИЗАЦИЯ) -------------------
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.user_id = None
     st.session_state.email = None
     st.session_state.username = None
     st.session_state.wallet = ''
+    st.session_state.demo_data = None
+    st.session_state.real_trades = 0
+    st.session_state.real_profit_total = 0
+    st.session_state.trade_mode = "Демо"
+    st.session_state.auto_log = []
+    st.session_state.auto_trade_enabled = False
+    st.session_state.last_scan_time = None
+    st.session_state.chat_unread = 0
+    st.session_state.fee = 0.1
+    st.session_state.min_profit = 0.07
+    st.session_state.min_trade = 12.0
+    st.session_state.max_trade = 100.0
+    st.session_state.scan_interval = 20
+    st.session_state.reinvest_percent = 0
+    st.session_state.use_orderbook = True
+    st.session_state.max_slippage = 0.3
+    st.session_state.orderbook_depth = 10
+    st.session_state.real_exchanges = None
 
 # Восстановление сессии из cookies (если есть)
 if not st.session_state.logged_in:
-    # Проверяем, есть ли сохранённый email в cookies
     if 'email' in st.query_params:
         email = st.query_params['email']
         user = get_user_by_email(email)
@@ -626,6 +643,7 @@ if not st.session_state.logged_in:
             st.rerun()
 
 public_clients = init_public_clients()
+# Реальные биржи инициализируются после входа
 st.session_state.real_exchanges = None
 
 # ------------------- АВТО-СКАНИРОВАНИЕ -------------------
