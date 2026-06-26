@@ -58,17 +58,10 @@ except Exception:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ------------------- ШИФРОВАНИЕ -------------------
-# Используем правильный ключ из переменной окружения или secrets
-ENCRYPTION_KEY = os.environ.get("ENCRYPTION_KEY", st.secrets.get("ENCRYPTION_KEY", None))
-if ENCRYPTION_KEY is None:
-    # Генерируем новый ключ, если его нет
-    fernet = Fernet.generate_key()
-    ENCRYPTION_KEY = fernet.decode()
-    st.warning(f"⚠️ Сгенерирован новый ключ шифрования. Сохраните его в secrets.toml или переменных Render:\nENCRYPTION_KEY = '{ENCRYPTION_KEY}'")
-    st.stop()
-else:
-    fernet = Fernet(ENCRYPTION_KEY.encode())
+# ------------------- ШИФРОВАНИЕ (ПРАВИЛЬНЫЙ КЛЮЧ) -------------------
+# Ключ сгенерирован 2026-06-26, подходит для Fernet
+ENCRYPTION_KEY = "LHiBLyxFE1Z4BZSGFRPfy0AZ_ADKi0WV1ZwjUo9jjzE="
+fernet = Fernet(ENCRYPTION_KEY.encode())
 
 def encrypt_key(key: str) -> str:
     if not key: return ""
@@ -269,9 +262,6 @@ def create_withdrawal_request(user_id, amount, wallet):
 def load_user_settings(user_id):
     settings = get_cached_user_settings(user_id)
     if settings:
-        # Проверяем наличие колонки auto_trade_enabled
-        if 'auto_trade_enabled' not in settings:
-            settings['auto_trade_enabled'] = False
         return settings
     default = {
         'user_id': user_id,
@@ -295,9 +285,6 @@ def load_user_settings(user_id):
 
 def save_user_settings(user_id, settings):
     try:
-        # Убеждаемся, что auto_trade_enabled есть в словаре
-        if 'auto_trade_enabled' not in settings:
-            settings['auto_trade_enabled'] = False
         supabase.table('user_settings').update(settings).eq('user_id', user_id).execute()
         st.cache_data.clear()
     except:
@@ -619,7 +606,7 @@ def execute_demo_arbitrage(opp, user_id, demo_data, public_clients, reinvest_per
     st.toast(f"💰 Демо-сделка: +{real_profit:.2f} USDT", icon="🎉")
     return real_profit, entry
 
-# ------------------- СЕССИЯ (СОХРАНЕНИЕ В URL + ВОССТАНОВЛЕНИЕ) -------------------
+# ------------------- СЕССИЯ (СОХРАНЕНИЕ В URL) -------------------
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.user_id = None
@@ -666,20 +653,18 @@ if 'email' in st.query_params:
         # Загрузка настроек
         settings = load_user_settings(st.session_state.user_id)
         if settings:
-            st.session_state.fee = settings.get('fee', 0.1)
-            st.session_state.min_profit = settings.get('min_profit', 0.07)
-            st.session_state.min_trade = settings.get('min_trade', 12.0)
-            st.session_state.max_trade = settings.get('max_trade', 100.0)
-            st.session_state.scan_interval = settings.get('scan_interval', 20)
-            st.session_state.reinvest_percent = settings.get('reinvest_percent', 0)
-            st.session_state.use_orderbook = settings.get('use_orderbook', True)
-            st.session_state.max_slippage = settings.get('max_slippage', 0.3)
-            st.session_state.orderbook_depth = settings.get('orderbook_depth', 10)
-            st.session_state.auto_trade_enabled = settings.get('auto_trade_enabled', False)
-        # Загрузка сообщений
-        st.session_state.chat_unread = get_unread_count(st.session_state.user_id)
+            st.session_state.fee = float(settings.get('fee', 0.1))
+            st.session_state.min_profit = float(settings.get('min_profit', 0.07))
+            st.session_state.min_trade = float(settings.get('min_trade', 12.0))
+            st.session_state.max_trade = float(settings.get('max_trade', 100.0))
+            st.session_state.scan_interval = int(settings.get('scan_interval', 20))
+            st.session_state.reinvest_percent = int(settings.get('reinvest_percent', 0))
+            st.session_state.use_orderbook = bool(settings.get('use_orderbook', True))
+            st.session_state.max_slippage = float(settings.get('max_slippage', 0.3))
+            st.session_state.orderbook_depth = int(settings.get('orderbook_depth', 10))
+            st.session_state.auto_trade_enabled = bool(settings.get('auto_trade_enabled', False))
 
-# Если сессия уже есть — добавляем email в URL (чтобы при обновлении не сбрасывалось)
+# Если сессия уже есть, но email не в URL – добавляем
 if st.session_state.logged_in and st.session_state.email:
     if 'email' not in st.query_params:
         st.query_params.email = st.session_state.email
@@ -749,7 +734,7 @@ if not st.session_state.logged_in:
                 st.session_state.email = user['email']
                 st.session_state.username = user['full_name']
                 st.session_state.wallet = user.get('wallet_address', '')
-                st.query_params.email = user['email']  # Сохраняем email в URL
+                st.query_params.email = user['email']  # <--- сохраняем в URL
                 # Загрузка демо-данных
                 demo = load_demo_data(st.session_state.user_id)
                 if demo:
@@ -829,8 +814,9 @@ with col_start:
         st.session_state.auto_trade_enabled = True
         if st.session_state.user_id:
             settings = load_user_settings(st.session_state.user_id)
-            settings['auto_trade_enabled'] = True
-            save_user_settings(st.session_state.user_id, settings)
+            if isinstance(settings, dict):
+                settings['auto_trade_enabled'] = True
+                save_user_settings(st.session_state.user_id, settings)
         if st.session_state.trade_mode == "Реальный":
             st.session_state.real_exchanges = init_real_exchanges()
         st.rerun()
@@ -839,8 +825,9 @@ with col_stop:
         st.session_state.auto_trade_enabled = False
         if st.session_state.user_id:
             settings = load_user_settings(st.session_state.user_id)
-            settings['auto_trade_enabled'] = False
-            save_user_settings(st.session_state.user_id, settings)
+            if isinstance(settings, dict):
+                settings['auto_trade_enabled'] = False
+                save_user_settings(st.session_state.user_id, settings)
         st.rerun()
 with col_mode:
     new_mode = st.radio("Режим", ["Демо", "Реальный"], horizontal=True, index=0 if st.session_state.trade_mode=="Демо" else 1)
