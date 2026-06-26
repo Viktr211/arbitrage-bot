@@ -82,7 +82,6 @@ def decrypt_key(encrypted: str) -> str:
 EXCHANGES = ["kucoin", "okx"]
 TOKENS = ["DOGE", "SHIB", "PEPE", "WIF", "FLOKI", "BONK", "MEME", "BOME", "NEIRO", "BRETT", "BTC", "ETH", "SOL", "BNB", "TON"]
 
-# Индивидуальные лимиты для токенов (USDT)
 TOKEN_MAX_TRADE = {
     "BTC": 300,
     "ETH": 250,
@@ -186,7 +185,7 @@ def add_trade(user_id, mode, asset, amount, profit, buy_ex, sell_ex):
     }).execute()
     st.cache_data.clear()
 
-# ------------------- ИСПРАВЛЕННЫЕ ФУНКЦИИ ДЛЯ API-КЛЮЧЕЙ -------------------
+# ------------------- API КЛЮЧИ -------------------
 def get_all_api_keys():
     res = supabase.table('api_keys').select('exchange, api_key, secret_key, passphrase').execute()
     result = {}
@@ -626,7 +625,7 @@ if 'logged_in' not in st.session_state:
     st.session_state.orderbook_depth = 10
     st.session_state.real_exchanges = None
 
-# Восстановление сессии из URL (если есть email в параметрах)
+# Восстановление сессии из URL
 if 'email' in st.query_params:
     email = st.query_params['email']
     user = get_user_by_email(email)
@@ -636,6 +635,7 @@ if 'email' in st.query_params:
         st.session_state.email = user['email']
         st.session_state.username = user['full_name']
         st.session_state.wallet = user.get('wallet_address', '')
+        # Загружаем настройки из базы
         settings = load_user_settings(st.session_state.user_id)
         if settings:
             st.session_state.fee = float(settings.get('fee', 0.1))
@@ -845,7 +845,7 @@ col_c.metric("💎 Общий капитал", f"{total_capital:.2f}")
 trade_count = st.session_state.real_trades if st.session_state.trade_mode == "Реальный" else (st.session_state.demo_data.get('trade_count', 0) if st.session_state.demo_data else 0)
 col_d.metric("📊 Сделок", trade_count)
 
-# ------------------- НАСТРОЙКИ -------------------
+# ------------------- НАСТРОЙКИ (С КНОПКОЙ СОХРАНЕНИЯ) -------------------
 with st.expander("⚙️ Настройки арбитража", expanded=False):
     fee = st.number_input("Комиссия (%)", 0.0, 0.5, st.session_state.fee, 0.01, format="%.2f")
     min_profit = st.number_input("Мин. прибыль (USDT)", 0.001, 1.0, st.session_state.min_profit, 0.01, format="%.3f")
@@ -862,19 +862,23 @@ with st.expander("⚙️ Настройки арбитража", expanded=False)
         max_slippage = st.session_state.max_slippage
         depth = st.session_state.orderbook_depth
 
-    if st.session_state.user_id:
-        save_user_settings(st.session_state.user_id, {
-            'fee': fee,
-            'min_profit': min_profit,
-            'min_trade': min_trade,
-            'max_trade': max_trade,
-            'scan_interval': scan_interval,
-            'reinvest_percent': reinvest_percent,
-            'use_orderbook': use_orderbook,
-            'max_slippage': max_slippage,
-            'orderbook_depth': depth
-        })
-    
+    if st.button("💾 Сохранить настройки"):
+        if st.session_state.user_id:
+            save_user_settings(st.session_state.user_id, {
+                'fee': fee,
+                'min_profit': min_profit,
+                'min_trade': min_trade,
+                'max_trade': max_trade,
+                'scan_interval': scan_interval,
+                'reinvest_percent': reinvest_percent,
+                'use_orderbook': use_orderbook,
+                'max_slippage': max_slippage,
+                'orderbook_depth': depth
+            })
+            st.success("Настройки сохранены!")
+        else:
+            st.error("Пользователь не авторизован")
+
     st.info(f"Настройки сохранены. Учёт стакана: {'включён' if use_orderbook else 'выключен'}.")
 
 with st.expander("📋 Лог авто-торговли", expanded=False):
