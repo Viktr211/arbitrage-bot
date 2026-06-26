@@ -59,7 +59,6 @@ except Exception:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ------------------- ШИФРОВАНИЕ (ПРАВИЛЬНЫЙ КЛЮЧ) -------------------
-# Ключ сгенерирован 2026-06-26, подходит для Fernet
 ENCRYPTION_KEY = "LHiBLyxFE1Z4BZSGFRPfy0AZ_ADKi0WV1ZwjUo9jjzE="
 fernet = Fernet(ENCRYPTION_KEY.encode())
 
@@ -734,7 +733,7 @@ if not st.session_state.logged_in:
                 st.session_state.email = user['email']
                 st.session_state.username = user['full_name']
                 st.session_state.wallet = user.get('wallet_address', '')
-                st.query_params.email = user['email']  # <--- сохраняем в URL
+                st.query_params.email = user['email']
                 # Загрузка демо-данных
                 demo = load_demo_data(st.session_state.user_id)
                 if demo:
