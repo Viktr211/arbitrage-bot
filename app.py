@@ -10,6 +10,20 @@ import hashlib
 import base64
 import os
 from cryptography.fernet import Fernet
+# Восстановление сессии из URL
+if 'email' in st.query_params:
+    email = st.query_params['email']
+    user = get_user_by_email(email)
+    if user:
+        st.session_state.logged_in = True
+        st.session_state.user_id = user['id']
+        st.session_state.email = user['email']
+        st.session_state.username = user['full_name']
+        st.session_state.wallet = user.get('wallet_address', '')
+elif st.session_state.get('logged_in', False) and st.session_state.get('email'):
+    # Если пользователь уже вошёл, но email нет в URL — добавляем
+    st.query_params.email = st.session_state.email
+
 
 # ------------------- НАСТРОЙКИ СТРАНИЦЫ -------------------
 st.set_page_config(page_title="Арбитражный бот HOVMEL", layout="wide", page_icon="🔄", initial_sidebar_state="collapsed")
