@@ -21,8 +21,12 @@ def load_settings(user_id):
         return res.data[0]
     return None
 
-def save_settings(user_id, settings):
-    supabase.table('user_settings').upsert(settings, on_conflict='user_id').execute()
+def save_auto_trade_status(user_id, enabled):
+    # Сохраняем только статус авто-сделок
+    supabase.table('user_settings').upsert({
+        'user_id': user_id,
+        'auto_trade_enabled': enabled
+    }, on_conflict='user_id').execute()
 
 # ------------------- СЕССИЯ (СОХРАНЕНИЕ В URL) -------------------
 if 'logged_in' not in st.session_state:
@@ -39,7 +43,7 @@ if 'email' in st.query_params:
         st.session_state.logged_in = True
         st.session_state.user_id = user['id']
         st.session_state.email = email
-        # Загружаем настройки
+        # Загружаем статус авто-сделок
         settings = load_settings(st.session_state.user_id)
         if settings:
             st.session_state.auto_trade_enabled = settings.get('auto_trade_enabled', False)
@@ -61,7 +65,7 @@ if not st.session_state.logged_in:
             st.session_state.user_id = user['id']
             st.session_state.email = email
             st.query_params.email = email
-            # Загружаем настройки
+            # Загружаем статус
             settings = load_settings(st.session_state.user_id)
             if settings:
                 st.session_state.auto_trade_enabled = settings.get('auto_trade_enabled', False)
@@ -85,28 +89,13 @@ col1, col2, col3 = st.columns(3)
 with col1:
     if st.button("▶ СТАРТ АВТО-ТОРГОВЛИ"):
         st.session_state.auto_trade_enabled = True
-        # Сохраняем только те поля, которые есть в таблице
-        save_settings(st.session_state.user_id, {
-            'user_id': st.session_state.user_id,
-            'auto_trade_enabled': True,
-            'fee': 0.1,
-            'min_profit': 0.07,
-            'min_trade': 12.0,
-            'max_trade': 100.0,
-            'scan_interval': 20,
-            'reinvest_percent': 0,
-            'use_orderbook': True,
-            'orderbook_depth': 10
-        })
+        save_auto_trade_status(st.session_state.user_id, True)
         st.rerun()
 
 with col2:
     if st.button("⏹ СТОП АВТО-ТОРГОВЛИ"):
         st.session_state.auto_trade_enabled = False
-        save_settings(st.session_state.user_id, {
-            'user_id': st.session_state.user_id,
-            'auto_trade_enabled': False
-        })
+        save_auto_trade_status(st.session_state.user_id, False)
         st.rerun()
 
 with col3:
@@ -116,12 +105,10 @@ with col3:
         st.query_params.clear()
         st.rerun()
 
-# Показываем текущие настройки
-st.subheader("⚙️ Настройки")
+# Показываем текущие настройки (только для информации)
+st.subheader("⚙️ Текущий статус")
 settings = load_settings(st.session_state.user_id)
 if settings:
-    st.write(f"Комиссия: {settings.get('fee', 0.1)}%")
-    st.write(f"Мин. прибыль: {settings.get('min_profit', 0.07)} USDT")
-    st.write(f"Интервал сканирования: {settings.get('scan_interval', 20)} сек")
+    st.write(f"Авто-сделки: {'включены' if settings.get('auto_trade_enabled', False) else 'выключены'}")
 else:
-    st.info("Настройки не найдены. Нажмите СТАРТ для создания.")
+    st.info("Настройки не найдены. Нажмите СТАРТ для включения авто-сделок.")
