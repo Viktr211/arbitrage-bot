@@ -85,6 +85,7 @@ col1, col2, col3 = st.columns(3)
 with col1:
     if st.button("▶ СТАРТ АВТО-ТОРГОВЛИ"):
         st.session_state.auto_trade_enabled = True
+        # Сохраняем только те поля, которые есть в таблице
         save_settings(st.session_state.user_id, {
             'user_id': st.session_state.user_id,
             'auto_trade_enabled': True,
@@ -95,7 +96,6 @@ with col1:
             'scan_interval': 20,
             'reinvest_percent': 0,
             'use_orderbook': True,
-            'max_slippage': 0.3,
             'orderbook_depth': 10
         })
         st.rerun()
