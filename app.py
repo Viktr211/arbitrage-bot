@@ -8,6 +8,7 @@ from datetime import datetime
 from supabase import create_client, Client
 import hashlib
 import base64
+from streamlit_autorefresh import st_autorefresh
 import os
 from cryptography.fernet import Fernet
 
