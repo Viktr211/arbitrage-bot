@@ -12,39 +12,21 @@ from streamlit_autorefresh import st_autorefresh
 import os
 from cryptography.fernet import Fernet
 
-st.set_page_config(page_title="Арбитражный бот HOVMEL", layout="wide", page_icon="🔄", initial_sidebar_state="collapsed")
-
-# ------------------- CSS -------------------
-st.markdown("""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap');
-.main-header h1 {
-    font-family: 'Orbitron', sans-serif;
-    font-size: 2.8rem;
-    background: linear-gradient(135deg, #FFD700 0%, #FFA500 40%, #FF8C00 100%);
-    -webkit-background-clip: text;
-    background-clip: text;
-    color: transparent;
-    text-align: center;
-}
-.hovmel-highlight { background: linear-gradient(120deg, #FFD700, #FF8C00); -webkit-background-clip: text; background-clip: text; color: transparent; font-weight: 900; }
-.subtitle { text-align: center; color: #aaa; margin-top: -0.8rem; margin-bottom: 1.5rem; }
-.status-running { color: #00FF88; font-weight: bold; }
-.status-stopped { color: #FF4444; font-weight: bold; }
-</style>
-""", unsafe_allow_html=True)
-
-# ------------------- SUPABASE -------------------
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-if not SUPABASE_URL or not SUPABASE_KEY:
-    try:
-        SUPABASE_URL = st.secrets["SUPABASE_URL"]
-        SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
-    except:
+st.set_page_config(page_title="Арбитражный бот HOVMEL", layout="wide", page_icon="🔄", initial_sidebar_state="collapsed
+")
+                   # ------------------- SUPABASE -------------------
+try:
+    SUPABASE_URL = st.secrets["SUPABASE_URL"]
+    SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+except Exception:
+    SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+    SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
+    if not SUPABASE_URL or not SUPABASE_KEY:
         st.error("❌ Ошибка: не заданы SUPABASE_URL и SUPABASE_KEY.")
         st.stop()
+
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
 # ------------------- КЭШИРОВАНИЕ -------------------
 @st.cache_data(ttl=10)
 def get_cached_user_settings(user_id):
@@ -73,7 +55,27 @@ def get_cached_withdrawals():
 
 @st.cache_data(ttl=30)
 def get_cached_users():
-    return supabase.table('users').select('*').order('created_at', desc=True).execute().datate().data
+    return supabase.table('users').select('*').order('created_at', desc=True).execute().data
+
+# ------------------- CSS -------------------
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap');
+.main-header h1 {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 2.8rem;
+    background: linear-gradient(135deg, #FFD700 0%, #FFA500 40%, #FF8C00 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    text-align: center;
+}
+.hovmel-highlight { background: linear-gradient(120deg, #FFD700, #FF8C00); -webkit-background-clip: text; background-clip: text; color: transparent; font-weight: 900; }
+.subtitle { text-align: center; color: #aaa; margin-top: -0.8rem; margin-bottom: 1.5rem; }
+.status-running { color: #00FF88; font-weight: bold; }
+.status-stopped { color: #FF4444; font-weight: bold; }
+</style>
+""", unsafe_allow_html=True)
 
 # ------------------- ШИФРОВАНИЕ -------------------
 ENCRYPTION_KEY = "LHiBLyxFE1Z4BZSGFRPfy0AZ_ADKi0WV1ZwjUo9jjzE="
