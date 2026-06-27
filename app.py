@@ -322,6 +322,77 @@ def get_price(exchange, symbol):
     except:
         return None
 
+def get_order_book_price(exchange, symbol, side, amount_usdt, depth=10):
+    try:
+        orderbook = exchange.fetch_order_book(f"{symbol}/USDT", limit=depth)
+        if side == 'buy':
+            asks = orderbook['asks']
+            if not asks:
+                return None, 0, "Нет данных в стакане (asks)"
+            total_usdt = 0
+            total_amount = 0
+            for price, amount in asks:
+                cost = price * amount
+                if total_usdt + cost >= amount_usdt:
+                    need = (amount_usdt - total_usdt) / price
+                    total_amount += need
+                    total_usdt = amount_usdt
+                    break
+                else:
+                    total_amount += amount
+                    total_usdt += cost
+            if total_usdt < amount_usdt:
+                return None, total_usdt, f"Недостаточно ликвидности для покупки {amount_usdt} USDT (доступно {total_usdt:.2f})"
+            avg_price = total_usdt / total_amount
+            return avg_price, total_usdt, None
+        else:
+            bids = orderbook['bids']
+            if not bids:
+                return None, 0, "Нет данных в стакане (bids)"
+            remaining = amount_usdt
+            total_amount = 0
+            total_received = 0
+            for price, amount in bids:
+                value = price * amount
+                if value >= remaining:
+                    need = remaining / price
+                    total_amount += need
+                    total_received = remaining
+                    break
+                else:
+                    total_amount += amount
+                    remaining -= value
+                    total_received += value
+            if total_received < amount_usdt:
+                return None, total_received, f"Недостаточно ликвидности для продажи на {amount_usdt} USDT (доступно {total_received:.2f})"
+            avg_price = total_received / total_amount
+            return avg_price, total_received, None
+    except Exception as e:
+        return None, 0, f"Ошибка получения стакана: {str(e)}"
+
+def get_market_price_with_liquidity(exchange, symbol, side, amount_usdt, depth=10, max_slippage=0.3):
+    price, available, err = get_order_book_price(exchange, symbol, side, amount_usdt, depth)
+    if price is not None:
+        try:
+            ticker = exchange.fetch_ticker(f"{symbol}/USDT")
+            last = ticker['last']
+            slippage = abs(price - last) / last * 100
+            if slippage > max_slippage:
+                return None, 0, f"Проскальзывание {slippage:.2f}% > {max_slippage}%"
+        except:
+            pass
+        return price, available, None
+    else:
+        try:
+            ticker = exchange.fetch_ticker(f"{symbol}/USDT")
+            if side == 'buy':
+                price = ticker['ask'] if 'ask' in ticker else ticker['last'] * 1.001
+            else:
+                price = ticker['bid'] if 'bid' in ticker else ticker['last'] * 0.999
+            return price, amount_usdt, err
+        except Exception as e:
+            return None, 0, f"Ошибка получения цены: {str(e)}"
+
 # ------------------- ДЕМО-ФУНКЦИИ -------------------
 def update_demo_balance(user_id, exchange, asset, delta, data):
     if exchange not in data['balances']:
@@ -382,6 +453,136 @@ def get_real_balance(exchange, asset):
             return bal.get(asset, {}).get('free', 0.0)
     except:
         return 0.0
+
+def real_buy_with_liquidity(exchange, token, usdt_amount, max_slippage=0.3, depth=10, use_orderbook=True):
+    if not exchange: return False, "Биржа не подключена", None
+    if use_orderbook:
+        price, available, err = get_market_price_with_liquidity(exchange, token, 'buy', usdt_amount, depth, max_slippage)
+        if price is None: return False, err, None
+        if available < usdt_amount: return False, f"Недостаточно ликвидности (доступно {available:.2f} USDT)", None
+        amount_token = usdt_amount / price
+    else:
+        price = get_price(exchange, token)
+        if not price: return False, "Не удалось получить цену", None
+        amount_token = usdt_amount / price
+    try:
+        exchange.create_market_buy_order(f"{token}/USDT", amount_token)
+        return True, f"Куплено {amount_token:.8f} {token} за {usdt_amount} USDT", amount_token
+    except Exception as e:
+        return False, str(e), None
+
+def real_sell_with_liquidity(exchange, token, amount_token, max_slippage=0.3, depth=10, use_orderbook=True):
+    if not exchange: return False, "Биржа не подключена", None
+    if use_orderbook:
+        price, available, err = get_market_price_with_liquidity(exchange, token, 'sell', amount_token * 100, depth, max_slippage)
+        if price is None: return False, err, None
+        usdt_received = amount_token * price
+    else:
+        price = get_price(exchange, token)
+        if not price: return False, "Не удалось получить цену", None
+        usdt_received = amount_token * price
+    try:
+        exchange.create_market_sell_order(f"{token}/USDT", amount_token)
+        return True, f"Продано {amount_token:.8f} {token} за {usdt_received:.2f} USDT", usdt_received
+    except Exception as e:
+        return False, str(e), None
+
+# ------------------- АРБИТРАЖ -------------------
+def find_demo_opportunity(fee, min_profit, min_trade, max_trade, depth, use_orderbook, demo_data, public_clients, max_slippage=0.3):
+    opportunities = []
+    tokens = get_available_tokens()
+    prices = {}
+    for ex in EXCHANGES:
+        if public_clients.get(ex):
+            prices[ex] = {}
+            for t in tokens:
+                p = get_price(public_clients[ex], t)
+                if p: prices[ex][t] = p
+    for buy_ex in EXCHANGES:
+        for sell_ex in EXCHANGES:
+            if buy_ex == sell_ex: continue
+            for token in tokens:
+                if token not in prices.get(buy_ex,{}) or token not in prices.get(sell_ex,{}): continue
+                buy_p = prices[buy_ex][token]
+                sell_p = prices[sell_ex][token]
+                if sell_p <= buy_p: continue
+                usdt = demo_data['balances'].get(buy_ex, {}).get('USDT', 0)
+                token_amt = demo_data['balances'].get(sell_ex, {}).get('portfolio', {}).get(token, 0)
+                if usdt < min_trade: continue
+                max_by_usdt = usdt
+                max_by_token = token_amt * sell_p
+                max_possible = min(max_by_usdt, max_by_token)
+                if max_possible < min_trade: continue
+                token_max = TOKEN_MAX_TRADE.get(token, max_trade)
+                trade_usdt = min(max_possible, token_max)
+                if trade_usdt < min_trade: continue
+                amount = trade_usdt / buy_p
+                required_token = amount * 1.02
+                if required_token > token_amt:
+                    max_sell_usdt = token_amt * sell_p * 0.98
+                    trade_usdt = min(trade_usdt, max_sell_usdt, token_max)
+                    if trade_usdt < min_trade: continue
+                    amount = trade_usdt / buy_p
+                if use_orderbook:
+                    buy_price, buy_available, err1 = get_market_price_with_liquidity(public_clients[buy_ex], token, 'buy', trade_usdt, depth, max_slippage)
+                    if buy_price is None: continue
+                    sell_price, sell_available, err2 = get_market_price_with_liquidity(public_clients[sell_ex], token, 'sell', trade_usdt, depth, max_slippage)
+                    if sell_price is None: continue
+                else:
+                    buy_price = buy_p
+                    sell_price = sell_p
+                profit_before = (sell_price - buy_price) * amount
+                profit = profit_before * (1 - fee/100)
+                if profit < min_profit: continue
+                opportunities.append({
+                    'token':token, 'buy_ex':buy_ex, 'sell_ex':sell_ex,
+                    'buy_price':buy_price, 'sell_price':sell_price,
+                    'trade_usdt':trade_usdt, 'amount':amount, 'profit':profit
+                })
+    if not opportunities: return None
+    return max(opportunities, key=lambda x: x['profit'])
+
+def execute_demo_arbitrage(opp, user_id, demo_data, public_clients, reinvest_percent, use_orderbook=True, depth=10, max_slippage=0.3):
+    buy_ex = opp['buy_ex']; sell_ex = opp['sell_ex']; token = opp['token']
+    amount = opp['amount']; trade_usdt = opp['trade_usdt']; sell_price = opp['sell_price']
+    if not demo_data:
+        return None, "Демо-данные не загружены"
+    usdt_balance = demo_data['balances'].get(buy_ex, {}).get('USDT', 0)
+    token_balance = demo_data['balances'].get(sell_ex, {}).get('portfolio', {}).get(token, 0)
+    token_max = TOKEN_MAX_TRADE.get(token, st.session_state.max_trade)
+    if usdt_balance < trade_usdt:
+        trade_usdt = min(trade_usdt, usdt_balance, token_max)
+        if trade_usdt < st.session_state.min_trade:
+            return None, f"Не хватает USDT на {buy_ex}: {usdt_balance:.2f} < {trade_usdt:.2f}"
+        amount = trade_usdt / opp['buy_price']
+    if token_balance < amount * 1.02:
+        max_sell_usdt = token_balance * sell_price * 0.98
+        trade_usdt = min(trade_usdt, max_sell_usdt, token_max)
+        if trade_usdt < st.session_state.min_trade:
+            return None, f"Не хватает {token} на {sell_ex}: нужно {amount:.8f}, доступно {token_balance:.8f}"
+        amount = trade_usdt / opp['buy_price']
+        profit_before = (sell_price - opp['buy_price']) * amount
+        real_profit = profit_before * (1 - st.session_state.fee/100)
+    else:
+        real_profit = amount * sell_price - trade_usdt
+    ok_buy, msg_buy = demo_buy(user_id, buy_ex, token, trade_usdt, demo_data, public_clients, is_manual=False)
+    if not ok_buy: return None, msg_buy
+    ok_sell, msg_sell = demo_sell(user_id, sell_ex, token, amount, demo_data, public_clients, is_manual=False)
+    if not ok_sell: return None, msg_sell
+    reinvest_amount = real_profit * reinvest_percent / 100
+    withdrawable_amount = real_profit - reinvest_amount
+    if reinvest_amount > 0:
+        update_demo_balance(user_id, sell_ex, 'USDT', reinvest_amount, demo_data)
+    if withdrawable_amount > 0:
+        demo_data['withdrawable_balance'] += withdrawable_amount
+    demo_data['total_profit'] += real_profit
+    demo_data['trade_count'] += 1
+    entry = f"✅ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {token} | {buy_ex}→{sell_ex} | {amount:.8f} | +{real_profit:.2f} USDT | Реинвест {reinvest_percent}%"
+    demo_data['history'].append(entry)
+    save_demo_data(user_id, demo_data)
+    add_trade(user_id, "Демо", token, amount, real_profit, buy_ex, sell_ex)
+    st.toast(f"💰 Демо-сделка: +{real_profit:.2f} USDT", icon="🎉")
+    return real_profit, entry
 
 # ------------------- СЕССИЯ -------------------
 if 'logged_in' not in st.session_state:
