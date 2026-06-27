@@ -47,8 +47,33 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # ------------------- КЭШИРОВАНИЕ -------------------
 @st.cache_data(ttl=10)
+def get_cached_user_settings(user_id):
+    try:
+        res = supabase.table('user_settings').select('*').eq('user_id', user_id).execute()
+        if res.data:
+            return res.data[0]
+    except:
+        pass
+    return None
+
+@st.cache_data(ttl=10)
 def get_cached_trades(limit=100):
     return supabase.table('trades').select('*, users(email,full_name)').order('trade_time', desc=True).limit(limit).execute().data
+
+@st.cache_data(ttl=15)
+def get_cached_messages(user_id=None, limit=50):
+    query = supabase.table('messages').select('*, users(full_name)').order('created_at', desc=True).limit(limit)
+    if user_id is not None:
+        query = query.eq('user_id', user_id)
+    return query.execute().data
+
+@st.cache_data(ttl=15)
+def get_cached_withdrawals():
+    return supabase.table('withdrawals').select('*, users(email)').eq('status', 'pending').execute().data
+
+@st.cache_data(ttl=30)
+def get_cached_users():
+    return supabase.table('users').select('*').order('created_at', desc=True).execute().datate().data
 
 # ------------------- ШИФРОВАНИЕ -------------------
 ENCRYPTION_KEY = "LHiBLyxFE1Z4BZSGFRPfy0AZ_ADKi0WV1ZwjUo9jjzE="
