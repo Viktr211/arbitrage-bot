@@ -605,8 +605,8 @@ def execute_demo_arbitrage(opp, user_id, demo_data, public_clients, reinvest_per
     st.toast(f"💰 Демо-сделка: +{real_profit:.2f} USDT", icon="🎉")
     return real_profit, entry
 
-# ------------------- СЕССИЯ (ФИНАЛЬНАЯ) -------------------
-# Инициализация всех переменных сессии
+# ------------------- СЕССИЯ (ПОЛНОСТЬЮ ИСПРАВЛЕННАЯ) -------------------
+# Инициализация переменных сессии
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.user_id = None
@@ -632,42 +632,44 @@ if 'logged_in' not in st.session_state:
     st.session_state.orderbook_depth = 10
     st.session_state.real_exchanges = None
 
-# Восстановление сессии из URL (если есть email в параметрах) 
-# НО с защитой от ошибки, если функция ещё не определена
+# Восстановление сессии из URL
 if 'email' in st.query_params:
     email = st.query_params['email']
-    # Если функция уже определена (она определена выше) - используем её
-    try:
-        user = get_user_by_email(email)
-        if user:
-            st.session_state.logged_in = True
-            st.session_state.user_id = user['id']
-            st.session_state.email = user['email']
-            st.session_state.username = user['full_name']
-            st.session_state.wallet = user.get('wallet_address', '')
-            # Загрузка демо-данных
-            demo = load_demo_data(st.session_state.user_id)
-            if demo:
-                st.session_state.demo_data = demo
-            else:
-                init_bal = {ex:{"USDT":0,"portfolio":{t:0 for t in get_available_tokens()}} for ex in EXCHANGES}
-                st.session_state.demo_data = {'balances':init_bal,'total_profit':0,'trade_count':0,'withdrawable_balance':0,'history':[]}
-                save_demo_data(st.session_state.user_id, st.session_state.demo_data)
-            # Загрузка настроек
-            settings = load_user_settings(st.session_state.user_id)
-            if settings:
-                st.session_state.fee = float(settings.get('fee', 0.1))
-                st.session_state.min_profit = float(settings.get('min_profit', 0.07))
-                st.session_state.min_trade = float(settings.get('min_trade', 12.0))
-                st.session_state.max_trade = float(settings.get('max_trade', 100.0))
-                st.session_state.scan_interval = int(settings.get('scan_interval', 20))
-                st.session_state.reinvest_percent = int(settings.get('reinvest_percent', 0))
-                st.session_state.use_orderbook = bool(settings.get('use_orderbook', True))
-                st.session_state.max_slippage = float(settings.get('max_slippage', 0.3))
-                st.session_state.orderbook_depth = int(settings.get('orderbook_depth', 10))
-                st.session_state.auto_trade_enabled = bool(settings.get('auto_trade_enabled', False))
-    except:
-        pass
+    user = get_user_by_email(email)
+    if user:
+        st.session_state.logged_in = True
+        st.session_state.user_id = user['id']
+        st.session_state.email = user['email']
+        st.session_state.username = user['full_name']
+        st.session_state.wallet = user.get('wallet_address', '')
+        # Загрузка демо-данных
+        demo = load_demo_data(st.session_state.user_id)
+        if demo:
+            st.session_state.demo_data = demo
+        else:
+            init_bal = {ex:{"USDT":0,"portfolio":{t:0 for t in get_available_tokens()}} for ex in EXCHANGES}
+            st.session_state.demo_data = {'balances':init_bal,'total_profit':0,'trade_count':0,'withdrawable_balance':0,'history':[]}
+            save_demo_data(st.session_state.user_id, st.session_state.demo_data)
+        # Загрузка настроек
+        settings = load_user_settings(st.session_state.user_id)
+        if settings:
+            st.session_state.fee = float(settings.get('fee', 0.1))
+            st.session_state.min_profit = float(settings.get('min_profit', 0.07))
+            st.session_state.min_trade = float(settings.get('min_trade', 12.0))
+            st.session_state.max_trade = float(settings.get('max_trade', 100.0))
+            st.session_state.scan_interval = int(settings.get('scan_interval', 20))
+            st.session_state.reinvest_percent = int(settings.get('reinvest_percent', 0))
+            st.session_state.use_orderbook = bool(settings.get('use_orderbook', True))
+            st.session_state.max_slippage = float(settings.get('max_slippage', 0.3))
+            st.session_state.orderbook_depth = int(settings.get('orderbook_depth', 10))
+            st.session_state.auto_trade_enabled = bool(settings.get('auto_trade_enabled', False))
+        # Загрузка сообщений
+        st.session_state.chat_unread = get_unread_count(st.session_state.user_id)
+
+# Если пользователь уже вошёл, но email не в URL – добавляем его
+if st.session_state.logged_in and st.session_state.email:
+    if 'email' not in st.query_params:
+        st.query_params.email = st.session_state.email
 
 public_clients = init_public_clients()
 st.session_state.real_exchanges = None
@@ -734,6 +736,7 @@ if not st.session_state.logged_in:
                 st.session_state.email = user['email']
                 st.session_state.username = user['full_name']
                 st.session_state.wallet = user.get('wallet_address', '')
+                st.query_params.email = user['email']  # Сохраняем в URL
                 # Загрузка демо-данных
                 demo = load_demo_data(st.session_state.user_id)
                 if demo:
@@ -801,6 +804,7 @@ with col4:
     if st.button("🚪 Выйти"):
         st.session_state.logged_in = False
         st.session_state.auto_trade_enabled = False
+        st.query_params.clear()
         st.rerun()
 
 connected = [ex.upper() for ex, cl in public_clients.items() if cl is not None]
