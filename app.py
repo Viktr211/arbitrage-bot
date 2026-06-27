@@ -45,6 +45,10 @@ if not SUPABASE_URL or not SUPABASE_KEY:
         st.error("❌ Ошибка: не заданы SUPABASE_URL и SUPABASE_KEY.")
         st.stop()
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# ------------------- КЭШИРОВАНИЕ -------------------
+@st.cache_data(ttl=10)
+def get_cached_trades(limit=100):
+    return supabase.table('trades').select('*, users(email,full_name)').order('trade_time', desc=True).limit(limit).execute().data
 
 # ------------------- ШИФРОВАНИЕ -------------------
 ENCRYPTION_KEY = "LHiBLyxFE1Z4BZSGFRPfy0AZ_ADKi0WV1ZwjUo9jjzE="
