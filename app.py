@@ -58,7 +58,7 @@ except Exception:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ------------------- ШИФРОВАНИЕ (ПРАВИЛЬНЫЙ КЛЮЧ) -------------------
+# ------------------- ШИФРОВАНИЕ -------------------
 ENCRYPTION_KEY = "LHiBLyxFE1Z4BZSGFRPfy0AZ_ADKi0WV1ZwjUo9jjzE="
 fernet = Fernet(ENCRYPTION_KEY.encode())
 
@@ -661,7 +661,7 @@ if 'email' in st.query_params:
             st.session_state.use_orderbook = bool(settings.get('use_orderbook', True))
             st.session_state.max_slippage = float(settings.get('max_slippage', 0.3))
             st.session_state.orderbook_depth = int(settings.get('orderbook_depth', 10))
-            st.session_state.auto_trade_enabled = bool(settings.get('auto_trade_enabled', False))  # <-- ВОТ ЭТА СТРОКА
+            st.session_state.auto_trade_enabled = bool(settings.get('auto_trade_enabled', False))
 
 # Если сессия уже есть, но email не в URL – добавляем
 if st.session_state.logged_in and st.session_state.email:
@@ -671,7 +671,7 @@ if st.session_state.logged_in and st.session_state.email:
 public_clients = init_public_clients()
 st.session_state.real_exchanges = None
 
-# ------------------- АВТО-СКАНИРОВАНИЕ (без st_autorefresh) -------------------
+# ------------------- АВТО-СКАНИРОВАНИЕ -------------------
 if st.session_state.get('auto_trade_enabled', False) and st.session_state.get('logged_in', False):
     if st.session_state.trade_mode == "Реальный":
         if not can_trade_real(st.session_state.email):
@@ -682,7 +682,7 @@ if st.session_state.get('auto_trade_enabled', False) and st.session_state.get('l
                 st.session_state.real_exchanges = init_real_exchanges()
             if st.session_state.real_exchanges and any(st.session_state.real_exchanges.values()):
                 interval = st.session_state.get('scan_interval', 20)
-                # st_autorefresh(interval=interval * 1000, key="auto_refresh")  # закомментировано
+                st_autorefresh(interval=interval * 1000, key="auto_refresh")
                 now = datetime.now()
                 last = st.session_state.get('last_scan_time')
                 if last is None or (now - last).total_seconds() >= interval:
@@ -692,7 +692,7 @@ if st.session_state.get('auto_trade_enabled', False) and st.session_state.get('l
     else:
         if st.session_state.demo_data is not None:
             interval = st.session_state.get('scan_interval', 20)
-            # st_autorefresh(interval=interval * 1000, key="auto_refresh")  # закомментировано
+            st_autorefresh(interval=interval * 1000, key="auto_refresh")
             now = datetime.now()
             last = st.session_state.get('last_scan_time')
             if last is None or (now - last).total_seconds() >= interval:
