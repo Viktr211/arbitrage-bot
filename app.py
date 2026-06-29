@@ -594,7 +594,7 @@ if 'logged_in' not in st.session_state:
     st.session_state.demo_data = None
     st.session_state.real_trades = 0
     st.session_state.real_profit_total = 0
-    st.session_state.trade_mode = "Демо"
+    st.session_state.trade_mode = "Реальный"
     st.session_state.auto_log = []
     st.session_state.auto_trade_enabled = False
     st.session_state.last_scan_time = None
