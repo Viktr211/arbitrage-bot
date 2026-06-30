@@ -661,6 +661,7 @@ def execute_real_arbitrage(opp, user_id, real_exchanges, reinvest_percent, use_o
     # Обновляем статистику
     st.session_state.real_trades += 1
     st.session_state.real_profit_total += real_profit
+    print(f"Сделка сохранена: {token}, {amount}, {real_profit}")
     add_trade(user_id, "Реальный", token, amount, real_profit, buy_ex, sell_ex)
     st.toast(f"💰 Реальная сделка: +{real_profit:.2f} USDT", icon="🎉")
     return real_profit, f"Сделка выполнена! Прибыль: {real_profit:.2f} USDT"
