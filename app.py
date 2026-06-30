@@ -88,16 +88,19 @@ def get_cached_user_settings(user_id):
         pass
     return None
 
-# НОВАЯ ФУНКЦИЯ: получает сделки только для конкретного пользователя
+# Функция для получения сделок пользователя с фильтром по режиму
 @st.cache_data(ttl=10)
-def get_user_trades(user_id, limit=100):
+def get_user_trades(user_id, mode=None, limit=100):
     try:
-        res = supabase.table('trades').select('*').eq('user_id', user_id).order('trade_time', desc=True).limit(limit).execute()
+        query = supabase.table('trades').select('*').eq('user_id', user_id)
+        if mode is not None:
+            query = query.eq('mode', mode)
+        res = query.order('trade_time', desc=True).limit(limit).execute()
         return res.data
     except:
         return []
 
-# ОСТАВЛЯЕМ для админки (все сделки)
+# Для админки (все сделки всех пользователей)
 @st.cache_data(ttl=10)
 def get_cached_trades(limit=100):
     return supabase.table('trades').select('*, users(email,full_name)').order('trade_time', desc=True).limit(limit).execute().data
@@ -995,9 +998,11 @@ col_a, col_b, col_c, col_d = st.columns(4)
 col_a.metric("💰 USDT на биржах", f"{total_usdt:.2f}")
 col_b.metric("📦 Портфель (токены)", f"{total_portfolio:.2f}")
 col_c.metric("💎 Общий капитал", f"{total_capital:.2f}")
-# Количество сделок из БД (для всех режимов) - покажем общее количество
-user_trades = get_user_trades(st.session_state.user_id, limit=1000)  # без лимита можно, но для скорости 1000
-trade_count = len(user_trades)
+
+# Количество сделок только для текущего режима
+current_mode = st.session_state.trade_mode
+user_trades_count = get_user_trades(st.session_state.user_id, mode=current_mode, limit=1000)
+trade_count = len(user_trades_count)
 col_d.metric("📊 Сделок", trade_count)
 
 # ------------------- НАСТРОЙКИ -------------------
@@ -1180,39 +1185,44 @@ with tabs[2]:
                 else:
                     st.warning("Арбитражных возможностей не найдено")
 
-# ----- СТАТИСТИКА (исправлено: данные из БД) -----
+# ----- СТАТИСТИКА (раздельно по режимам) -----
 with tabs[3]:
     st.subheader("📊 Статистика")
     
-    # Получаем все сделки пользователя из БД
-    all_user_trades = get_user_trades(st.session_state.user_id, limit=1000)
+    current_mode = st.session_state.trade_mode
+    # Получаем сделки только для текущего режима
+    mode_trades = get_user_trades(st.session_state.user_id, mode=current_mode, limit=1000)
     
-    # Суммируем прибыль по всем сделкам
-    total_profit_db = sum(trade.get('profit', 0) for trade in all_user_trades)
-    total_trades_db = len(all_user_trades)
+    total_profit = sum(t.get('profit', 0) for t in mode_trades)
+    total_trades = len(mode_trades)
     
-    # Демо-данные (для выводимой суммы)
-    if st.session_state.demo_data:
-        withdrawable = st.session_state.demo_data.get('withdrawable_balance', 0)
+    if current_mode == "Демо":
+        # Для демо показываем ещё и доступную для вывода сумму из демо-данных
+        if st.session_state.demo_data:
+            withdrawable = st.session_state.demo_data.get('withdrawable_balance', 0)
+        else:
+            withdrawable = 0
+        st.info("📊 Статистика для **ДЕМО-режима**")
     else:
-        withdrawable = 0
+        withdrawable = 0  # в реальном режиме вывод не поддерживается
+        st.info("📊 Статистика для **РЕАЛЬНОГО** режима")
     
     col1, col2, col3 = st.columns(3)
-    col1.metric("📈 Общая прибыль (все сделки)", f"{total_profit_db:.4f} USDT")
-    col2.metric("🔄 Количество сделок", total_trades_db)
-    col3.metric("💰 Доступно для вывода (демо)", f"{withdrawable:.2f} USDT")
+    col1.metric("📈 Общая прибыль", f"{total_profit:.4f} USDT")
+    col2.metric("🔄 Количество сделок", total_trades)
+    col3.metric("💰 Доступно для вывода", f"{withdrawable:.2f} USDT")
     
-    if total_trades_db > 0:
-        avg = total_profit_db / total_trades_db
+    if total_trades > 0:
+        avg = total_profit / total_trades
         st.metric("📊 Средняя прибыль на сделку", f"{avg:.4f} USDT")
     
-    # График накопленной прибыли (по всем сделкам)
-    if all_user_trades:
-        df_trades = pd.DataFrame(all_user_trades)
+    # График накопленной прибыли
+    if mode_trades:
+        df_trades = pd.DataFrame(mode_trades)
         df_trades['trade_time'] = pd.to_datetime(df_trades['trade_time'])
         df_trades = df_trades.sort_values('trade_time')
         df_trades['cumulative_profit'] = df_trades['profit'].cumsum()
-        fig = px.line(df_trades, x='trade_time', y='cumulative_profit', title="Накопленная прибыль (все сделки)")
+        fig = px.line(df_trades, x='trade_time', y='cumulative_profit', title=f"Накопленная прибыль ({current_mode} режим)")
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.info("Нет сделок для отображения графика.")
@@ -1348,13 +1358,13 @@ with tabs[5]:
         else:
             st.error("Введите корректную сумму и адрес")
 
-# ----- ИСТОРИЯ (исправлено: теперь все сделки из БД) -----
+# ----- ИСТОРИЯ (раздельно по режимам) -----
 with tabs[6]:
     st.subheader("📜 История сделок")
-    trades = get_user_trades(st.session_state.user_id, limit=100)
+    current_mode = st.session_state.trade_mode
+    trades = get_user_trades(st.session_state.user_id, mode=current_mode, limit=100)
     if trades:
         df = pd.DataFrame(trades)
-        # Выбираем нужные колонки и форматируем дату
         df_display = df[['trade_time', 'asset', 'amount', 'profit', 'buy_exchange', 'sell_exchange', 'mode']].copy()
         df_display['trade_time'] = pd.to_datetime(df_display['trade_time']).dt.strftime('%Y-%m-%d %H:%M')
         df_display['amount'] = df_display['amount'].apply(lambda x: f"{x:.8f}")
@@ -1362,7 +1372,7 @@ with tabs[6]:
         df_display.columns = ['Время', 'Актив', 'Количество', 'Прибыль (USDT)', 'Покупка', 'Продажа', 'Режим']
         st.dataframe(df_display, use_container_width=True)
     else:
-        st.info("Сделок пока нет")
+        st.info(f"Нет сделок в {current_mode} режиме.")
 
 # ----- КАБИНЕТ -----
 with tabs[7]:
@@ -1373,12 +1383,12 @@ with tabs[7]:
         st.write(f"**Email:** {st.session_state.email}")
         st.write(f"**Кошелёк:** {st.session_state.wallet}")
     with col2:
-        # Используем данные из БД
-        user_trades_for_cabinet = get_user_trades(st.session_state.user_id, limit=1000)
-        total_profit_cab = sum(t.get('profit',0) for t in user_trades_for_cabinet)
-        total_trades_cab = len(user_trades_for_cabinet)
-        st.write(f"**Всего сделок:** {total_trades_cab}")
-        st.write(f"**Общая прибыль:** {total_profit_cab:.4f} USDT")
+        # Показываем общую статистику по всем режимам (можно оставить, но по желанию можно и разделить)
+        all_trades = get_user_trades(st.session_state.user_id, limit=1000)
+        total_profit_all = sum(t.get('profit',0) for t in all_trades)
+        total_trades_all = len(all_trades)
+        st.write(f"**Всего сделок (все режимы):** {total_trades_all}")
+        st.write(f"**Общая прибыль (все режимы):** {total_profit_all:.4f} USDT")
         st.write(f"**Общий капитал:** {total_capital:.2f} USDT")
 
 # ----- ЧАТ -----
