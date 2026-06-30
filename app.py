@@ -88,7 +88,6 @@ def get_cached_user_settings(user_id):
         pass
     return None
 
-# Функция для получения сделок пользователя с фильтром по режиму
 @st.cache_data(ttl=10)
 def get_user_trades(user_id, mode=None, limit=100):
     try:
@@ -100,7 +99,6 @@ def get_user_trades(user_id, mode=None, limit=100):
     except:
         return []
 
-# Для админки (все сделки всех пользователей)
 @st.cache_data(ttl=10)
 def get_cached_trades(limit=100):
     return supabase.table('trades').select('*, users(email,full_name)').order('trade_time', desc=True).limit(limit).execute().data
@@ -999,7 +997,6 @@ col_a.metric("💰 USDT на биржах", f"{total_usdt:.2f}")
 col_b.metric("📦 Портфель (токены)", f"{total_portfolio:.2f}")
 col_c.metric("💎 Общий капитал", f"{total_capital:.2f}")
 
-# Количество сделок только для текущего режима
 current_mode = st.session_state.trade_mode
 user_trades_count = get_user_trades(st.session_state.user_id, mode=current_mode, limit=1000)
 trade_count = len(user_trades_count)
@@ -1099,7 +1096,7 @@ with tabs[0]:
             return ['background-color: #00FF88; color: black'] * len(row)
         else:
             return [''] * len(row)
-    st.dataframe(df_prices.style.apply(highlight_profitable, axis=1), use_container_width=True, hide_index=True)
+    st.dataframe(df_prices.style.apply(highlight_profitable, axis=1), width='stretch', hide_index=True)
     st.caption("🟢 Зелёным выделены токены, спред по которым превышает минимальную прибыль с учётом комиссии.")
 
 # ----- ГРАФИКИ -----
@@ -1190,21 +1187,19 @@ with tabs[3]:
     st.subheader("📊 Статистика")
     
     current_mode = st.session_state.trade_mode
-    # Получаем сделки только для текущего режима
     mode_trades = get_user_trades(st.session_state.user_id, mode=current_mode, limit=1000)
     
     total_profit = sum(t.get('profit', 0) for t in mode_trades)
     total_trades = len(mode_trades)
     
     if current_mode == "Демо":
-        # Для демо показываем ещё и доступную для вывода сумму из демо-данных
         if st.session_state.demo_data:
             withdrawable = st.session_state.demo_data.get('withdrawable_balance', 0)
         else:
             withdrawable = 0
         st.info("📊 Статистика для **ДЕМО-режима**")
     else:
-        withdrawable = 0  # в реальном режиме вывод не поддерживается
+        withdrawable = 0
         st.info("📊 Статистика для **РЕАЛЬНОГО** режима")
     
     col1, col2, col3 = st.columns(3)
@@ -1216,7 +1211,6 @@ with tabs[3]:
         avg = total_profit / total_trades
         st.metric("📊 Средняя прибыль на сделку", f"{avg:.4f} USDT")
     
-    # График накопленной прибыли
     if mode_trades:
         df_trades = pd.DataFrame(mode_trades)
         df_trades['trade_time'] = pd.to_datetime(df_trades['trade_time'])
@@ -1370,7 +1364,7 @@ with tabs[6]:
         df_display['amount'] = df_display['amount'].apply(lambda x: f"{x:.8f}")
         df_display['profit'] = df_display['profit'].apply(lambda x: f"{x:.4f}")
         df_display.columns = ['Время', 'Актив', 'Количество', 'Прибыль (USDT)', 'Покупка', 'Продажа', 'Режим']
-        st.dataframe(df_display, use_container_width=True)
+        st.dataframe(df_display, width='stretch')
     else:
         st.info(f"Нет сделок в {current_mode} режиме.")
 
@@ -1383,7 +1377,6 @@ with tabs[7]:
         st.write(f"**Email:** {st.session_state.email}")
         st.write(f"**Кошелёк:** {st.session_state.wallet}")
     with col2:
-        # Показываем общую статистику по всем режимам (можно оставить, но по желанию можно и разделить)
         all_trades = get_user_trades(st.session_state.user_id, limit=1000)
         total_profit_all = sum(t.get('profit',0) for t in all_trades)
         total_trades_all = len(all_trades)
