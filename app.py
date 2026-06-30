@@ -1,4 +1,3 @@
-import streamlit as st
 import time
 import json
 import ccxt
@@ -156,15 +155,18 @@ def save_demo_data(user_id, data):
     st.cache_data.clear()
 
 def add_trade(user_id, mode, asset, amount, profit, buy_ex, sell_ex):
+    print(f"🔵 ВХОД В add_trade: user_id={user_id}, mode={mode}, asset={asset}, amount={amount}, profit={profit}")
     try:
-        supabase.table('trades').insert({
+        result = supabase.table('trades').insert({
             'user_id':user_id,'mode':mode,'asset':asset,'amount':amount,'profit':profit,
             'buy_exchange':buy_ex,'sell_exchange':sell_ex
         }).execute()
         print(f"✅ СДЕЛКА СОХРАНЕНА: {asset} {amount} {profit} {mode}")
         st.cache_data.clear()
+        return True
     except Exception as e:
         print(f"❌ ОШИБКА СОХРАНЕНИЯ СДЕЛКИ: {e}")
+        return False
 
 # ------------------- API КЛЮЧИ -------------------
 def get_all_api_keys():
@@ -698,12 +700,12 @@ def execute_real_arbitrage(opp, user_id, real_exchanges, reinvest_percent, use_o
     print(f"📊 Сделка #{st.session_state.real_trades}, общая прибыль: {st.session_state.real_profit_total:.2f}")
     
     # СОХРАНЯЕМ СДЕЛКУ
-    print(f"💾 Сохранение сделки: {token}, {amount:.8f}, {real_profit:.4f}, {buy_ex}->{sell_ex}")
-    try:
-        add_trade(user_id, "Реальный", token, amount, real_profit, buy_ex, sell_ex)
+    print(f"💾 Попытка сохранить сделку: {token}, {amount:.8f}, {real_profit:.4f}, {buy_ex}->{sell_ex}")
+    success = add_trade(user_id, "Реальный", token, amount, real_profit, buy_ex, sell_ex)
+    if success:
         print(f"✅ СДЕЛКА УСПЕШНО СОХРАНЕНА")
-    except Exception as e:
-        print(f"❌ ОШИБКА ПРИ СОХРАНЕНИИ СДЕЛКИ: {e}")
+    else:
+        print(f"❌ НЕ УДАЛОСЬ СОХРАНИТЬ СДЕЛКУ")
     
     st.toast(f"💰 Реальная сделка: +{real_profit:.2f} USDT", icon="🎉")
     return real_profit, f"Сделка выполнена! Прибыль: {real_profit:.2f} USDT"
