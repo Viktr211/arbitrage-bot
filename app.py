@@ -624,6 +624,7 @@ def find_real_opportunity(fee, min_profit, min_trade, max_trade, depth, use_orde
     if not opportunities: return None
     return max(opportunities, key=lambda x: x['profit'])
 
+# ---------- ИСПРАВЛЕННАЯ ФУНКЦИЯ (УДАЛЕН deposit) ----------
 def execute_real_arbitrage(opp, user_id, real_exchanges, reinvest_percent, use_orderbook=True, depth=10, max_slippage=0.3):
     print(f"🚀 НАЧАЛО РЕАЛЬНОЙ СДЕЛКИ для {opp['token']}")
     
@@ -686,14 +687,8 @@ def execute_real_arbitrage(opp, user_id, real_exchanges, reinvest_percent, use_o
         return None, msg_sell
     print(f"✅ Продажа выполнена")
     
-    # Реинвестиция
-    reinvest_amount = real_profit * reinvest_percent / 100
-    if reinvest_amount > 0:
-        try:
-            exch_sell.deposit(reinvest_amount, 'USDT')
-            print(f"🔄 Реинвестировано {reinvest_amount:.2f} USDT на {sell_ex}")
-        except Exception as e:
-            print(f"⚠️ Ошибка реинвестиции: {e}")
+    # ----- РЕИНВЕСТИЦИЯ УДАЛЕНА (вызов deposit НЕ НУЖЕН) -----
+    # Прибыль уже осталась на бирже продажи. Никаких дополнительных действий.
     
     # Обновляем статистику
     st.session_state.real_trades += 1
@@ -1335,16 +1330,19 @@ with tabs[5]:
         else:
             st.error("Введите корректную сумму и адрес")
 
-# ----- ИСТОРИЯ -----
+# ----- ИСПРАВЛЕННАЯ ВКЛАДКА ИСТОРИИ (теперь из БД) -----
 with tabs[6]:
     st.subheader("📜 История сделок")
-    if st.session_state.trade_mode == "Реальный":
-        hist = st.session_state.real_history if hasattr(st.session_state, 'real_history') else []
-    else:
-        hist = st.session_state.demo_data['history'][-50:] if st.session_state.demo_data else []
-    if hist:
-        for h in reversed(hist):
-            st.text(h)
+    trades = get_cached_trades(limit=100)
+    if trades:
+        df = pd.DataFrame(trades)
+        # Выбираем нужные колонки и форматируем дату
+        df_display = df[['trade_time', 'asset', 'amount', 'profit', 'buy_exchange', 'sell_exchange', 'mode']].copy()
+        df_display['trade_time'] = pd.to_datetime(df_display['trade_time']).dt.strftime('%Y-%m-%d %H:%M')
+        df_display['amount'] = df_display['amount'].apply(lambda x: f"{x:.8f}")
+        df_display['profit'] = df_display['profit'].apply(lambda x: f"{x:.4f}")
+        df_display.columns = ['Время', 'Актив', 'Количество', 'Прибыль (USDT)', 'Покупка', 'Продажа', 'Режим']
+        st.dataframe(df_display, use_container_width=True)
     else:
         st.info("Сделок пока нет")
 
