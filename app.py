@@ -1,3 +1,4 @@
+import streamlit as st
 import time
 import json
 import ccxt
