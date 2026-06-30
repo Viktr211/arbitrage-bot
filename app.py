@@ -8,9 +8,16 @@ from datetime import datetime
 from supabase import create_client, Client
 import hashlib
 import base64
-from streamlit_autorefresh import st_autorefresh
 import os
 from cryptography.fernet import Fernet
+
+# Пытаемся импортировать автообновление, если не получится — просто игнорируем
+try:
+    from streamlit_autorefresh import st_autorefresh
+    AUTOREFRESH_AVAILABLE = True
+except ImportError:
+    AUTOREFRESH_AVAILABLE = False
+    st_autorefresh = None
 
 st.set_page_config(page_title="Арбитражный бот HOVMEL", layout="wide", page_icon="🔄", initial_sidebar_state="collapsed")
 
@@ -779,31 +786,58 @@ public_clients = init_public_clients()
 if st.session_state.real_exchanges is None:
     st.session_state.real_exchanges = init_real_exchanges()
 
-# ------------------- АВТО-СКАНИРОВАНИЕ -------------------
-if st.session_state.get('auto_trade_enabled', False) and st.session_state.get('logged_in', False):
+# ==================== АВТО-СКАНИРОВАНИЕ (не зависит от логина) ====================
+# Теперь автоторговля работает всегда, если включена в настройках БД
+# Проверяем, загружены ли настройки для пользователя (администратора)
+# Если пользователь не залогинен, но флаг auto_trade_enabled в БД для админа = True, бот продолжит работу
+# Для простоты используем настройки, которые были загружены при старте (для администратора)
+# Если сессии нет, используем настройки из БД напрямую
+
+# Получаем настройки для администратора (user_id = 10, например, или по email)
+admin_user = get_user_by_email("cb777899@gmail.com")
+if admin_user:
+    admin_settings = get_cached_user_settings(admin_user['id'])
+    if admin_settings:
+        # Если в сессии нет пользователя, используем настройки админа
+        if not st.session_state.logged_in:
+            st.session_state.fee = admin_settings.get('fee', 0.1)
+            st.session_state.min_profit = admin_settings.get('min_profit', 0.02)
+            st.session_state.min_trade = admin_settings.get('min_trade', 12.0)
+            st.session_state.max_trade = admin_settings.get('max_trade', 25.0)
+            st.session_state.scan_interval = admin_settings.get('scan_interval', 20)
+            st.session_state.reinvest_percent = admin_settings.get('reinvest_percent', 0)
+            st.session_state.use_orderbook = admin_settings.get('use_orderbook', False)
+            st.session_state.max_slippage = admin_settings.get('max_slippage', 0.3)
+            st.session_state.orderbook_depth = admin_settings.get('orderbook_depth', 10)
+            st.session_state.auto_trade_enabled = admin_settings.get('auto_trade_enabled', False)
+            st.session_state.real_exchanges = init_real_exchanges()
+
+# Блок автосканирования теперь выполняется всегда, если auto_trade_enabled == True
+if st.session_state.get('auto_trade_enabled', False):
     if st.session_state.trade_mode == "Реальный":
-        if not can_trade_real(st.session_state.email):
-            st.warning("⚠️ Реальный режим доступен только администратору")
-            st.session_state.auto_trade_enabled = False
-        else:
-            if st.session_state.real_exchanges and any(st.session_state.real_exchanges.values()):
+        # Проверяем, есть ли API-ключи
+        if st.session_state.real_exchanges and any(st.session_state.real_exchanges.values()):
+            if AUTOREFRESH_AVAILABLE:
                 interval = st.session_state.get('scan_interval', 20)
                 st_autorefresh(interval=interval * 1000, key="auto_refresh")
-                now = datetime.now()
-                last = st.session_state.get('last_scan_time')
-                if last is None or (now - last).total_seconds() >= interval:
-                    st.session_state.last_scan_time = now
-                    opp = find_real_opportunity(
-                        st.session_state.fee, st.session_state.min_profit,
-                        st.session_state.min_trade, st.session_state.max_trade,
-                        st.session_state.orderbook_depth, st.session_state.use_orderbook,
-                        st.session_state.real_exchanges,
-                        st.session_state.max_slippage
-                    )
-                    if opp:
-                        st.session_state.auto_log.append(f"🔍 Найдено (реал): {opp['token']} {opp['buy_ex']}→{opp['sell_ex']} | прибыль {opp['profit']:.4f} USDT")
+            now = datetime.now()
+            last = st.session_state.get('last_scan_time')
+            if last is None or (now - last).total_seconds() >= st.session_state.get('scan_interval', 20):
+                st.session_state.last_scan_time = now
+                opp = find_real_opportunity(
+                    st.session_state.fee, st.session_state.min_profit,
+                    st.session_state.min_trade, st.session_state.max_trade,
+                    st.session_state.orderbook_depth, st.session_state.use_orderbook,
+                    st.session_state.real_exchanges,
+                    st.session_state.max_slippage
+                )
+                if opp:
+                    st.session_state.auto_log.append(f"🔍 Найдено (реал): {opp['token']} {opp['buy_ex']}→{opp['sell_ex']} | прибыль {opp['profit']:.4f} USDT")
+                    # Используем ID администратора для сохранения сделок
+                    user_id = admin_user['id'] if admin_user else None
+                    if user_id:
                         profit, msg = execute_real_arbitrage(
-                            opp, st.session_state.user_id, st.session_state.real_exchanges,
+                            opp, user_id, st.session_state.real_exchanges,
                             st.session_state.reinvest_percent,
                             st.session_state.use_orderbook, st.session_state.orderbook_depth,
                             st.session_state.max_slippage
@@ -812,15 +846,17 @@ if st.session_state.get('auto_trade_enabled', False) and st.session_state.get('l
                             st.session_state.auto_log.append(f"✅ Исполнено! +{profit:.2f} USDT")
                         else:
                             st.session_state.auto_log.append(f"❌ Ошибка: {msg}")
-            else:
-                st.warning("🔐 Реальный режим требует корректных API-ключей. Проверьте их в админ-панели.")
+        else:
+            st.warning("🔐 Реальный режим требует корректных API-ключей. Проверьте их в админ-панели.")
     else:
+        # Демо-режим
         if st.session_state.demo_data is not None:
-            interval = st.session_state.get('scan_interval', 20)
-            st_autorefresh(interval=interval * 1000, key="auto_refresh")
+            if AUTOREFRESH_AVAILABLE:
+                interval = st.session_state.get('scan_interval', 20)
+                st_autorefresh(interval=interval * 1000, key="auto_refresh")
             now = datetime.now()
             last = st.session_state.get('last_scan_time')
-            if last is None or (now - last).total_seconds() >= interval:
+            if last is None or (now - last).total_seconds() >= st.session_state.get('scan_interval', 20):
                 st.session_state.last_scan_time = now
                 opp = find_demo_opportunity(
                     st.session_state.fee, st.session_state.min_profit,
@@ -831,16 +867,18 @@ if st.session_state.get('auto_trade_enabled', False) and st.session_state.get('l
                 )
                 if opp:
                     st.session_state.auto_log.append(f"🔍 Найдено (демо): {opp['token']} {opp['buy_ex']}→{opp['sell_ex']} | прибыль {opp['profit']:.4f} USDT")
-                    profit, msg = execute_demo_arbitrage(
-                        opp, st.session_state.user_id, st.session_state.demo_data,
-                        public_clients, st.session_state.reinvest_percent,
-                        st.session_state.use_orderbook, st.session_state.orderbook_depth,
-                        st.session_state.max_slippage
-                    )
-                    if profit:
-                        st.session_state.auto_log.append(f"✅ Исполнено! +{profit:.2f} USDT")
-                    else:
-                        st.session_state.auto_log.append(f"❌ Ошибка: {msg}")
+                    user_id = admin_user['id'] if admin_user else None
+                    if user_id:
+                        profit, msg = execute_demo_arbitrage(
+                            opp, user_id, st.session_state.demo_data,
+                            public_clients, st.session_state.reinvest_percent,
+                            st.session_state.use_orderbook, st.session_state.orderbook_depth,
+                            st.session_state.max_slippage
+                        )
+                        if profit:
+                            st.session_state.auto_log.append(f"✅ Исполнено! +{profit:.2f} USDT")
+                        else:
+                            st.session_state.auto_log.append(f"❌ Ошибка: {msg}")
 
 # ------------------- ЛОГИН / РЕГИСТРАЦИЯ -------------------
 if not st.session_state.logged_in:
@@ -921,7 +959,7 @@ with col3:
 with col4:
     if st.button("🚪 Выйти"):
         st.session_state.logged_in = False
-        st.session_state.auto_trade_enabled = False
+        # Не останавливаем бота при выходе, он продолжит работу, если включён
         st.query_params.clear()
         st.rerun()
 
@@ -936,6 +974,12 @@ with col_start:
             settings = load_user_settings(st.session_state.user_id)
             settings['auto_trade_enabled'] = True
             save_user_settings(st.session_state.user_id, settings)
+        else:
+            # Если не залогинены, сохраняем для админа
+            if admin_user:
+                settings = load_user_settings(admin_user['id'])
+                settings['auto_trade_enabled'] = True
+                save_user_settings(admin_user['id'], settings)
         if st.session_state.trade_mode == "Реальный":
             st.session_state.real_exchanges = init_real_exchanges()
         st.rerun()
@@ -946,6 +990,11 @@ with col_stop:
             settings = load_user_settings(st.session_state.user_id)
             settings['auto_trade_enabled'] = False
             save_user_settings(st.session_state.user_id, settings)
+        else:
+            if admin_user:
+                settings = load_user_settings(admin_user['id'])
+                settings['auto_trade_enabled'] = False
+                save_user_settings(admin_user['id'], settings)
         st.rerun()
 with col_mode:
     new_mode = st.radio("Режим", ["Демо", "Реальный"], horizontal=True, index=0 if st.session_state.trade_mode=="Демо" else 1)
@@ -998,8 +1047,12 @@ col_b.metric("📦 Портфель (токены)", f"{total_portfolio:.2f}")
 col_c.metric("💎 Общий капитал", f"{total_capital:.2f}")
 
 current_mode = st.session_state.trade_mode
-user_trades_count = get_user_trades(st.session_state.user_id, mode=current_mode, limit=1000)
-trade_count = len(user_trades_count)
+user_id_for_stats = st.session_state.user_id if st.session_state.logged_in else (admin_user['id'] if admin_user else None)
+if user_id_for_stats:
+    user_trades_count = get_user_trades(user_id_for_stats, mode=current_mode, limit=1000)
+    trade_count = len(user_trades_count)
+else:
+    trade_count = 0
 col_d.metric("📊 Сделок", trade_count)
 
 # ------------------- НАСТРОЙКИ -------------------
@@ -1020,8 +1073,9 @@ with st.expander("⚙️ Настройки арбитража", expanded=False)
         depth = st.session_state.orderbook_depth
 
     if st.button("💾 Сохранить настройки"):
-        if st.session_state.user_id:
-            save_user_settings(st.session_state.user_id, {
+        target_user_id = st.session_state.user_id if st.session_state.logged_in else (admin_user['id'] if admin_user else None)
+        if target_user_id:
+            save_user_settings(target_user_id, {
                 'fee': fee,
                 'min_profit': min_profit,
                 'min_trade': min_trade,
@@ -1047,7 +1101,7 @@ with st.expander("📋 Лог авто-торговли", expanded=False):
         st.info("Нет событий. Запустите авто-торговлю кнопкой СТАРТ.")
 
 # ------------------- ВКЛАДКИ -------------------
-show_admin = is_admin(st.session_state.email)
+show_admin = is_admin(st.session_state.email) if st.session_state.logged_in else is_admin("cb777899@gmail.com")
 tabs_list = ["📊 Dashboard", "📈 Графики", "🔄 Арбитраж", "📊 Статистика", "💼 Балансы", "💰 Вывод", "📜 История", "👤 Кабинет", "💬 Чат"]
 if show_admin:
     tabs_list.append("👑 Админ-панель")
@@ -1137,17 +1191,21 @@ with tabs[2]:
                     st.write(f"**Сумма сделки:** {opp['trade_usdt']:.2f} USDT")
                     st.write(f"**Прибыль:** {opp['profit']:.4f} USDT")
                     if st.button("✅ Выполнить сделку (реал)"):
-                        profit, msg = execute_real_arbitrage(
-                            opp, st.session_state.user_id, st.session_state.real_exchanges,
-                            st.session_state.reinvest_percent,
-                            st.session_state.use_orderbook, st.session_state.orderbook_depth,
-                            st.session_state.max_slippage
-                        )
-                        if profit:
-                            st.success(f"Сделка выполнена! Прибыль: {profit:.2f} USDT. {msg}")
-                            st.rerun()
+                        user_id = st.session_state.user_id if st.session_state.logged_in else (admin_user['id'] if admin_user else None)
+                        if user_id:
+                            profit, msg = execute_real_arbitrage(
+                                opp, user_id, st.session_state.real_exchanges,
+                                st.session_state.reinvest_percent,
+                                st.session_state.use_orderbook, st.session_state.orderbook_depth,
+                                st.session_state.max_slippage
+                            )
+                            if profit:
+                                st.success(f"Сделка выполнена! Прибыль: {profit:.2f} USDT. {msg}")
+                                st.rerun()
+                            else:
+                                st.error(f"Ошибка: {msg}")
                         else:
-                            st.error(f"Ошибка: {msg}")
+                            st.error("Пользователь не найден")
                 else:
                     st.warning("Арбитражных возможностей не найдено")
         else:
@@ -1168,17 +1226,21 @@ with tabs[2]:
                     st.write(f"**Сумма сделки:** {opp['trade_usdt']:.2f} USDT")
                     st.write(f"**Прибыль:** {opp['profit']:.4f} USDT")
                     if st.button("✅ Выполнить сделку (демо)"):
-                        profit, msg = execute_demo_arbitrage(
-                            opp, st.session_state.user_id, st.session_state.demo_data,
-                            public_clients, st.session_state.reinvest_percent,
-                            st.session_state.use_orderbook, st.session_state.orderbook_depth,
-                            st.session_state.max_slippage
-                        )
-                        if profit:
-                            st.success(f"Сделка выполнена! Прибыль: {profit:.2f} USDT. {msg}")
-                            st.rerun()
+                        user_id = st.session_state.user_id if st.session_state.logged_in else (admin_user['id'] if admin_user else None)
+                        if user_id:
+                            profit, msg = execute_demo_arbitrage(
+                                opp, user_id, st.session_state.demo_data,
+                                public_clients, st.session_state.reinvest_percent,
+                                st.session_state.use_orderbook, st.session_state.orderbook_depth,
+                                st.session_state.max_slippage
+                            )
+                            if profit:
+                                st.success(f"Сделка выполнена! Прибыль: {profit:.2f} USDT. {msg}")
+                                st.rerun()
+                            else:
+                                st.error(f"Ошибка: {msg}")
                         else:
-                            st.error(f"Ошибка: {msg}")
+                            st.error("Пользователь не найден")
                 else:
                     st.warning("Арбитражных возможностей не найдено")
 
@@ -1187,10 +1249,14 @@ with tabs[3]:
     st.subheader("📊 Статистика")
     
     current_mode = st.session_state.trade_mode
-    mode_trades = get_user_trades(st.session_state.user_id, mode=current_mode, limit=1000)
-    
-    total_profit = sum(t.get('profit', 0) for t in mode_trades)
-    total_trades = len(mode_trades)
+    user_id_stats = st.session_state.user_id if st.session_state.logged_in else (admin_user['id'] if admin_user else None)
+    if user_id_stats:
+        mode_trades = get_user_trades(user_id_stats, mode=current_mode, limit=1000)
+        total_profit = sum(t.get('profit', 0) for t in mode_trades)
+        total_trades = len(mode_trades)
+    else:
+        total_profit = 0.0
+        total_trades = 0
     
     if current_mode == "Демо":
         if st.session_state.demo_data:
@@ -1356,7 +1422,11 @@ with tabs[5]:
 with tabs[6]:
     st.subheader("📜 История сделок")
     current_mode = st.session_state.trade_mode
-    trades = get_user_trades(st.session_state.user_id, mode=current_mode, limit=100)
+    user_id_hist = st.session_state.user_id if st.session_state.logged_in else (admin_user['id'] if admin_user else None)
+    if user_id_hist:
+        trades = get_user_trades(user_id_hist, mode=current_mode, limit=100)
+    else:
+        trades = []
     if trades:
         df = pd.DataFrame(trades)
         df_display = df[['trade_time', 'asset', 'amount', 'profit', 'buy_exchange', 'sell_exchange', 'mode']].copy()
@@ -1373,13 +1443,18 @@ with tabs[7]:
     st.subheader("👤 Личный кабинет")
     col1, col2 = st.columns(2)
     with col1:
-        st.write(f"**Имя:** {st.session_state.username}")
-        st.write(f"**Email:** {st.session_state.email}")
-        st.write(f"**Кошелёк:** {st.session_state.wallet}")
+        st.write(f"**Имя:** {st.session_state.username if st.session_state.logged_in else 'Гость'}")
+        st.write(f"**Email:** {st.session_state.email if st.session_state.logged_in else 'Не авторизован'}")
+        st.write(f"**Кошелёк:** {st.session_state.wallet if st.session_state.logged_in else '—'}")
     with col2:
-        all_trades = get_user_trades(st.session_state.user_id, limit=1000)
-        total_profit_all = sum(t.get('profit',0) for t in all_trades)
-        total_trades_all = len(all_trades)
+        user_id_cab = st.session_state.user_id if st.session_state.logged_in else (admin_user['id'] if admin_user else None)
+        if user_id_cab:
+            all_trades = get_user_trades(user_id_cab, limit=1000)
+            total_profit_all = sum(t.get('profit',0) for t in all_trades)
+            total_trades_all = len(all_trades)
+        else:
+            total_profit_all = 0.0
+            total_trades_all = 0
         st.write(f"**Всего сделок (все режимы):** {total_trades_all}")
         st.write(f"**Общая прибыль (все режимы):** {total_profit_all:.4f} USDT")
         st.write(f"**Общий капитал:** {total_capital:.2f} USDT")
