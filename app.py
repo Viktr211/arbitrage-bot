@@ -4,7 +4,8 @@ import json
 import ccxt
 import pandas as pd
 import plotly.express as px
-from datetime import datetime
+import plotly.graph_objects as go
+from datetime import datetime, timedelta
 from supabase import create_client, Client
 import hashlib
 import base64
@@ -786,36 +787,13 @@ public_clients = init_public_clients()
 if st.session_state.real_exchanges is None:
     st.session_state.real_exchanges = init_real_exchanges()
 
-# ==================== АВТО-СКАНИРОВАНИЕ (не зависит от логина) ====================
-# Теперь автоторговля работает всегда, если включена в настройках БД
-# Проверяем, загружены ли настройки для пользователя (администратора)
-# Если пользователь не залогинен, но флаг auto_trade_enabled в БД для админа = True, бот продолжит работу
-# Для простоты используем настройки, которые были загружены при старте (для администратора)
-# Если сессии нет, используем настройки из БД напрямую
-
-# Получаем настройки для администратора (user_id = 10, например, или по email)
+# ------------------- АВТО-СКАНИРОВАНИЕ -------------------
+# Получаем админа для фоновой работы
 admin_user = get_user_by_email("cb777899@gmail.com")
-if admin_user:
-    admin_settings = get_cached_user_settings(admin_user['id'])
-    if admin_settings:
-        # Если в сессии нет пользователя, используем настройки админа
-        if not st.session_state.logged_in:
-            st.session_state.fee = admin_settings.get('fee', 0.1)
-            st.session_state.min_profit = admin_settings.get('min_profit', 0.02)
-            st.session_state.min_trade = admin_settings.get('min_trade', 12.0)
-            st.session_state.max_trade = admin_settings.get('max_trade', 25.0)
-            st.session_state.scan_interval = admin_settings.get('scan_interval', 20)
-            st.session_state.reinvest_percent = admin_settings.get('reinvest_percent', 0)
-            st.session_state.use_orderbook = admin_settings.get('use_orderbook', False)
-            st.session_state.max_slippage = admin_settings.get('max_slippage', 0.3)
-            st.session_state.orderbook_depth = admin_settings.get('orderbook_depth', 10)
-            st.session_state.auto_trade_enabled = admin_settings.get('auto_trade_enabled', False)
-            st.session_state.real_exchanges = init_real_exchanges()
 
 # Блок автосканирования теперь выполняется всегда, если auto_trade_enabled == True
 if st.session_state.get('auto_trade_enabled', False):
     if st.session_state.trade_mode == "Реальный":
-        # Проверяем, есть ли API-ключи
         if st.session_state.real_exchanges and any(st.session_state.real_exchanges.values()):
             if AUTOREFRESH_AVAILABLE:
                 interval = st.session_state.get('scan_interval', 20)
@@ -833,8 +811,7 @@ if st.session_state.get('auto_trade_enabled', False):
                 )
                 if opp:
                     st.session_state.auto_log.append(f"🔍 Найдено (реал): {opp['token']} {opp['buy_ex']}→{opp['sell_ex']} | прибыль {opp['profit']:.4f} USDT")
-                    # Используем ID администратора для сохранения сделок
-                    user_id = admin_user['id'] if admin_user else None
+                    user_id = st.session_state.user_id if st.session_state.logged_in else (admin_user['id'] if admin_user else None)
                     if user_id:
                         profit, msg = execute_real_arbitrage(
                             opp, user_id, st.session_state.real_exchanges,
@@ -849,7 +826,6 @@ if st.session_state.get('auto_trade_enabled', False):
         else:
             st.warning("🔐 Реальный режим требует корректных API-ключей. Проверьте их в админ-панели.")
     else:
-        # Демо-режим
         if st.session_state.demo_data is not None:
             if AUTOREFRESH_AVAILABLE:
                 interval = st.session_state.get('scan_interval', 20)
@@ -867,7 +843,7 @@ if st.session_state.get('auto_trade_enabled', False):
                 )
                 if opp:
                     st.session_state.auto_log.append(f"🔍 Найдено (демо): {opp['token']} {opp['buy_ex']}→{opp['sell_ex']} | прибыль {opp['profit']:.4f} USDT")
-                    user_id = admin_user['id'] if admin_user else None
+                    user_id = st.session_state.user_id if st.session_state.logged_in else (admin_user['id'] if admin_user else None)
                     if user_id:
                         profit, msg = execute_demo_arbitrage(
                             opp, user_id, st.session_state.demo_data,
@@ -959,7 +935,6 @@ with col3:
 with col4:
     if st.button("🚪 Выйти"):
         st.session_state.logged_in = False
-        # Не останавливаем бота при выходе, он продолжит работу, если включён
         st.query_params.clear()
         st.rerun()
 
@@ -970,31 +945,22 @@ col_start, col_stop, col_mode, _ = st.columns([1,1,2,1])
 with col_start:
     if st.button("▶ СТАРТ АВТО-ТОРГОВЛИ", use_container_width=True):
         st.session_state.auto_trade_enabled = True
-        if st.session_state.user_id:
-            settings = load_user_settings(st.session_state.user_id)
+        target_user_id = st.session_state.user_id if st.session_state.logged_in else (admin_user['id'] if admin_user else None)
+        if target_user_id:
+            settings = load_user_settings(target_user_id)
             settings['auto_trade_enabled'] = True
-            save_user_settings(st.session_state.user_id, settings)
-        else:
-            # Если не залогинены, сохраняем для админа
-            if admin_user:
-                settings = load_user_settings(admin_user['id'])
-                settings['auto_trade_enabled'] = True
-                save_user_settings(admin_user['id'], settings)
+            save_user_settings(target_user_id, settings)
         if st.session_state.trade_mode == "Реальный":
             st.session_state.real_exchanges = init_real_exchanges()
         st.rerun()
 with col_stop:
     if st.button("⏹ СТОП АВТО-ТОРГОВЛИ", use_container_width=True):
         st.session_state.auto_trade_enabled = False
-        if st.session_state.user_id:
-            settings = load_user_settings(st.session_state.user_id)
+        target_user_id = st.session_state.user_id if st.session_state.logged_in else (admin_user['id'] if admin_user else None)
+        if target_user_id:
+            settings = load_user_settings(target_user_id)
             settings['auto_trade_enabled'] = False
-            save_user_settings(st.session_state.user_id, settings)
-        else:
-            if admin_user:
-                settings = load_user_settings(admin_user['id'])
-                settings['auto_trade_enabled'] = False
-                save_user_settings(admin_user['id'], settings)
+            save_user_settings(target_user_id, settings)
         st.rerun()
 with col_mode:
     new_mode = st.radio("Режим", ["Демо", "Реальный"], horizontal=True, index=0 if st.session_state.trade_mode=="Демо" else 1)
@@ -1041,19 +1007,28 @@ else:
     total_capital = total_usdt + total_portfolio
     st.info(f"🎮 **Демо-балансы** | USDT: {total_usdt:.2f} | Портфель: {total_portfolio:.2f} | Капитал: {total_capital:.2f}")
 
-col_a, col_b, col_c, col_d = st.columns(4)
+# --- Метрики на главной (теперь разделены по режиму) ---
+col_a, col_b, col_c, col_d, col_e = st.columns(5)
 col_a.metric("💰 USDT на биржах", f"{total_usdt:.2f}")
 col_b.metric("📦 Портфель (токены)", f"{total_portfolio:.2f}")
 col_c.metric("💎 Общий капитал", f"{total_capital:.2f}")
 
+# Прибыль ТОЛЬКО для текущего режима
+user_id_stats = st.session_state.user_id if st.session_state.logged_in else (admin_user['id'] if admin_user else None)
+if user_id_stats:
+    trades_current_mode = get_user_trades(user_id_stats, mode=st.session_state.trade_mode, limit=1000)
+    total_profit_current = sum(t.get('profit', 0) for t in trades_current_mode)
+else:
+    total_profit_current = 0.0
+col_d.metric("📈 Прибыль с запуска", f"{total_profit_current:.4f} USDT")
+
 current_mode = st.session_state.trade_mode
-user_id_for_stats = st.session_state.user_id if st.session_state.logged_in else (admin_user['id'] if admin_user else None)
-if user_id_for_stats:
-    user_trades_count = get_user_trades(user_id_for_stats, mode=current_mode, limit=1000)
+if user_id_stats:
+    user_trades_count = get_user_trades(user_id_stats, mode=current_mode, limit=1000)
     trade_count = len(user_trades_count)
 else:
     trade_count = 0
-col_d.metric("📊 Сделок", trade_count)
+col_e.metric("📊 Сделок", trade_count)
 
 # ------------------- НАСТРОЙКИ -------------------
 with st.expander("⚙️ Настройки арбитража", expanded=False):
@@ -1153,21 +1128,45 @@ with tabs[0]:
     st.dataframe(df_prices.style.apply(highlight_profitable, axis=1), width='stretch', hide_index=True)
     st.caption("🟢 Зелёным выделены токены, спред по которым превышает минимальную прибыль с учётом комиссии.")
 
-# ----- ГРАФИКИ -----
+# ----- ГРАФИКИ (ЯПОНСКИЕ СВЕЧИ) -----
 with tabs[1]:
-    st.subheader("📈 Графики цен")
-    tok = st.selectbox("Выберите токен", get_available_tokens())
-    if tok:
-        data = []
-        for ex in EXCHANGES:
-            if public_clients[ex]:
-                p = get_price(public_clients[ex], tok)
-                if p:
-                    data.append({"Биржа": ex.upper(), "Цена": p})
-        if data:
-            df = pd.DataFrame(data)
-            fig = px.bar(df, x="Биржа", y="Цена", title=f"{tok}/USDT", color="Биржа")
-            st.plotly_chart(fig, use_container_width=True)
+    st.subheader("📈 Графики (японские свечи)")
+    col1, col2 = st.columns(2)
+    with col1:
+        tok = st.selectbox("Выберите токен", get_available_tokens())
+    with col2:
+        timeframe = st.selectbox("Таймфрейм", ["1m", "5m", "15m", "1h", "4h", "1d"], index=3)
+    exchange_for_chart = st.selectbox("Биржа", EXCHANGES, index=0)
+    
+    if tok and exchange_for_chart:
+        exchange = public_clients.get(exchange_for_chart)
+        if exchange:
+            try:
+                ohlcv = exchange.fetch_ohlcv(f"{tok}/USDT", timeframe=timeframe, limit=100)
+                if ohlcv:
+                    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                    fig = go.Figure(data=[go.Candlestick(
+                        x=df['timestamp'],
+                        open=df['open'],
+                        high=df['high'],
+                        low=df['low'],
+                        close=df['close'],
+                        name=f"{tok}/USDT"
+                    )])
+                    fig.update_layout(
+                        title=f"{tok}/USDT ({timeframe}) на {exchange_for_chart.upper()}",
+                        xaxis_title="Время",
+                        yaxis_title="Цена (USDT)",
+                        height=600
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.warning("Нет данных для отображения")
+            except Exception as e:
+                st.error(f"Ошибка получения данных: {str(e)}")
+        else:
+            st.error(f"Биржа {exchange_for_chart.upper()} не подключена")
 
 # ----- АРБИТРАЖ (ручной) -----
 with tabs[2]:
