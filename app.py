@@ -156,11 +156,15 @@ def save_demo_data(user_id, data):
     st.cache_data.clear()
 
 def add_trade(user_id, mode, asset, amount, profit, buy_ex, sell_ex):
-    supabase.table('trades').insert({
-        'user_id':user_id,'mode':mode,'asset':asset,'amount':amount,'profit':profit,
-        'buy_exchange':buy_ex,'sell_exchange':sell_ex
-    }).execute()
-    st.cache_data.clear()
+    try:
+        supabase.table('trades').insert({
+            'user_id':user_id,'mode':mode,'asset':asset,'amount':amount,'profit':profit,
+            'buy_exchange':buy_ex,'sell_exchange':sell_ex
+        }).execute()
+        print(f"✅ СДЕЛКА СОХРАНЕНА: {asset} {amount} {profit} {mode}")
+        st.cache_data.clear()
+    except Exception as e:
+        print(f"❌ ОШИБКА СОХРАНЕНИЯ СДЕЛКИ: {e}")
 
 # ------------------- API КЛЮЧИ -------------------
 def get_all_api_keys():
@@ -432,8 +436,10 @@ def real_buy_with_liquidity(exchange, token, usdt_amount, max_slippage=0.3, dept
         amount_token = usdt_amount / price
     try:
         exchange.create_market_buy_order(f"{token}/USDT", amount_token)
+        print(f"✅ РЕАЛЬНАЯ ПОКУПКА: {amount_token:.8f} {token} за {usdt_amount} USDT на {exchange.name}")
         return True, f"Куплено {amount_token:.8f} {token} за {usdt_amount} USDT", amount_token
     except Exception as e:
+        print(f"❌ ОШИБКА ПОКУПКИ: {e}")
         return False, str(e), None
 
 def real_sell_with_liquidity(exchange, token, amount_token, max_slippage=0.3, depth=10, use_orderbook=True):
@@ -448,8 +454,10 @@ def real_sell_with_liquidity(exchange, token, amount_token, max_slippage=0.3, de
         usdt_received = amount_token * price
     try:
         exchange.create_market_sell_order(f"{token}/USDT", amount_token)
+        print(f"✅ РЕАЛЬНАЯ ПРОДАЖА: {amount_token:.8f} {token} за {usdt_received:.2f} USDT на {exchange.name}")
         return True, f"Продано {amount_token:.8f} {token} за {usdt_received:.2f} USDT", usdt_received
     except Exception as e:
+        print(f"❌ ОШИБКА ПРОДАЖИ: {e}")
         return False, str(e), None
 
 # ------------------- АРБИТРАЖНЫЕ ФУНКЦИИ -------------------
@@ -548,14 +556,12 @@ def execute_demo_arbitrage(opp, user_id, demo_data, public_clients, reinvest_per
 
 # ==================== РЕАЛЬНЫЙ АРБИТРАЖ ====================
 def find_real_opportunity(fee, min_profit, min_trade, max_trade, depth, use_orderbook, real_exchanges, max_slippage=0.3):
-    """Поиск арбитражной возможности с реальными балансами"""
     if not real_exchanges or not any(real_exchanges.values()):
         return None
     opportunities = []
     tokens = get_available_tokens()
     prices = {}
     balances = {}
-    # Получаем цены и балансы
     for ex in EXCHANGES:
         exch = real_exchanges.get(ex)
         if exch:
@@ -563,7 +569,6 @@ def find_real_opportunity(fee, min_profit, min_trade, max_trade, depth, use_orde
             for t in tokens:
                 p = get_price(exch, t)
                 if p: prices[ex][t] = p
-            # Получаем балансы
             balances[ex] = {
                 'USDT': get_real_balance(exch, 'USDT'),
                 'portfolio': {t: get_real_balance(exch, t) for t in tokens}
@@ -617,52 +622,89 @@ def find_real_opportunity(fee, min_profit, min_trade, max_trade, depth, use_orde
     return max(opportunities, key=lambda x: x['profit'])
 
 def execute_real_arbitrage(opp, user_id, real_exchanges, reinvest_percent, use_orderbook=True, depth=10, max_slippage=0.3):
-    """Выполнение реальной арбитражной сделки"""
+    print(f"🚀 НАЧАЛО РЕАЛЬНОЙ СДЕЛКИ для {opp['token']}")
+    
     buy_ex = opp['buy_ex']; sell_ex = opp['sell_ex']; token = opp['token']
     amount = opp['amount']; trade_usdt = opp['trade_usdt']; sell_price = opp['sell_price']
+    
     if not real_exchanges or not any(real_exchanges.values()):
+        print("❌ Реальные биржи не подключены")
         return None, "Реальные биржи не подключены"
+    
     exch_buy = real_exchanges.get(buy_ex)
     exch_sell = real_exchanges.get(sell_ex)
     if not exch_buy or not exch_sell:
+        print(f"❌ Одна из бирж не подключена: buy={buy_ex}, sell={sell_ex}")
         return None, "Одна из бирж не подключена"
+    
     # Проверяем балансы
     usdt_balance = get_real_balance(exch_buy, 'USDT')
     token_balance = get_real_balance(exch_sell, token)
     token_max = TOKEN_MAX_TRADE.get(token, st.session_state.max_trade)
+    print(f"📊 Балансы: USDT на {buy_ex}={usdt_balance:.2f}, {token} на {sell_ex}={token_balance:.8f}")
+    
     if usdt_balance < trade_usdt:
         trade_usdt = min(trade_usdt, usdt_balance, token_max)
         if trade_usdt < st.session_state.min_trade:
-            return None, f"Не хватает USDT на {buy_ex}: {usdt_balance:.2f} < {trade_usdt:.2f}"
+            msg = f"Не хватает USDT на {buy_ex}: {usdt_balance:.2f} < {trade_usdt:.2f}"
+            print(f"❌ {msg}")
+            return None, msg
         amount = trade_usdt / opp['buy_price']
+        print(f"📊 Скорректирована сумма сделки: {trade_usdt:.2f} USDT, {amount:.8f} {token}")
+    
     if token_balance < amount * 1.02:
         max_sell_usdt = token_balance * sell_price * 0.98
         trade_usdt = min(trade_usdt, max_sell_usdt, token_max)
         if trade_usdt < st.session_state.min_trade:
-            return None, f"Не хватает {token} на {sell_ex}: нужно {amount:.8f}, доступно {token_balance:.8f}"
+            msg = f"Не хватает {token} на {sell_ex}: нужно {amount:.8f}, доступно {token_balance:.8f}"
+            print(f"❌ {msg}")
+            return None, msg
         amount = trade_usdt / opp['buy_price']
         profit_before = (sell_price - opp['buy_price']) * amount
         real_profit = profit_before * (1 - st.session_state.fee/100)
+        print(f"📊 Скорректирована сумма сделки (токен): {trade_usdt:.2f} USDT, {amount:.8f} {token}, прибыль {real_profit:.4f}")
     else:
         real_profit = amount * sell_price - trade_usdt
+        print(f"📊 Исходная прибыль: {real_profit:.4f}")
+    
     # Выполняем покупку
+    print(f"🔄 Покупка {amount:.8f} {token} на {buy_ex} за {trade_usdt:.2f} USDT")
     ok_buy, msg_buy, _ = real_buy_with_liquidity(exch_buy, token, trade_usdt, max_slippage, depth, use_orderbook)
-    if not ok_buy: return None, msg_buy
+    if not ok_buy:
+        print(f"❌ Ошибка покупки: {msg_buy}")
+        return None, msg_buy
+    print(f"✅ Покупка выполнена")
+    
     # Выполняем продажу
+    print(f"🔄 Продажа {amount:.8f} {token} на {sell_ex}")
     ok_sell, msg_sell, _ = real_sell_with_liquidity(exch_sell, token, amount, max_slippage, depth, use_orderbook)
-    if not ok_sell: return None, msg_sell
+    if not ok_sell:
+        print(f"❌ Ошибка продажи: {msg_sell}")
+        return None, msg_sell
+    print(f"✅ Продажа выполнена")
+    
     # Реинвестиция
     reinvest_amount = real_profit * reinvest_percent / 100
     if reinvest_amount > 0:
-        # Пополняем USDT на бирже продажи
         try:
             exch_sell.deposit(reinvest_amount, 'USDT')
-        except: pass
+            print(f"🔄 Реинвестировано {reinvest_amount:.2f} USDT на {sell_ex}")
+        except Exception as e:
+            print(f"⚠️ Ошибка реинвестиции: {e}")
+    
     # Обновляем статистику
     st.session_state.real_trades += 1
     st.session_state.real_profit_total += real_profit
-    print(f"Сделка сохранена: {token}, {amount}, {real_profit}")
-    add_trade(user_id, "Реальный", token, amount, real_profit, buy_ex, sell_ex)
+    print(f"📊 Сделка #{st.session_state.real_trades}, общая прибыль: {st.session_state.real_profit_total:.2f}")
+    
+    # СОХРАНЯЕМ СДЕЛКУ
+    print(f"💾 Сохранение сделки: {token}, {amount:.8f}, {real_profit:.4f}, {buy_ex}->{sell_ex}")
+    try:
+        add_trade(user_id, "Реальный", token, amount, real_profit, buy_ex, sell_ex)
+        print(f"✅ СДЕЛКА УСПЕШНО СОХРАНЕНА")
+    except Exception as e:
+        print(f"❌ ОШИБКА ПРИ СОХРАНЕНИИ СДЕЛКИ: {e}")
+    
     st.toast(f"💰 Реальная сделка: +{real_profit:.2f} USDT", icon="🎉")
     return real_profit, f"Сделка выполнена! Прибыль: {real_profit:.2f} USDT"
 
