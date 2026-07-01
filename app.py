@@ -391,7 +391,7 @@ def get_market_price_with_liquidity(exchange, symbol, side, amount_usdt, depth=1
         except Exception as e:
             return None, 0, f"Ошибка получения цены: {str(e)}"
 
-# ------------------- ДЕМО-ФУНКЦИИ (исправлены для продажи по USDT) -------------------
+# ------------------- ДЕМО-ФУНКЦИИ -------------------
 def update_demo_balance(user_id, exchange, asset, delta, data):
     if exchange not in data['balances']:
         data['balances'][exchange] = {'USDT':0.0, 'portfolio':{t:0.0 for t in get_available_tokens()}}
@@ -418,16 +418,13 @@ def demo_buy(user_id, exchange, token, usdt_amount, data, clients, is_manual=Fal
     return True, f"Куплено {amount_token:.8f} {token} за {usdt_amount} USDT"
 
 def demo_sell(user_id, exchange, token, usdt_amount, data, clients, is_manual=False):
-    """Продажа токенов на указанную сумму USDT"""
     price = get_price(clients[exchange], token)
     if not price: return False, "Цена не получена"
     amount_token = usdt_amount / price
     available = data['balances'][exchange]['portfolio'].get(token, 0)
     if available < amount_token:
         return False, f"Не хватает {token} (есть {available:.8f}, нужно {amount_token:.8f})"
-    # Продаём по рыночной цене (для демо используем текущую цену)
     usdt_received = amount_token * price
-    # Округляем до сотых (обычно биржа округляет)
     update_demo_balance(user_id, exchange, token, -amount_token, data)
     update_demo_balance(user_id, exchange, 'USDT', usdt_received, data)
     if is_manual:
@@ -465,6 +462,18 @@ def real_buy_with_liquidity(exchange, token, usdt_amount, max_slippage=0.2, dept
         amount_token = usdt_amount / price
     try:
         order = exchange.create_market_buy_order(f"{token}/USDT", amount_token)
+        order_id = order.get('id')
+        if order_id:
+            time.sleep(1)
+            order_info = exchange.fetch_order(order_id, f"{token}/USDT")
+            if order_info and order_info.get('status') == 'closed':
+                filled = order_info.get('filled', 0)
+                cost = order_info.get('cost', 0)
+                if filled and cost and filled > 0:
+                    real_price = cost / filled
+                    print(f"✅ РЕАЛЬНАЯ ПОКУПКА: {filled:.8f} {token} по средней цене {real_price:.8f} USDT на {exchange.name}")
+                    return True, f"Куплено {filled:.8f} {token} по {real_price:.8f}", filled, real_price
+        # Если не получилось через fetch_order, пробуем из ответа
         filled = order.get('filled')
         cost = order.get('cost')
         if filled is None or cost is None:
@@ -472,29 +481,42 @@ def real_buy_with_liquidity(exchange, token, usdt_amount, max_slippage=0.2, dept
                 info = order['info']
                 filled = float(info.get('filled', 0))
                 cost = float(info.get('cost', 0))
-        if filled is None or cost is None or filled == 0:
-            return False, "Не удалось получить данные об исполнении", None, None
-        real_price = cost / filled
-        print(f"✅ РЕАЛЬНАЯ ПОКУПКА: {filled:.8f} {token} по средней цене {real_price:.8f} USDT на {exchange.name}")
-        return True, f"Куплено {filled:.8f} {token} по {real_price:.8f}", filled, real_price
+        if filled and cost and filled > 0:
+            real_price = cost / filled
+            print(f"✅ РЕАЛЬНАЯ ПОКУПКА: {filled:.8f} {token} по средней цене {real_price:.8f} USDT на {exchange.name}")
+            return True, f"Куплено {filled:.8f} {token} по {real_price:.8f}", filled, real_price
+        else:
+            # Если данные не получены, используем расчётную цену (с запасом на проскальзывание)
+            real_price = price * 1.002
+            filled = usdt_amount / real_price
+            print(f"⚠️ НЕ УДАЛОСЬ ПОЛУЧИТЬ ДАННЫЕ ОРДЕРА, используем расчётную цену {real_price:.8f}")
+            return True, f"Куплено (расчёт) {filled:.8f} {token} по {real_price:.8f}", filled, real_price
     except Exception as e:
         print(f"❌ ОШИБКА ПОКУПКИ: {e}")
         return False, str(e), None, None
 
 def real_sell_with_liquidity(exchange, token, usdt_amount, max_slippage=0.2, depth=10, use_orderbook=True):
-    """Продажа токенов на сумму usdt_amount (вычисляем количество токенов)"""
     if not exchange: return False, "Биржа не подключена", None, None
-    # Получаем цену
     if use_orderbook:
         price, available, err = get_market_price_with_liquidity(exchange, token, 'sell', usdt_amount, depth, max_slippage)
         if price is None: return False, err, None, None
     else:
         price = get_price(exchange, token)
         if not price: return False, "Не удалось получить цену", None, None
-    # Вычисляем количество токенов для продажи
     amount_token = usdt_amount / price
     try:
         order = exchange.create_market_sell_order(f"{token}/USDT", amount_token)
+        order_id = order.get('id')
+        if order_id:
+            time.sleep(1)
+            order_info = exchange.fetch_order(order_id, f"{token}/USDT")
+            if order_info and order_info.get('status') == 'closed':
+                filled = order_info.get('filled', 0)
+                cost = order_info.get('cost', 0)
+                if filled and cost and filled > 0:
+                    real_price = cost / filled
+                    print(f"✅ РЕАЛЬНАЯ ПРОДАЖА: {filled:.8f} {token} по средней цене {real_price:.8f} USDT на {exchange.name}")
+                    return True, f"Продано {filled:.8f} {token} по {real_price:.8f}", filled, real_price
         filled = order.get('filled')
         cost = order.get('cost')
         if filled is None or cost is None:
@@ -502,16 +524,20 @@ def real_sell_with_liquidity(exchange, token, usdt_amount, max_slippage=0.2, dep
                 info = order['info']
                 filled = float(info.get('filled', 0))
                 cost = float(info.get('cost', 0))
-        if filled is None or cost is None or filled == 0:
-            return False, "Не удалось получить данные об исполнении", None, None
-        real_price = cost / filled
-        print(f"✅ РЕАЛЬНАЯ ПРОДАЖА: {filled:.8f} {token} по средней цене {real_price:.8f} USDT на {exchange.name}")
-        return True, f"Продано {filled:.8f} {token} по {real_price:.8f}", filled, real_price
+        if filled and cost and filled > 0:
+            real_price = cost / filled
+            print(f"✅ РЕАЛЬНАЯ ПРОДАЖА: {filled:.8f} {token} по средней цене {real_price:.8f} USDT на {exchange.name}")
+            return True, f"Продано {filled:.8f} {token} по {real_price:.8f}", filled, real_price
+        else:
+            real_price = price * 0.998
+            filled = usdt_amount / real_price
+            print(f"⚠️ НЕ УДАЛОСЬ ПОЛУЧИТЬ ДАННЫЕ ОРДЕРА, используем расчётную цену {real_price:.8f}")
+            return True, f"Продано (расчёт) {filled:.8f} {token} по {real_price:.8f}", filled, real_price
     except Exception as e:
         print(f"❌ ОШИБКА ПРОДАЖИ: {e}")
         return False, str(e), None, None
 
-# ------------------- АРБИТРАЖНЫЕ ФУНКЦИИ (исправлены) -------------------
+# ------------------- АРБИТРАЖНЫЕ ФУНКЦИИ -------------------
 def find_demo_opportunity(fee, min_profit, min_trade, max_trade, depth, use_orderbook, demo_data, public_clients, max_slippage=0.2):
     opportunities = []
     tokens = get_available_tokens()
@@ -590,7 +616,7 @@ def execute_demo_arbitrage(opp, user_id, demo_data, public_clients, reinvest_per
         real_profit = amount * sell_price - trade_usdt
     ok_buy, msg_buy = demo_buy(user_id, buy_ex, token, trade_usdt, demo_data, public_clients, is_manual=False)
     if not ok_buy: return None, msg_buy
-    ok_sell, msg_sell = demo_sell(user_id, sell_ex, token, amount * sell_price, demo_data, public_clients, is_manual=False)  # передаём USDT сумму
+    ok_sell, msg_sell = demo_sell(user_id, sell_ex, token, amount * sell_price, demo_data, public_clients, is_manual=False)
     if not ok_sell: return None, msg_sell
     reinvest_amount = real_profit * reinvest_percent / 100
     withdrawable_amount = real_profit - reinvest_amount
@@ -605,7 +631,7 @@ def execute_demo_arbitrage(opp, user_id, demo_data, public_clients, reinvest_per
     st.toast(f"💰 Демо-сделка: +{real_profit:.2f} USDT", icon="🎉")
     return real_profit, entry
 
-# ==================== РЕАЛЬНЫЙ АРБИТРАЖ (ИСПРАВЛЕН) ====================
+# ==================== РЕАЛЬНЫЙ АРБИТРАЖ ====================
 def find_real_opportunity(fee, min_profit, min_trade, max_trade, depth, use_orderbook, real_exchanges, max_slippage=0.2):
     if not real_exchanges or not any(real_exchanges.values()):
         return None
@@ -741,8 +767,7 @@ def execute_real_arbitrage(opp, user_id, real_exchanges, reinvest_percent, use_o
     if filled_buy is None or real_buy_price is None:
         return None, "Не удалось получить данные о покупке"
     
-    # Продажа – передаём USDT сумму = filled_buy * real_buy_price (примерно trade_usdt)
-    sell_usdt = filled_buy * real_buy_price  # чуть больше из-за округления
+    sell_usdt = filled_buy * real_buy_price
     print(f"🔄 Продажа токенов на сумму {sell_usdt:.2f} USDT на {sell_ex}")
     ok_sell, msg_sell, filled_sell, real_sell_price = real_sell_with_liquidity(exch_sell, token, sell_usdt, max_slippage, depth, use_orderbook)
     if not ok_sell:
@@ -1335,7 +1360,7 @@ with tabs[3]:
     else:
         st.info("Нет сделок для отображения графика.")
 
-# ----- БАЛАНСЫ (исправлены: продажа по USDT) -----
+# ----- БАЛАНСЫ -----
 with tabs[4]:
     st.subheader("💼 Балансы и ручная торговля")
     if st.session_state.trade_mode == "Демо" and st.session_state.demo_data:
