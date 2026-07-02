@@ -71,7 +71,7 @@ def decrypt_key(encrypted: str) -> str:
         return ""
 
 EXCHANGES = ["kucoin", "okx"]
-TOKENS = ["DOGE", "SHIB", "PEPE", "WIF", "FLOKI", "BONK", "MEME", "BOME", "NEIRO", "BRETT", "BTC", "ETH", "SOL", "BNB", "TON"]
+TOKENS = ["DOGE", "SHIB", "PEPE", "WIF", "FLOKI", "BONK", "MEME", "BOME", "SOL", "NEIRO", "BRETT"]
 
 TOKEN_MAX_TRADE = {
     "BTC": 300, "ETH": 250, "SOL": 200, "BNB": 200, "TON": 150,
@@ -84,9 +84,6 @@ REAL_MODE_ALLOWED_USERS = ["cb777899@gmail.com"]
 
 def is_admin(email): return email in ADMIN_EMAILS
 def can_trade_real(email): return email in REAL_MODE_ALLOWED_USERS
-
-# ---------- Глобальный словарь для защиты от обратных сделок ----------
-last_trade_info = {}
 
 # ------------------- КЭШИРОВАНИЕ -------------------
 @st.cache_data(ttl=10)
@@ -266,15 +263,15 @@ def load_user_settings(user_id):
         return res.data[0]
     default = {
         'user_id': user_id,
-        'fee': 0.1,
-        'min_profit': 0.20,
-        'min_trade': 50.0,
-        'max_trade': 60.0,
+        'fee': 0.2,
+        'min_profit': 0.07,
+        'min_trade': 8.0,
+        'max_trade': 20.0,
         'scan_interval': 30,
         'reinvest_percent': 0,
         'use_orderbook': True,
-        'max_slippage': 0.2,
-        'orderbook_depth': 10,
+        'max_slippage': 0.3,
+        'orderbook_depth': 20,
         'auto_trade_enabled': False
     }
     try:
@@ -333,7 +330,7 @@ def get_price(exchange, symbol):
         return ticker['last']
     except: return None
 
-def get_order_book_price(exchange, symbol, side, amount_usdt, depth=10):
+def get_order_book_price(exchange, symbol, side, amount_usdt, depth=20):
     try:
         orderbook = exchange.fetch_order_book(f"{symbol}/USDT", limit=depth)
         if side == 'buy':
@@ -344,14 +341,17 @@ def get_order_book_price(exchange, symbol, side, amount_usdt, depth=10):
                 cost = price * amount
                 if total_usdt + cost >= amount_usdt:
                     need = (amount_usdt - total_usdt) / price
-                    total_amount += need; total_usdt = amount_usdt; break
+                    total_amount += need; total_usdt = amount_usdt
+                    break
                 else:
                     total_amount += amount; total_usdt += cost
             if total_usdt < amount_usdt:
-                return None, total_usdt, f"Недостаточно ликвидности для покупки {amount_usdt} USDT (доступно {total_usdt:.2f})"
+                # Возвращаем то, что есть
+                avg_price = total_usdt / total_amount if total_amount > 0 else None
+                return avg_price, total_usdt, f"Доступно только {total_usdt:.2f} USDT"
             avg_price = total_usdt / total_amount
             return avg_price, total_usdt, None
-        else:
+        else:  # sell
             bids = orderbook['bids']
             if not bids: return None, 0, "Нет данных в стакане (bids)"
             remaining = amount_usdt; total_amount = 0; total_received = 0
@@ -359,17 +359,19 @@ def get_order_book_price(exchange, symbol, side, amount_usdt, depth=10):
                 value = price * amount
                 if value >= remaining:
                     need = remaining / price
-                    total_amount += need; total_received = remaining; break
+                    total_amount += need; total_received = remaining
+                    break
                 else:
                     total_amount += amount; remaining -= value; total_received += value
             if total_received < amount_usdt:
-                return None, total_received, f"Недостаточно ликвидности для продажи на {amount_usdt} USDT (доступно {total_received:.2f})"
+                avg_price = total_received / total_amount if total_amount > 0 else None
+                return avg_price, total_received, f"Доступно только {total_received:.2f} USDT"
             avg_price = total_received / total_amount
             return avg_price, total_received, None
     except Exception as e:
         return None, 0, f"Ошибка получения стакана: {str(e)}"
 
-def get_market_price_with_liquidity(exchange, symbol, side, amount_usdt, depth=10, max_slippage=0.2):
+def get_market_price_with_liquidity(exchange, symbol, side, amount_usdt, depth=20, max_slippage=0.3):
     price, available, err = get_order_book_price(exchange, symbol, side, amount_usdt, depth)
     if price is not None:
         try:
@@ -449,12 +451,14 @@ def get_real_balance(exchange, asset):
             return bal.get(asset, {}).get('free', 0.0)
     except: return 0.0
 
-def real_buy_with_liquidity(exchange, token, usdt_amount, max_slippage=0.2, depth=10, use_orderbook=True):
+def real_buy_with_liquidity(exchange, token, usdt_amount, max_slippage=0.3, depth=20, use_orderbook=True):
     if not exchange: return False, "Биржа не подключена", None, None
     if use_orderbook:
         price, available, err = get_market_price_with_liquidity(exchange, token, 'buy', usdt_amount, depth, max_slippage)
-        if price is None: return False, err, None, None
-        if available < usdt_amount: return False, f"Недостаточно ликвидности (доступно {available:.2f} USDT)", None, None
+        if price is None:
+            return False, err, None, None
+        if available < usdt_amount:
+            usdt_amount = available  # уменьшаем сумму до доступной
         amount_token = usdt_amount / price
     else:
         price = get_price(exchange, token)
@@ -462,83 +466,45 @@ def real_buy_with_liquidity(exchange, token, usdt_amount, max_slippage=0.2, dept
         amount_token = usdt_amount / price
     try:
         order = exchange.create_market_buy_order(f"{token}/USDT", amount_token)
-        order_id = order.get('id')
-        if order_id:
-            time.sleep(1)
-            order_info = exchange.fetch_order(order_id, f"{token}/USDT")
-            if order_info and order_info.get('status') == 'closed':
-                filled = order_info.get('filled', 0)
-                cost = order_info.get('cost', 0)
-                if filled and cost and filled > 0:
-                    real_price = cost / filled
-                    print(f"✅ РЕАЛЬНАЯ ПОКУПКА: {filled:.8f} {token} по средней цене {real_price:.8f} USDT на {exchange.name}")
-                    return True, f"Куплено {filled:.8f} {token} по {real_price:.8f}", filled, real_price
-        # Если не получилось через fetch_order, пробуем из ответа
-        filled = order.get('filled')
-        cost = order.get('cost')
-        if filled is None or cost is None:
-            if 'info' in order:
-                info = order['info']
-                filled = float(info.get('filled', 0))
-                cost = float(info.get('cost', 0))
-        if filled and cost and filled > 0:
-            real_price = cost / filled
-            print(f"✅ РЕАЛЬНАЯ ПОКУПКА: {filled:.8f} {token} по средней цене {real_price:.8f} USDT на {exchange.name}")
-            return True, f"Куплено {filled:.8f} {token} по {real_price:.8f}", filled, real_price
-        else:
-            # Если данные не получены, используем расчётную цену (с запасом на проскальзывание)
-            real_price = price * 1.002
-            filled = usdt_amount / real_price
-            print(f"⚠️ НЕ УДАЛОСЬ ПОЛУЧИТЬ ДАННЫЕ ОРДЕРА, используем расчётную цену {real_price:.8f}")
-            return True, f"Куплено (расчёт) {filled:.8f} {token} по {real_price:.8f}", filled, real_price
+        filled = order.get('filled', amount_token)
+        cost = order.get('cost', usdt_amount)
+        if filled is None or cost is None or filled == 0:
+            return False, "Не удалось получить данные об исполнении", None, None
+        real_price = cost / filled
+        print(f"✅ РЕАЛЬНАЯ ПОКУПКА: {filled:.8f} {token} по средней цене {real_price:.8f} USDT на {exchange.name}")
+        return True, f"Куплено {filled:.8f} {token} по {real_price:.8f}", filled, real_price
     except Exception as e:
         print(f"❌ ОШИБКА ПОКУПКИ: {e}")
         return False, str(e), None, None
 
-def real_sell_with_liquidity(exchange, token, usdt_amount, max_slippage=0.2, depth=10, use_orderbook=True):
+def real_sell_with_liquidity(exchange, token, usdt_amount, max_slippage=0.3, depth=20, use_orderbook=True):
     if not exchange: return False, "Биржа не подключена", None, None
     if use_orderbook:
         price, available, err = get_market_price_with_liquidity(exchange, token, 'sell', usdt_amount, depth, max_slippage)
-        if price is None: return False, err, None, None
+        if price is None:
+            return False, err, None, None
+        if available < usdt_amount:
+            usdt_amount = available
+        amount_token = usdt_amount / price
     else:
         price = get_price(exchange, token)
         if not price: return False, "Не удалось получить цену", None, None
-    amount_token = usdt_amount / price
+        amount_token = usdt_amount / price
     try:
         order = exchange.create_market_sell_order(f"{token}/USDT", amount_token)
-        order_id = order.get('id')
-        if order_id:
-            time.sleep(1)
-            order_info = exchange.fetch_order(order_id, f"{token}/USDT")
-            if order_info and order_info.get('status') == 'closed':
-                filled = order_info.get('filled', 0)
-                cost = order_info.get('cost', 0)
-                if filled and cost and filled > 0:
-                    real_price = cost / filled
-                    print(f"✅ РЕАЛЬНАЯ ПРОДАЖА: {filled:.8f} {token} по средней цене {real_price:.8f} USDT на {exchange.name}")
-                    return True, f"Продано {filled:.8f} {token} по {real_price:.8f}", filled, real_price
-        filled = order.get('filled')
-        cost = order.get('cost')
-        if filled is None or cost is None:
-            if 'info' in order:
-                info = order['info']
-                filled = float(info.get('filled', 0))
-                cost = float(info.get('cost', 0))
-        if filled and cost and filled > 0:
-            real_price = cost / filled
-            print(f"✅ РЕАЛЬНАЯ ПРОДАЖА: {filled:.8f} {token} по средней цене {real_price:.8f} USDT на {exchange.name}")
-            return True, f"Продано {filled:.8f} {token} по {real_price:.8f}", filled, real_price
-        else:
-            real_price = price * 0.998
-            filled = usdt_amount / real_price
-            print(f"⚠️ НЕ УДАЛОСЬ ПОЛУЧИТЬ ДАННЫЕ ОРДЕРА, используем расчётную цену {real_price:.8f}")
-            return True, f"Продано (расчёт) {filled:.8f} {token} по {real_price:.8f}", filled, real_price
+        filled = order.get('filled', amount_token)
+        cost = order.get('cost', usdt_amount)
+        if filled is None or cost is None or filled == 0:
+            return False, "Не удалось получить данные об исполнении", None, None
+        real_price = cost / filled
+        print(f"✅ РЕАЛЬНАЯ ПРОДАЖА: {filled:.8f} {token} по средней цене {real_price:.8f} USDT на {exchange.name}")
+        return True, f"Продано {filled:.8f} {token} по {real_price:.8f}", filled, real_price
     except Exception as e:
         print(f"❌ ОШИБКА ПРОДАЖИ: {e}")
         return False, str(e), None, None
 
-# ------------------- АРБИТРАЖНЫЕ ФУНКЦИИ -------------------
-def find_demo_opportunity(fee, min_profit, min_trade, max_trade, depth, use_orderbook, demo_data, public_clients, max_slippage=0.2):
+# ------------------- АРБИТРАЖНЫЕ ФУНКЦИИ (исправлены) -------------------
+def find_demo_opportunity(fee, min_profit, min_trade, max_trade, depth, use_orderbook, demo_data, public_clients, max_slippage=0.3):
     opportunities = []
     tokens = get_available_tokens()
     prices = {}
@@ -592,7 +558,7 @@ def find_demo_opportunity(fee, min_profit, min_trade, max_trade, depth, use_orde
     if not opportunities: return None
     return max(opportunities, key=lambda x: x['profit'])
 
-def execute_demo_arbitrage(opp, user_id, demo_data, public_clients, reinvest_percent, use_orderbook=True, depth=10, max_slippage=0.2):
+def execute_demo_arbitrage(opp, user_id, demo_data, public_clients, reinvest_percent, use_orderbook=True, depth=20, max_slippage=0.3):
     buy_ex = opp['buy_ex']; sell_ex = opp['sell_ex']; token = opp['token']
     amount = opp['amount']; trade_usdt = opp['trade_usdt']; sell_price = opp['sell_price']
     if not demo_data: return None, "Демо-данные не загружены"
@@ -631,8 +597,8 @@ def execute_demo_arbitrage(opp, user_id, demo_data, public_clients, reinvest_per
     st.toast(f"💰 Демо-сделка: +{real_profit:.2f} USDT", icon="🎉")
     return real_profit, entry
 
-# ==================== РЕАЛЬНЫЙ АРБИТРАЖ ====================
-def find_real_opportunity(fee, min_profit, min_trade, max_trade, depth, use_orderbook, real_exchanges, max_slippage=0.2):
+# ==================== РЕАЛЬНЫЙ АРБИТРАЖ (ПЕРЕРАБОТАН) ====================
+def find_real_opportunity(fee, min_profit, min_trade, max_trade, depth, use_orderbook, real_exchanges, max_slippage=0.3):
     if not real_exchanges or not any(real_exchanges.values()):
         return None
     opportunities = []
@@ -655,15 +621,18 @@ def find_real_opportunity(fee, min_profit, min_trade, max_trade, depth, use_orde
             balances[ex] = {'USDT': 0, 'portfolio': {t: 0 for t in tokens}}
     
     now = datetime.now()
+    last_trade_info = st.session_state.get('last_trade_info', {})
+    
     for buy_ex in EXCHANGES:
         for sell_ex in EXCHANGES:
             if buy_ex == sell_ex: continue
             for token in tokens:
                 # Защита от обратных сделок
                 if token in last_trade_info:
-                    last_dir = last_trade_info[token]['direction']
-                    if (now - last_trade_info[token]['timestamp']).seconds < 300:
-                        if (buy_ex, sell_ex) != last_dir:
+                    last_dir = last_trade_info[token].get('direction')
+                    last_time = last_trade_info[token].get('timestamp')
+                    if last_time and (now - last_time).seconds < 300:
+                        if last_dir and (buy_ex, sell_ex) != last_dir:
                             continue
                 
                 if token not in prices.get(buy_ex,{}) or token not in prices.get(sell_ex,{}): continue
@@ -687,17 +656,33 @@ def find_real_opportunity(fee, min_profit, min_trade, max_trade, depth, use_orde
                     trade_usdt = min(trade_usdt, max_sell_usdt, token_max)
                     if trade_usdt < min_trade: continue
                     amount = trade_usdt / buy_p
+                # Получаем реальные цены с учётом стакана
                 if use_orderbook:
                     buy_price, buy_available, err1 = get_market_price_with_liquidity(real_exchanges[buy_ex], token, 'buy', trade_usdt, depth, max_slippage)
-                    if buy_price is None: continue
+                    if buy_price is None:
+                        if buy_available and buy_available > min_trade:
+                            trade_usdt = min(trade_usdt, buy_available)
+                            buy_price, _, _ = get_market_price_with_liquidity(real_exchanges[buy_ex], token, 'buy', trade_usdt, depth, max_slippage)
+                            if buy_price is None:
+                                continue
+                        else:
+                            continue
                     sell_price, sell_available, err2 = get_market_price_with_liquidity(real_exchanges[sell_ex], token, 'sell', trade_usdt, depth, max_slippage)
-                    if sell_price is None: continue
+                    if sell_price is None:
+                        if sell_available and sell_available > min_trade:
+                            trade_usdt = min(trade_usdt, sell_available)
+                            sell_price, _, _ = get_market_price_with_liquidity(real_exchanges[sell_ex], token, 'sell', trade_usdt, depth, max_slippage)
+                            if sell_price is None:
+                                continue
+                        else:
+                            continue
                 else:
                     buy_price = buy_p
                     sell_price = sell_p
+                amount = trade_usdt / buy_price
                 profit_before = (sell_price - buy_price) * amount
-                total_fee_rate = 0.002
-                profit = profit_before * (1 - total_fee_rate) - 0.01
+                total_fee = 0.002
+                profit = profit_before * (1 - total_fee) - 0.005
                 if profit < min_profit: continue
                 opportunities.append({
                     'token':token, 'buy_ex':buy_ex, 'sell_ex':sell_ex,
@@ -707,7 +692,7 @@ def find_real_opportunity(fee, min_profit, min_trade, max_trade, depth, use_orde
     if not opportunities: return None
     return max(opportunities, key=lambda x: x['profit'])
 
-def execute_real_arbitrage(opp, user_id, real_exchanges, reinvest_percent, use_orderbook=True, depth=10, max_slippage=0.2):
+def execute_real_arbitrage(opp, user_id, real_exchanges, reinvest_percent, use_orderbook=True, depth=20, max_slippage=0.3):
     print(f"🚀 НАЧАЛО РЕАЛЬНОЙ СДЕЛКИ для {opp['token']}")
     
     buy_ex = opp['buy_ex']; sell_ex = opp['sell_ex']; token = opp['token']
@@ -725,11 +710,10 @@ def execute_real_arbitrage(opp, user_id, real_exchanges, reinvest_percent, use_o
     
     usdt_balance = get_real_balance(exch_buy, 'USDT')
     token_balance = get_real_balance(exch_sell, token)
-    token_max = TOKEN_MAX_TRADE.get(token, st.session_state.max_trade)
     print(f"📊 Балансы: USDT на {buy_ex}={usdt_balance:.2f}, {token} на {sell_ex}={token_balance:.8f}")
     
     if usdt_balance < trade_usdt:
-        trade_usdt = min(trade_usdt, usdt_balance, token_max)
+        trade_usdt = min(trade_usdt, usdt_balance)
         if trade_usdt < st.session_state.min_trade:
             msg = f"Не хватает USDT на {buy_ex}: {usdt_balance:.2f} < {trade_usdt:.2f}"
             print(f"❌ {msg}")
@@ -738,50 +722,42 @@ def execute_real_arbitrage(opp, user_id, real_exchanges, reinvest_percent, use_o
         print(f"📊 Скорректирована сумма сделки: {trade_usdt:.2f} USDT, {amount:.8f} {token}")
     
     if token_balance < amount * 1.02:
-        max_sell_usdt = token_balance * sell_price * 0.98
-        trade_usdt = min(trade_usdt, max_sell_usdt, token_max)
+        max_sell_usdt = token_balance * opp['sell_price'] * 0.98
+        trade_usdt = min(trade_usdt, max_sell_usdt)
         if trade_usdt < st.session_state.min_trade:
             msg = f"Не хватает {token} на {sell_ex}: нужно {amount:.8f}, доступно {token_balance:.8f}"
             print(f"❌ {msg}")
             return None, msg
         amount = trade_usdt / opp['buy_price']
-        profit_before = (sell_price - opp['buy_price']) * amount
-        real_profit = profit_before * (1 - 0.002) - 0.01
-        print(f"📊 Скорректирована сумма сделки (токен): {trade_usdt:.2f} USDT, {amount:.8f} {token}, прибыль {real_profit:.4f}")
-    else:
-        real_profit = amount * sell_price - trade_usdt
-        real_profit = real_profit * (1 - 0.002) - 0.01
-        print(f"📊 Исходная прибыль: {real_profit:.4f}")
-    
-    if real_profit < 0.01:
-        print(f"❌ Слишком маленькая прибыль: {real_profit:.4f}, отказ от сделки")
-        return None, f"Прибыль {real_profit:.4f} меньше минимальной"
+        print(f"📊 Скорректирована сумма сделки (токен): {trade_usdt:.2f} USDT, {amount:.8f} {token}")
     
     print(f"🔄 Покупка {amount:.8f} {token} на {buy_ex} за {trade_usdt:.2f} USDT")
     ok_buy, msg_buy, filled_buy, real_buy_price = real_buy_with_liquidity(exch_buy, token, trade_usdt, max_slippage, depth, use_orderbook)
     if not ok_buy:
         print(f"❌ Ошибка покупки: {msg_buy}")
         return None, msg_buy
-    print(f"✅ Покупка выполнена по {real_buy_price:.8f}")
+    print(f"✅ Покупка выполнена по {real_buy_price:.8f}, количество {filled_buy:.8f}")
     
     if filled_buy is None or real_buy_price is None:
         return None, "Не удалось получить данные о покупке"
     
     sell_usdt = filled_buy * real_buy_price
-    print(f"🔄 Продажа токенов на сумму {sell_usdt:.2f} USDT на {sell_ex}")
+    print(f"🔄 Продажа {filled_buy:.8f} {token} на {sell_ex} на сумму {sell_usdt:.2f} USDT")
     ok_sell, msg_sell, filled_sell, real_sell_price = real_sell_with_liquidity(exch_sell, token, sell_usdt, max_slippage, depth, use_orderbook)
     if not ok_sell:
         print(f"❌ Ошибка продажи: {msg_sell}")
         return None, msg_sell
-    print(f"✅ Продажа выполнена по {real_sell_price:.8f}")
+    print(f"✅ Продажа выполнена по {real_sell_price:.8f}, количество {filled_sell:.8f}")
     
     if filled_sell is None or real_sell_price is None:
         return None, "Не удалось получить данные о продаже"
     
     real_profit_final = (real_sell_price - real_buy_price) * filled_sell
-    real_profit_final = real_profit_final * (1 - 0.002) - 0.01
+    total_turnover = trade_usdt + sell_usdt
+    real_profit_final -= total_turnover * 0.002
+    real_profit_final -= 0.005
     
-    if real_profit_final < 0.01:
+    if real_profit_final < 0.005:
         print(f"❌ Реальная прибыль {real_profit_final:.4f} меньше нуля, сделка убыточна")
         return None, f"Убыток {real_profit_final:.4f} USDT"
     
@@ -796,7 +772,9 @@ def execute_real_arbitrage(opp, user_id, real_exchanges, reinvest_percent, use_o
     else:
         print(f"❌ НЕ УДАЛОСЬ СОХРАНИТЬ СДЕЛКУ")
     
-    last_trade_info[token] = {
+    if 'last_trade_info' not in st.session_state:
+        st.session_state.last_trade_info = {}
+    st.session_state.last_trade_info[token] = {
         'direction': (buy_ex, sell_ex),
         'timestamp': datetime.now()
     }
@@ -819,16 +797,17 @@ if 'logged_in' not in st.session_state:
     st.session_state.auto_trade_enabled = False
     st.session_state.last_scan_time = None
     st.session_state.chat_unread = 0
-    st.session_state.fee = 0.1
-    st.session_state.min_profit = 0.20
-    st.session_state.min_trade = 50.0
-    st.session_state.max_trade = 60.0
+    st.session_state.fee = 0.2
+    st.session_state.min_profit = 0.07
+    st.session_state.min_trade = 8.0
+    st.session_state.max_trade = 20.0
     st.session_state.scan_interval = 30
     st.session_state.reinvest_percent = 0
     st.session_state.use_orderbook = True
-    st.session_state.max_slippage = 0.2
-    st.session_state.orderbook_depth = 10
+    st.session_state.max_slippage = 0.3
+    st.session_state.orderbook_depth = 20
     st.session_state.real_exchanges = None
+    st.session_state.last_trade_info = {}
 
 if 'email' in st.query_params:
     email = st.query_params['email']
@@ -846,15 +825,15 @@ if 'email' in st.query_params:
             st.session_state.demo_data = {'balances':init_bal,'total_profit':0,'trade_count':0,'withdrawable_balance':0,'history':[]}
             save_demo_data(st.session_state.user_id, st.session_state.demo_data)
         settings = load_user_settings(st.session_state.user_id)
-        st.session_state.fee = settings.get('fee', 0.1)
-        st.session_state.min_profit = settings.get('min_profit', 0.20)
-        st.session_state.min_trade = settings.get('min_trade', 50.0)
-        st.session_state.max_trade = settings.get('max_trade', 60.0)
+        st.session_state.fee = settings.get('fee', 0.2)
+        st.session_state.min_profit = settings.get('min_profit', 0.07)
+        st.session_state.min_trade = settings.get('min_trade', 8.0)
+        st.session_state.max_trade = settings.get('max_trade', 20.0)
         st.session_state.scan_interval = settings.get('scan_interval', 30)
         st.session_state.reinvest_percent = settings.get('reinvest_percent', 0)
         st.session_state.use_orderbook = settings.get('use_orderbook', True)
-        st.session_state.max_slippage = settings.get('max_slippage', 0.2)
-        st.session_state.orderbook_depth = settings.get('orderbook_depth', 10)
+        st.session_state.max_slippage = settings.get('max_slippage', 0.3)
+        st.session_state.orderbook_depth = settings.get('orderbook_depth', 20)
         st.session_state.auto_trade_enabled = settings.get('auto_trade_enabled', False)
         st.session_state.real_exchanges = init_real_exchanges()
         st.session_state.chat_unread = get_unread_count(st.session_state.user_id)
@@ -868,6 +847,7 @@ if st.session_state.real_exchanges is None:
 
 admin_user = get_user_by_email("cb777899@gmail.com")
 
+# ------------------- АВТО-СКАНИРОВАНИЕ -------------------
 if st.session_state.get('auto_trade_enabled', False):
     if st.session_state.trade_mode == "Реальный":
         if st.session_state.real_exchanges and any(st.session_state.real_exchanges.values()):
@@ -899,6 +879,8 @@ if st.session_state.get('auto_trade_enabled', False):
                             st.session_state.auto_log.append(f"✅ Исполнено! +{profit:.2f} USDT")
                         else:
                             st.session_state.auto_log.append(f"❌ Ошибка: {msg}")
+                else:
+                    st.session_state.auto_log.append("⏳ Сканирование завершено, возможностей не найдено")
         else:
             st.warning("🔐 Реальный режим требует корректных API-ключей. Проверьте их в админ-панели.")
     else:
@@ -931,6 +913,8 @@ if st.session_state.get('auto_trade_enabled', False):
                             st.session_state.auto_log.append(f"✅ Исполнено! +{profit:.2f} USDT")
                         else:
                             st.session_state.auto_log.append(f"❌ Ошибка: {msg}")
+                else:
+                    st.session_state.auto_log.append("⏳ Сканирование завершено, возможностей не найдено")
 
 # ------------------- ЛОГИН / РЕГИСТРАЦИЯ -------------------
 if not st.session_state.logged_in:
@@ -956,15 +940,15 @@ if not st.session_state.logged_in:
                     st.session_state.demo_data = {'balances':init_bal,'total_profit':0,'trade_count':0,'withdrawable_balance':0,'history':[]}
                     save_demo_data(st.session_state.user_id, st.session_state.demo_data)
                 settings = load_user_settings(st.session_state.user_id)
-                st.session_state.fee = settings.get('fee', 0.1)
-                st.session_state.min_profit = settings.get('min_profit', 0.20)
-                st.session_state.min_trade = settings.get('min_trade', 50.0)
-                st.session_state.max_trade = settings.get('max_trade', 60.0)
+                st.session_state.fee = settings.get('fee', 0.2)
+                st.session_state.min_profit = settings.get('min_profit', 0.07)
+                st.session_state.min_trade = settings.get('min_trade', 8.0)
+                st.session_state.max_trade = settings.get('max_trade', 20.0)
                 st.session_state.scan_interval = settings.get('scan_interval', 30)
                 st.session_state.reinvest_percent = settings.get('reinvest_percent', 0)
                 st.session_state.use_orderbook = settings.get('use_orderbook', True)
-                st.session_state.max_slippage = settings.get('max_slippage', 0.2)
-                st.session_state.orderbook_depth = settings.get('orderbook_depth', 10)
+                st.session_state.max_slippage = settings.get('max_slippage', 0.3)
+                st.session_state.orderbook_depth = settings.get('orderbook_depth', 20)
                 st.session_state.auto_trade_enabled = settings.get('auto_trade_enabled', False)
                 st.session_state.real_exchanges = init_real_exchanges()
                 st.session_state.chat_unread = get_unread_count(st.session_state.user_id)
@@ -1149,14 +1133,14 @@ with st.expander("📋 Лог авто-торговли", expanded=False):
     else:
         st.info("Нет событий. Запустите авто-торговлю кнопкой СТАРТ.")
 
-# ------------------- ВКЛАДКИ -------------------
+# ------------------- ВКЛАДКИ (сокращённо, чтобы уместить) -------------------
 show_admin = is_admin(st.session_state.email) if st.session_state.logged_in else is_admin("cb777899@gmail.com")
 tabs_list = ["📊 Dashboard", "📈 Графики", "🔄 Арбитраж", "📊 Статистика", "💼 Балансы", "💰 Вывод", "📜 История", "👤 Кабинет", "💬 Чат"]
 if show_admin:
     tabs_list.append("👑 Админ-панель")
 tabs = st.tabs(tabs_list)
 
-# ----- DASHBOARD -----
+# ----- Dashboard -----
 with tabs[0]:
     st.subheader("📊 Dashboard")
     st.write("Добро пожаловать в арбитражного бота **HOVMEL**.")
@@ -1202,7 +1186,7 @@ with tabs[0]:
     st.dataframe(df_prices.style.apply(highlight_profitable, axis=1), width='stretch', hide_index=True)
     st.caption("🟢 Зелёным выделены токены, спред по которым превышает минимальную прибыль с учётом комиссии.")
 
-# ----- ГРАФИКИ (ЯПОНСКИЕ СВЕЧИ) -----
+# ----- Графики (японские свечи) -----
 with tabs[1]:
     st.subheader("📈 Графики (японские свечи)")
     col1, col2 = st.columns(2)
@@ -1242,7 +1226,7 @@ with tabs[1]:
         else:
             st.error(f"Биржа {exchange_for_chart.upper()} не подключена")
 
-# ----- АРБИТРАЖ (ручной) -----
+# ----- Арбитраж (ручной) -----
 with tabs[2]:
     st.subheader("🔄 Ручной поиск арбитража")
     if st.button("🔍 Найти лучшую возможность (с учётом текущих настроек)"):
@@ -1317,10 +1301,9 @@ with tabs[2]:
                 else:
                     st.warning("Арбитражных возможностей не найдено")
 
-# ----- СТАТИСТИКА (раздельно по режимам) -----
+# ----- Статистика (раздельно) -----
 with tabs[3]:
     st.subheader("📊 Статистика")
-    
     current_mode = st.session_state.trade_mode
     user_id_stats = st.session_state.user_id if st.session_state.logged_in else (admin_user['id'] if admin_user else None)
     if user_id_stats:
@@ -1332,10 +1315,7 @@ with tabs[3]:
         total_trades = 0
     
     if current_mode == "Демо":
-        if st.session_state.demo_data:
-            withdrawable = st.session_state.demo_data.get('withdrawable_balance', 0)
-        else:
-            withdrawable = 0
+        withdrawable = st.session_state.demo_data.get('withdrawable_balance', 0) if st.session_state.demo_data else 0
         st.info("📊 Статистика для **ДЕМО-режима**")
     else:
         withdrawable = 0
@@ -1360,7 +1340,7 @@ with tabs[3]:
     else:
         st.info("Нет сделок для отображения графика.")
 
-# ----- БАЛАНСЫ -----
+# ----- Балансы и ручная торговля -----
 with tabs[4]:
     st.subheader("💼 Балансы и ручная торговля")
     if st.session_state.trade_mode == "Демо" and st.session_state.demo_data:
@@ -1477,7 +1457,7 @@ with tabs[4]:
                     else:
                         st.error(msg)
 
-# ----- ВЫВОД -----
+# ----- Вывод -----
 with tabs[5]:
     st.subheader("💰 Вывод средств")
     st.info("Вывод возможен только после одобрения администратором (комиссия 22%).")
@@ -1495,7 +1475,7 @@ with tabs[5]:
         else:
             st.error("Введите корректную сумму и адрес")
 
-# ----- ИСТОРИЯ (раздельно по режимам) -----
+# ----- История (раздельно) -----
 with tabs[6]:
     st.subheader("📜 История сделок")
     current_mode = st.session_state.trade_mode
@@ -1515,7 +1495,7 @@ with tabs[6]:
     else:
         st.info(f"Нет сделок в {current_mode} режиме.")
 
-# ----- КАБИНЕТ -----
+# ----- Кабинет -----
 with tabs[7]:
     st.subheader("👤 Личный кабинет")
     col1, col2 = st.columns(2)
@@ -1536,7 +1516,7 @@ with tabs[7]:
         st.write(f"**Общая прибыль (все режимы):** {total_profit_all:.4f} USDT")
         st.write(f"**Общий капитал:** {total_capital:.2f} USDT")
 
-# ----- ЧАТ -----
+# ----- Чат -----
 with tabs[8]:
     st.subheader("💬 Чат поддержки")
     if st.session_state.chat_unread > 0:
@@ -1556,7 +1536,7 @@ with tabs[8]:
     mark_messages_read(st.session_state.user_id)
     st.session_state.chat_unread = 0
 
-# ----- АДМИН-ПАНЕЛЬ -----
+# ----- Админ-панель -----
 if show_admin:
     with tabs[9]:
         st.subheader("👑 Административная панель")
