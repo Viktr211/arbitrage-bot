@@ -1216,7 +1216,7 @@ with tabs[1]:
                         yaxis_title="Цена (USDT)",
                         height=600
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig)  # убрали use_container_width
                 else:
                     st.warning("Нет данных для отображения")
             except Exception as e:
@@ -1334,7 +1334,7 @@ with tabs[3]:
         df_trades = df_trades.sort_values('trade_time')
         df_trades['cumulative_profit'] = df_trades['profit'].cumsum()
         fig = px.line(df_trades, x='trade_time', y='cumulative_profit', title=f"Накопленная прибыль ({current_mode} режим)")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig)  # убрали use_container_width
     else:
         st.info("Нет сделок для отображения графика.")
 
