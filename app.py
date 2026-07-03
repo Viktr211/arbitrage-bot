@@ -71,7 +71,7 @@ def decrypt_key(encrypted: str) -> str:
         return ""
 
 EXCHANGES = ["kucoin", "okx"]
-TOKENS = ["SOL", "LINK", "HYPE", "SUI", "ONDO"]  # новые ликвидные токены
+TOKENS = ["SOL", "LINK", "HYPE", "SUI", "ONDO"]
 
 TOKEN_MAX_TRADE = {
     "BTC": 300, "ETH": 250, "SOL": 200, "BNB": 200, "TON": 150,
