@@ -138,7 +138,8 @@ def create_user(email, pwd, name, country, city, phone, wallet):
                'total_profit':0,'trade_count':0,'withdrawable_balance':0,'total_admin_fee_paid':0}
     supabase.table('users').insert({
         'email':email,'password_hash':pwd_hash,'full_name':name,'country':country,'city':city,
-        'phone':phone,'wallet_address':wallet,'registration_status':'approved',
+        'phone':phone,'wallet_address':wallet,'registration_status':'pending',  # требуется одобрение
+        'role':'viewer',  # по умолчанию только просмотр
         'demo_balances':json.dumps(initial),'demo_history':'[]','demo_stats':'{}'
     }).execute()
 
@@ -232,6 +233,10 @@ def update_withdrawal_status(wid, status):
 
 def update_user_status(uid, status):
     supabase.table('users').update({'registration_status': status}).eq('id', uid).execute()
+    st.cache_data.clear()
+
+def update_user_role(uid, role):
+    supabase.table('users').update({'role': role}).eq('id', uid).execute()
     st.cache_data.clear()
 
 def add_message(user_id, user_email, user_name, message, is_admin_reply=False):
@@ -806,6 +811,7 @@ if 'logged_in' not in st.session_state:
     st.session_state.orderbook_depth = 20
     st.session_state.real_exchanges = None
     st.session_state.last_trade_info = {}
+    st.session_state.role = 'viewer'  # Добавлено
 
 if 'email' in st.query_params:
     email = st.query_params['email']
@@ -816,6 +822,7 @@ if 'email' in st.query_params:
         st.session_state.email = user['email']
         st.session_state.username = user['full_name']
         st.session_state.wallet = user.get('wallet_address', '')
+        st.session_state.role = user.get('role', 'viewer')  # Загружаем роль
         demo = load_demo_data(st.session_state.user_id)
         if demo: st.session_state.demo_data = demo
         else:
@@ -845,8 +852,8 @@ if st.session_state.real_exchanges is None:
 
 admin_user = get_user_by_email("cb777899@gmail.com")
 
-# ------------------- АВТО-СКАНИРОВАНИЕ -------------------
-if st.session_state.get('auto_trade_enabled', False):
+# ------------------- АВТО-СКАНИРОВАНИЕ (только для админа) -------------------
+if st.session_state.role == 'admin' and st.session_state.get('auto_trade_enabled', False):
     if st.session_state.trade_mode == "Реальный":
         if st.session_state.real_exchanges and any(st.session_state.real_exchanges.values()):
             if AUTOREFRESH_AVAILABLE:
@@ -930,6 +937,7 @@ if not st.session_state.logged_in:
                 st.session_state.email = user['email']
                 st.session_state.username = user['full_name']
                 st.session_state.wallet = user.get('wallet_address', '')
+                st.session_state.role = user.get('role', 'viewer')
                 st.query_params.email = user['email']
                 demo = load_demo_data(st.session_state.user_id)
                 if demo: st.session_state.demo_data = demo
@@ -952,7 +960,7 @@ if not st.session_state.logged_in:
                 st.session_state.chat_unread = get_unread_count(st.session_state.user_id)
                 st.rerun()
             else:
-                st.error("Неверные данные")
+                st.error("Неверные данные или аккаунт не одобрен")
     with tab2:
         with st.form("reg"):
             name = st.text_input("Имя")
@@ -969,7 +977,7 @@ if not st.session_state.logged_in:
                         st.error("Email уже есть")
                     else:
                         create_user(email, pwd, name, country, city, phone, wallet)
-                        st.success("OK, теперь войдите")
+                        st.success("Регистрация успешна! Ожидайте одобрения администратора.")
                 else:
                     st.error("Ошибка")
     st.stop()
@@ -986,7 +994,7 @@ with col2:
     else:
         st.markdown('<span class="status-stopped">🔴 РЕАЛЬНЫЙ РЕЖИМ</span>', unsafe_allow_html=True)
 with col3:
-    if st.session_state.auto_trade_enabled:
+    if st.session_state.auto_trade_enabled and st.session_state.role == 'admin':
         st.markdown('<span class="status-running">▶ АВТО-СДЕЛКИ АКТИВНЫ</span>', unsafe_allow_html=True)
     else:
         st.markdown('<span class="status-stopped">⏹ АВТО-СДЕЛКИ ОСТАНОВЛЕНЫ</span>', unsafe_allow_html=True)
@@ -999,36 +1007,40 @@ with col4:
 connected = [ex.upper() for ex, cl in public_clients.items() if cl is not None]
 st.success(f"🔌 Биржи для мониторинга: {', '.join(connected)}")
 
-col_start, col_stop, col_mode, _ = st.columns([1,1,2,1])
-with col_start:
-    if st.button("▶ СТАРТ АВТО-ТОРГОВЛИ", width='stretch'):
-        st.session_state.auto_trade_enabled = True
-        target_user_id = st.session_state.user_id if st.session_state.logged_in else (admin_user['id'] if admin_user else None)
-        if target_user_id:
-            settings = load_user_settings(target_user_id)
-            settings['auto_trade_enabled'] = True
-            save_user_settings(target_user_id, settings)
-        if st.session_state.trade_mode == "Реальный":
-            st.session_state.real_exchanges = init_real_exchanges()
-        st.rerun()
-with col_stop:
-    if st.button("⏹ СТОП АВТО-ТОРГОВЛИ", width='stretch'):
-        st.session_state.auto_trade_enabled = False
-        target_user_id = st.session_state.user_id if st.session_state.logged_in else (admin_user['id'] if admin_user else None)
-        if target_user_id:
-            settings = load_user_settings(target_user_id)
-            settings['auto_trade_enabled'] = False
-            save_user_settings(target_user_id, settings)
-        st.rerun()
-with col_mode:
-    new_mode = st.radio("Режим", ["Демо", "Реальный"], horizontal=True, index=0 if st.session_state.trade_mode=="Демо" else 1)
-    if new_mode != st.session_state.trade_mode:
-        st.session_state.trade_mode = new_mode
-        if new_mode == "Реальный":
-            st.session_state.real_exchanges = init_real_exchanges()
-        else:
-            st.session_state.real_exchanges = None
-        st.rerun()
+# ------------------- Управление (только для админа) -------------------
+if st.session_state.role == 'admin':
+    col_start, col_stop, col_mode, _ = st.columns([1,1,2,1])
+    with col_start:
+        if st.button("▶ СТАРТ АВТО-ТОРГОВЛИ", width='stretch'):
+            st.session_state.auto_trade_enabled = True
+            target_user_id = st.session_state.user_id if st.session_state.logged_in else (admin_user['id'] if admin_user else None)
+            if target_user_id:
+                settings = load_user_settings(target_user_id)
+                settings['auto_trade_enabled'] = True
+                save_user_settings(target_user_id, settings)
+            if st.session_state.trade_mode == "Реальный":
+                st.session_state.real_exchanges = init_real_exchanges()
+            st.rerun()
+    with col_stop:
+        if st.button("⏹ СТОП АВТО-ТОРГОВЛИ", width='stretch'):
+            st.session_state.auto_trade_enabled = False
+            target_user_id = st.session_state.user_id if st.session_state.logged_in else (admin_user['id'] if admin_user else None)
+            if target_user_id:
+                settings = load_user_settings(target_user_id)
+                settings['auto_trade_enabled'] = False
+                save_user_settings(target_user_id, settings)
+            st.rerun()
+    with col_mode:
+        new_mode = st.radio("Режим", ["Демо", "Реальный"], horizontal=True, index=0 if st.session_state.trade_mode=="Демо" else 1)
+        if new_mode != st.session_state.trade_mode:
+            st.session_state.trade_mode = new_mode
+            if new_mode == "Реальный":
+                st.session_state.real_exchanges = init_real_exchanges()
+            else:
+                st.session_state.real_exchanges = None
+            st.rerun()
+else:
+    st.info("🔒 Вы в режиме просмотра. Управление ботом недоступно.")
 
 # ------------------- РАСЧЁТ КАПИТАЛА -------------------
 if st.session_state.trade_mode == "Реальный":
@@ -1086,43 +1098,47 @@ else:
     trade_count = 0
 col_e.metric("📊 Сделок", trade_count)
 
-# ------------------- НАСТРОЙКИ -------------------
-with st.expander("⚙️ Настройки арбитража", expanded=False):
-    fee = st.number_input("Комиссия (%)", 0.0, 0.5, st.session_state.fee, 0.01, format="%.2f")
-    min_profit = st.number_input("Мин. прибыль (USDT)", 0.001, 1.0, st.session_state.min_profit, 0.01, format="%.3f")
-    min_trade = st.number_input("Минимальная сумма сделки (USDT)", 1.0, 1000.0, st.session_state.min_trade, 5.0)
-    max_trade = st.number_input("Максимальная сумма сделки (USDT) (общий лимит)", 1.0, 1000.0, st.session_state.max_trade, 10.0)
-    scan_interval = st.number_input("Интервал сканирования (сек)", 10, 120, st.session_state.scan_interval, 5)
-    reinvest_percent = st.slider("Процент реинвестиции (только демо)", 0, 100, st.session_state.reinvest_percent, 5)
-    
-    use_orderbook = st.checkbox("Учитывать стакан ордеров (order book)", value=st.session_state.use_orderbook)
-    if use_orderbook:
-        max_slippage = st.number_input("Максимальное проскальзывание (%)", 0.05, 1.0, st.session_state.max_slippage, 0.05, format="%.2f")
-        depth = st.number_input("Глубина стакана (уровней)", 5, 50, st.session_state.orderbook_depth, 5)
-    else:
-        max_slippage = st.session_state.max_slippage
-        depth = st.session_state.orderbook_depth
-
-    if st.button("💾 Сохранить настройки", width='stretch'):
-        target_user_id = st.session_state.user_id if st.session_state.logged_in else (admin_user['id'] if admin_user else None)
-        if target_user_id:
-            save_user_settings(target_user_id, {
-                'fee': fee,
-                'min_profit': min_profit,
-                'min_trade': min_trade,
-                'max_trade': max_trade,
-                'scan_interval': scan_interval,
-                'reinvest_percent': reinvest_percent,
-                'use_orderbook': use_orderbook,
-                'max_slippage': max_slippage,
-                'orderbook_depth': depth,
-                'auto_trade_enabled': st.session_state.auto_trade_enabled
-            })
-            st.success("Настройки сохранены!")
+# ------------------- НАСТРОЙКИ (только для админа) -------------------
+if st.session_state.role == 'admin':
+    with st.expander("⚙️ Настройки арбитража", expanded=False):
+        fee = st.number_input("Комиссия (%)", 0.0, 0.5, st.session_state.fee, 0.01, format="%.2f")
+        min_profit = st.number_input("Мин. прибыль (USDT)", 0.001, 1.0, st.session_state.min_profit, 0.01, format="%.3f")
+        min_trade = st.number_input("Минимальная сумма сделки (USDT)", 1.0, 1000.0, st.session_state.min_trade, 5.0)
+        max_trade = st.number_input("Максимальная сумма сделки (USDT) (общий лимит)", 1.0, 1000.0, st.session_state.max_trade, 10.0)
+        scan_interval = st.number_input("Интервал сканирования (сек)", 10, 120, st.session_state.scan_interval, 5)
+        reinvest_percent = st.slider("Процент реинвестиции (только демо)", 0, 100, st.session_state.reinvest_percent, 5)
+        
+        use_orderbook = st.checkbox("Учитывать стакан ордеров (order book)", value=st.session_state.use_orderbook)
+        if use_orderbook:
+            max_slippage = st.number_input("Максимальное проскальзывание (%)", 0.05, 1.0, st.session_state.max_slippage, 0.05, format="%.2f")
+            depth = st.number_input("Глубина стакана (уровней)", 5, 50, st.session_state.orderbook_depth, 5)
         else:
-            st.error("Пользователь не авторизован")
+            max_slippage = st.session_state.max_slippage
+            depth = st.session_state.orderbook_depth
 
-    st.info(f"Настройки сохранены. Учёт стакана: {'включён' if use_orderbook else 'выключен'}.")
+        if st.button("💾 Сохранить настройки", width='stretch'):
+            target_user_id = st.session_state.user_id if st.session_state.logged_in else (admin_user['id'] if admin_user else None)
+            if target_user_id:
+                save_user_settings(target_user_id, {
+                    'fee': fee,
+                    'min_profit': min_profit,
+                    'min_trade': min_trade,
+                    'max_trade': max_trade,
+                    'scan_interval': scan_interval,
+                    'reinvest_percent': reinvest_percent,
+                    'use_orderbook': use_orderbook,
+                    'max_slippage': max_slippage,
+                    'orderbook_depth': depth,
+                    'auto_trade_enabled': st.session_state.auto_trade_enabled
+                })
+                st.success("Настройки сохранены!")
+            else:
+                st.error("Пользователь не авторизован")
+
+        st.info(f"Настройки сохранены. Учёт стакана: {'включён' if use_orderbook else 'выключен'}.")
+else:
+    with st.expander("⚙️ Настройки (только для администратора)", expanded=False):
+        st.info("🔒 Для изменения настроек обратитесь к администратору.")
 
 with st.expander("📋 Лог авто-торговли", expanded=False):
     if st.session_state.auto_log:
@@ -1132,7 +1148,7 @@ with st.expander("📋 Лог авто-торговли", expanded=False):
         st.info("Нет событий. Запустите авто-торговлю кнопкой СТАРТ.")
 
 # ------------------- ВКЛАДКИ -------------------
-show_admin = is_admin(st.session_state.email) if st.session_state.logged_in else is_admin("cb777899@gmail.com")
+show_admin = st.session_state.role == 'admin'
 tabs_list = ["📊 Dashboard", "📈 Графики", "🔄 Арбитраж", "📊 Статистика", "💼 Балансы", "💰 Вывод", "📜 История", "👤 Кабинет", "💬 Чат"]
 if show_admin:
     tabs_list.append("👑 Админ-панель")
@@ -1546,10 +1562,14 @@ if show_admin:
             for user in users:
                 with st.expander(f"{user['email']} - {user['full_name']}"):
                     st.write(f"Статус: {user['registration_status']}")
+                    st.write(f"Роль: {user.get('role', 'viewer')}")
                     st.write(f"Сделок: {user.get('trade_count', 0)}")
                     new_status = st.selectbox("Изменить статус", ["approved", "blocked"], key=f"status_{user['id']}")
+                    new_role = st.selectbox("Изменить роль", ["viewer", "admin"], index=0 if user.get('role', 'viewer') == 'viewer' else 1, key=f"role_{user['id']}")
                     if st.button("Обновить", key=f"update_{user['id']}"):
                         update_user_status(user['id'], new_status)
+                        update_user_role(user['id'], new_role)
+                        st.cache_data.clear()
                         st.rerun()
         
         with admin_tabs[1]:
