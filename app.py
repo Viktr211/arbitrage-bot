@@ -305,6 +305,50 @@ def save_user_settings(user_id, settings):
         st.cache_data.clear()
     except: pass
 
+# ------------------- КЛИЕНТЫ БИРЖ -------------------
+@st.cache_resource
+def init_async_clients():
+    clients = {}
+    for ex in EXCHANGES:
+        try:
+            cls = getattr(ccxt, ex)
+            clients[ex] = cls({
+                'enableRateLimit': True,
+                'options': {'defaultType': 'spot'}
+            })
+        except Exception as e:
+            print(f"Ошибка создания клиента {ex}: {e}")
+            clients[ex] = None
+    return clients
+
+# НУЖНАЯ ФУНКЦИЯ – ДОБАВЛЕНА
+@st.cache_resource
+def init_real_exchanges():
+    exchanges = {}
+    api_keys = get_all_api_keys()
+    for ex in EXCHANGES:
+        key_data = api_keys.get(ex, {})
+        api_key = decrypt_key(key_data.get('api_key', ''))
+        secret = decrypt_key(key_data.get('secret_key', ''))
+        passphrase = decrypt_key(key_data.get('passphrase', ''))
+        if api_key and secret:
+            try:
+                cls = getattr(ccxt, ex)
+                exchanges[ex] = cls({
+                    'apiKey': api_key,
+                    'secret': secret,
+                    'password': passphrase,
+                    'enableRateLimit': True,
+                    'options': {'defaultType': 'spot'}
+                })
+                exchanges[ex].load_markets()
+            except Exception as e:
+                print(f"Ошибка инициализации {ex}: {e}")
+                exchanges[ex] = None
+        else:
+            exchanges[ex] = None
+    return exchanges
+
 # ------------------- АСИНХРОННЫЕ ЗАПРОСЫ К БИРЖАМ (aiohttp) -------------------
 async def fetch_price_async(session, exchange_name, symbol):
     endpoints = {
