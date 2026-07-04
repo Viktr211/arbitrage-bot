@@ -11,7 +11,7 @@ import hashlib
 import base64
 import os
 from cryptography.fernet import Fernet
-import ccxt.pro as ccxt  # асинхронная версия ccxt
+import ccxt.async_support as ccxt  # Асинхронная версия ccxt
 
 # Пытаемся импортировать автообновление
 try:
@@ -97,65 +97,6 @@ REAL_MODE_ALLOWED_USERS = ["cb777899@gmail.com"]
 
 def is_admin(email): return email in ADMIN_EMAILS
 def can_trade_real(email): return email in REAL_MODE_ALLOWED_USERS
-
-# ------------------- АСИНХРОННЫЕ ФУНКЦИИ ДЛЯ БИРЖ -------------------
-async def get_price_async(exchange, symbol):
-    try:
-        ticker = await exchange.fetch_ticker(f"{symbol}/USDT")
-        return ticker['last']
-    except Exception as e:
-        print(f"Ошибка получения цены {symbol} на {exchange.name}: {e}")
-        return None
-
-async def get_order_book_price_async(exchange, symbol, side, amount_usdt, depth=20):
-    try:
-        orderbook = await exchange.fetch_order_book(f"{symbol}/USDT", limit=depth)
-        if side == 'buy':
-            asks = orderbook['asks']
-            if not asks:
-                return None, 0, "Нет данных в стакане (asks)"
-            total_usdt = 0
-            total_amount = 0
-            for price, amount in asks:
-                cost = price * amount
-                if total_usdt + cost >= amount_usdt:
-                    need = (amount_usdt - total_usdt) / price
-                    total_amount += need
-                    total_usdt = amount_usdt
-                    break
-                else:
-                    total_amount += amount
-                    total_usdt += cost
-            if total_usdt < amount_usdt:
-                avg_price = total_usdt / total_amount if total_amount > 0 else None
-                return avg_price, total_usdt, f"Доступно только {total_usdt:.2f} USDT"
-            avg_price = total_usdt / total_amount
-            return avg_price, total_usdt, None
-        else:  # sell
-            bids = orderbook['bids']
-            if not bids:
-                return None, 0, "Нет данных в стакане (bids)"
-            remaining = amount_usdt
-            total_amount = 0
-            total_received = 0
-            for price, amount in bids:
-                value = price * amount
-                if value >= remaining:
-                    need = remaining / price
-                    total_amount += need
-                    total_received = remaining
-                    break
-                else:
-                    total_amount += amount
-                    remaining -= value
-                    total_received += value
-            if total_received < amount_usdt:
-                avg_price = total_received / total_amount if total_amount > 0 else None
-                return avg_price, total_received, f"Доступно только {total_received:.2f} USDT"
-            avg_price = total_received / total_amount
-            return avg_price, total_received, None
-    except Exception as e:
-        return None, 0, f"Ошибка получения стакана: {str(e)}"
 
 # ------------------- КЭШИРОВАНИЕ -------------------
 @st.cache_data(ttl=10)
@@ -363,19 +304,20 @@ def save_user_settings(user_id, settings):
         st.cache_data.clear()
     except: pass
 
-# ------------------- ИНИЦИАЛИЗАЦИЯ АСИНХРОННЫХ КЛИЕНТОВ -------------------
+# ------------------- АСИНХРОННЫЕ КЛИЕНТЫ -------------------
 @st.cache_resource
 def init_async_clients():
     clients = {}
     for ex in EXCHANGES:
         try:
-            # Используем ccxt.pro для асинхронных запросов
+            # Используем ccxt.async_support
             cls = getattr(ccxt, ex)
             clients[ex] = cls({
                 'enableRateLimit': True,
                 'options': {'defaultType': 'spot'}
             })
-        except:
+        except Exception as e:
+            print(f"Ошибка создания клиента {ex}: {e}")
             clients[ex] = None
     return clients
 
@@ -390,7 +332,9 @@ def init_real_exchanges():
         passphrase = decrypt_key(key_data.get('passphrase', ''))
         if api_key and secret:
             try:
-                cls = getattr(ccxt, ex)
+                # Для реальных сделок используем синхронный ccxt (обычный)
+                import ccxt as ccxt_sync
+                cls = getattr(ccxt_sync, ex)
                 exchanges[ex] = cls({
                     'apiKey': api_key,
                     'secret': secret,
@@ -398,50 +342,109 @@ def init_real_exchanges():
                     'enableRateLimit': True,
                     'options': {'defaultType': 'spot'}
                 })
-                exchanges[ex].load_markets()
             except:
                 exchanges[ex] = None
         else:
             exchanges[ex] = None
     return exchanges
 
-# ------------------- АСИНХРОННЫЕ ФУНКЦИИ ДЛЯ АРБИТРАЖА -------------------
+# ------------------- АСИНХРОННЫЕ ФУНКЦИИ -------------------
+async def get_price_async(exchange, symbol):
+    try:
+        ticker = await exchange.fetch_ticker(f"{symbol}/USDT")
+        return ticker['last']
+    except Exception as e:
+        print(f"Ошибка получения цены {symbol} на {exchange.name}: {e}")
+        return None
+
+async def get_order_book_price_async(exchange, symbol, side, amount_usdt, depth=20):
+    try:
+        orderbook = await exchange.fetch_order_book(f"{symbol}/USDT", limit=depth)
+        if side == 'buy':
+            asks = orderbook['asks']
+            if not asks:
+                return None, 0, "Нет данных в стакане (asks)"
+            total_usdt = 0
+            total_amount = 0
+            for price, amount in asks:
+                cost = price * amount
+                if total_usdt + cost >= amount_usdt:
+                    need = (amount_usdt - total_usdt) / price
+                    total_amount += need
+                    total_usdt = amount_usdt
+                    break
+                else:
+                    total_amount += amount
+                    total_usdt += cost
+            if total_usdt < amount_usdt:
+                avg_price = total_usdt / total_amount if total_amount > 0 else None
+                return avg_price, total_usdt, f"Доступно только {total_usdt:.2f} USDT"
+            avg_price = total_usdt / total_amount
+            return avg_price, total_usdt, None
+        else:  # sell
+            bids = orderbook['bids']
+            if not bids:
+                return None, 0, "Нет данных в стакане (bids)"
+            remaining = amount_usdt
+            total_amount = 0
+            total_received = 0
+            for price, amount in bids:
+                value = price * amount
+                if value >= remaining:
+                    need = remaining / price
+                    total_amount += need
+                    total_received = remaining
+                    break
+                else:
+                    total_amount += amount
+                    remaining -= value
+                    total_received += value
+            if total_received < amount_usdt:
+                avg_price = total_received / total_amount if total_amount > 0 else None
+                return avg_price, total_received, f"Доступно только {total_received:.2f} USDT"
+            avg_price = total_received / total_amount
+            return avg_price, total_received, None
+    except Exception as e:
+        return None, 0, f"Ошибка получения стакана: {str(e)}"
+
 async def find_real_opportunity_async(fee, min_profit, min_trade, max_trade, depth, use_orderbook, real_exchanges, max_slippage=0.3):
     """Асинхронный поиск арбитражной возможности"""
     if not real_exchanges or not any(real_exchanges.values()):
         return None
     
     tokens = get_available_tokens()
-    # Создаём асинхронные клиенты для бирж
-    async_clients = {}
-    for ex in EXCHANGES:
-        if real_exchanges.get(ex):
-            try:
-                cls = getattr(ccxt, ex)
-                async_clients[ex] = cls({
-                    'apiKey': real_exchanges[ex].apiKey,
-                    'secret': real_exchanges[ex].secret,
-                    'password': real_exchanges[ex].password,
-                    'enableRateLimit': True,
-                    'options': {'defaultType': 'spot'}
-                })
-            except:
-                async_clients[ex] = None
-        else:
-            async_clients[ex] = None
+    async_clients = init_async_clients()
     
-    # Загружаем цены и балансы параллельно
-    prices = {}
-    balances = {}
-    for ex in EXCHANGES:
-        if async_clients.get(ex):
-            try:
-                # Получаем цены для всех токенов параллельно
-                price_tasks = [get_price_async(async_clients[ex], t) for t in tokens]
-                price_results = await asyncio.gather(*price_tasks)
-                prices[ex] = {t: price_results[i] for i, t in enumerate(tokens)}
-                # Получаем балансы (синхронно, т.к. для баланса нет асинхронного метода в ccxt.pro?)
-                # Используем синхронный метод, но это будет блокировать, но в пределах одной биржи
+    # Получаем цены и стаканы асинхронно
+    try:
+        # Собираем все задачи
+        tasks = []
+        for ex in EXCHANGES:
+            if async_clients.get(ex):
+                for t in tokens:
+                    tasks.append(get_price_async(async_clients[ex], t))
+        
+        # Ждём все цены
+        prices_results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Формируем словарь цен
+        prices = {}
+        idx = 0
+        for ex in EXCHANGES:
+            prices[ex] = {}
+            if async_clients.get(ex):
+                for t in tokens:
+                    price = prices_results[idx]
+                    prices[ex][t] = price if not isinstance(price, Exception) else None
+                    idx += 1
+            else:
+                for t in tokens:
+                    prices[ex][t] = None
+        
+        # Получаем балансы (синхронно, так как в ccxt нет асинхронного баланса)
+        balances = {}
+        for ex in EXCHANGES:
+            if real_exchanges.get(ex):
                 try:
                     bal = real_exchanges[ex].fetch_balance()
                     usdt = bal.get('USDT', {}).get('free', 0.0)
@@ -449,13 +452,11 @@ async def find_real_opportunity_async(fee, min_profit, min_trade, max_trade, dep
                     balances[ex] = {'USDT': usdt, 'portfolio': port}
                 except:
                     balances[ex] = {'USDT': 0, 'portfolio': {t: 0 for t in tokens}}
-            except Exception as e:
-                print(f"Ошибка загрузки данных для {ex}: {e}")
-                prices[ex] = {t: None for t in tokens}
+            else:
                 balances[ex] = {'USDT': 0, 'portfolio': {t: 0 for t in tokens}}
-        else:
-            prices[ex] = {t: None for t in tokens}
-            balances[ex] = {'USDT': 0, 'portfolio': {t: 0 for t in tokens}}
+    except Exception as e:
+        print(f"Ошибка получения данных: {e}")
+        return None
     
     now = datetime.now()
     last_trade_info = st.session_state.get('last_trade_info', {})
@@ -502,32 +503,36 @@ async def find_real_opportunity_async(fee, min_profit, min_trade, max_trade, dep
                     amount = trade_usdt / buy_p
                 
                 if use_orderbook and async_clients.get(buy_ex) and async_clients.get(sell_ex):
-                    buy_price, buy_available, err1 = await get_order_book_price_async(
-                        async_clients[buy_ex], token, 'buy', trade_usdt, depth
-                    )
-                    if buy_price is None:
-                        if buy_available and buy_available > min_trade:
-                            trade_usdt = min(trade_usdt, buy_available)
-                            buy_price, _, _ = await get_order_book_price_async(
-                                async_clients[buy_ex], token, 'buy', trade_usdt, depth
-                            )
-                            if buy_price is None:
+                    try:
+                        buy_price, buy_available, err1 = await get_order_book_price_async(
+                            async_clients[buy_ex], token, 'buy', trade_usdt, depth
+                        )
+                        if buy_price is None:
+                            if buy_available and buy_available > min_trade:
+                                trade_usdt = min(trade_usdt, buy_available)
+                                buy_price, _, _ = await get_order_book_price_async(
+                                    async_clients[buy_ex], token, 'buy', trade_usdt, depth
+                                )
+                                if buy_price is None:
+                                    continue
+                            else:
                                 continue
-                        else:
-                            continue
-                    sell_price, sell_available, err2 = await get_order_book_price_async(
-                        async_clients[sell_ex], token, 'sell', trade_usdt, depth
-                    )
-                    if sell_price is None:
-                        if sell_available and sell_available > min_trade:
-                            trade_usdt = min(trade_usdt, sell_available)
-                            sell_price, _, _ = await get_order_book_price_async(
-                                async_clients[sell_ex], token, 'sell', trade_usdt, depth
-                            )
-                            if sell_price is None:
+                        sell_price, sell_available, err2 = await get_order_book_price_async(
+                            async_clients[sell_ex], token, 'sell', trade_usdt, depth
+                        )
+                        if sell_price is None:
+                            if sell_available and sell_available > min_trade:
+                                trade_usdt = min(trade_usdt, sell_available)
+                                sell_price, _, _ = await get_order_book_price_async(
+                                    async_clients[sell_ex], token, 'sell', trade_usdt, depth
+                                )
+                                if sell_price is None:
+                                    continue
+                            else:
                                 continue
-                        else:
-                            continue
+                    except Exception as e:
+                        print(f"Ошибка получения стакана: {e}")
+                        continue
                 else:
                     buy_price = buy_p
                     sell_price = sell_p
@@ -552,7 +557,7 @@ async def find_real_opportunity_async(fee, min_profit, min_trade, max_trade, dep
         return None
     return max(opportunities, key=lambda x: x['profit'])
 
-# ------------------- ДЕМО-ФУНКЦИИ (остаются синхронными) -------------------
+# ------------------- ДЕМО-ФУНКЦИИ (синхронные) -------------------
 def update_demo_balance(user_id, exchange, asset, delta, data):
     if exchange not in data['balances']:
         data['balances'][exchange] = {'USDT':0.0, 'portfolio':{t:0.0 for t in get_available_tokens()}}
@@ -565,7 +570,6 @@ def update_demo_balance(user_id, exchange, asset, delta, data):
     save_demo_data(user_id, data)
 
 def demo_buy(user_id, exchange, token, usdt_amount, data, clients, is_manual=False):
-    # Используем синхронную версию для демо
     price = None
     if clients.get(exchange):
         try:
@@ -614,7 +618,7 @@ def reset_demo_data(user_id):
     st.session_state.demo_data = {'balances':init_bal,'total_profit':0,'trade_count':0,'withdrawable_balance':0,'history':[]}
     save_demo_data(user_id, st.session_state.demo_data)
 
-# ------------------- РЕАЛЬНЫЕ ФУНКЦИИ (синхронные для исполнения) -------------------
+# ------------------- РЕАЛЬНЫЕ ФУНКЦИИ (синхронные) -------------------
 def get_real_balance(exchange, asset):
     if not exchange: return 0.0
     try:
@@ -626,17 +630,9 @@ def get_real_balance(exchange, asset):
     except: return 0.0
 
 def real_buy_with_liquidity(exchange, token, usdt_amount, max_slippage=0.3, depth=20, use_orderbook=True):
-    # Для исполнения сделок используем синхронный метод (ccxt обычный)
     if not exchange: return False, "Биржа не подключена", None, None
-    # Получаем цену (синхронно)
-    if use_orderbook:
-        # Для простоты используем тикер, так как асинхронный стакан уже использован для поиска
-        ticker = exchange.fetch_ticker(f"{token}/USDT")
-        price = ticker['last']
-        # Здесь можно было бы использовать стакан, но для скорости оставим тикер
-    else:
-        ticker = exchange.fetch_ticker(f"{token}/USDT")
-        price = ticker['last']
+    ticker = exchange.fetch_ticker(f"{token}/USDT")
+    price = ticker['last']
     amount_token = usdt_amount / price
     try:
         order = exchange.create_market_buy_order(f"{token}/USDT", amount_token)
@@ -670,7 +666,7 @@ def real_sell_with_liquidity(exchange, token, usdt_amount, max_slippage=0.3, dep
         return False, str(e), None, None
 
 def find_demo_opportunity(fee, min_profit, min_trade, max_trade, depth, use_orderbook, demo_data, public_clients, max_slippage=0.3):
-    # Синхронная демо-функция (оставляем как есть)
+    # Синхронная демо-функция (без изменений)
     opportunities = []
     tokens = get_available_tokens()
     prices = {}
@@ -709,7 +705,6 @@ def find_demo_opportunity(fee, min_profit, min_trade, max_trade, depth, use_orde
                     if trade_usdt < min_trade: continue
                     amount = trade_usdt / buy_p
                 if use_orderbook:
-                    # Для демо не реализуем асинхронный стакан, используем тикер
                     buy_price = buy_p
                     sell_price = sell_p
                 else:
@@ -917,14 +912,12 @@ if 'email' in st.query_params:
 if st.session_state.logged_in and st.session_state.email:
     st.query_params.email = st.session_state.email
 
-# Инициализация асинхронных клиентов
-async_clients = init_async_clients()
-
 # Старые синхронные клиенты (для демо и ручных операций)
+import ccxt as ccxt_sync
 public_clients = {}
 for ex in EXCHANGES:
     try:
-        cls = getattr(ccxt, ex)  # синхронная версия
+        cls = getattr(ccxt_sync, ex)
         public_clients[ex] = cls({'enableRateLimit': True, 'options': {'defaultType': 'spot'}})
         public_clients[ex].fetch_ticker("BTC/USDT")
     except:
@@ -937,7 +930,6 @@ admin_user = get_user_by_email("cb777899@gmail.com")
 
 # ------------------- АВТО-СКАНИРОВАНИЕ (асинхронное) -------------------
 if st.session_state.role == 'admin' and st.session_state.get('auto_trade_enabled', False):
-    # Показываем индикатор сканирования
     indicator_placeholder = st.empty()
     if st.session_state.get('last_scan_time'):
         indicator_placeholder.markdown('<span class="scan-indicator">🔄 Сканирование...</span>', unsafe_allow_html=True)
@@ -1152,13 +1144,12 @@ if st.session_state.trade_mode == "Реальный":
                 for token in get_available_tokens():
                     amt = get_real_balance(exch, token)
                     if amt > 0:
-                        price = None
                         try:
                             ticker = exch.fetch_ticker(f"{token}/USDT")
                             price = ticker['last']
+                            if price: total_portfolio += amt * price
                         except:
                             pass
-                        if price: total_portfolio += amt * price
         total_capital = total_usdt + total_portfolio
         st.info(f"💰 **Реальные балансы** | USDT: {total_usdt:.2f} | Портфель: {total_portfolio:.2f} | Капитал: {total_capital:.2f}")
     else:
@@ -1176,13 +1167,12 @@ else:
     for ex in EXCHANGES:
         for token, amt in balances.get(ex, {}).get('portfolio',{}).items():
             if amt>0 and public_clients[ex]:
-                price = None
                 try:
                     ticker = public_clients[ex].fetch_ticker(f"{token}/USDT")
                     price = ticker['last']
+                    if price: total_portfolio += amt * price
                 except:
                     pass
-                if price: total_portfolio += amt * price
     total_capital = total_usdt + total_portfolio
     st.info(f"🎮 **Демо-балансы** | USDT: {total_usdt:.2f} | Портфель: {total_portfolio:.2f} | Капитал: {total_capital:.2f}")
 
@@ -1313,7 +1303,7 @@ with tabs[0]:
     st.dataframe(df_prices.style.apply(highlight_profitable, axis=1), width='stretch', hide_index=True)
     st.caption("🟢 Зелёным выделены токены, спред по которым превышает минимальную прибыль с учётом комиссии.")
 
-# ----- Графики (японские свечи) -----
+# ----- Графики -----
 with tabs[1]:
     st.subheader("📈 Графики (японские свечи)")
     col1, col2 = st.columns(2)
@@ -1433,7 +1423,7 @@ with tabs[2]:
                 else:
                     st.warning("Арбитражных возможностей не найдено")
 
-# ----- Статистика (раздельно) -----
+# ----- Статистика -----
 with tabs[3]:
     st.subheader("📊 Статистика")
     current_mode = st.session_state.trade_mode
@@ -1613,7 +1603,7 @@ with tabs[5]:
         else:
             st.error("Введите корректную сумму и адрес")
 
-# ----- История (раздельно) -----
+# ----- История -----
 with tabs[6]:
     st.subheader("📜 История сделок")
     current_mode = st.session_state.trade_mode
