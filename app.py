@@ -39,6 +39,17 @@ st.markdown("""
 .subtitle { text-align: center; color: #aaa; margin-top: -0.8rem; margin-bottom: 1.5rem; }
 .status-running { color: #00FF88; font-weight: bold; }
 .status-stopped { color: #FF4444; font-weight: bold; }
+.scan-indicator {
+    display: inline-block;
+    color: #FFD700;
+    font-weight: bold;
+    animation: blink 1s infinite;
+}
+@keyframes blink {
+    0% { opacity: 1; }
+    50% { opacity: 0.2; }
+    100% { opacity: 1; }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -71,7 +82,7 @@ def decrypt_key(encrypted: str) -> str:
         return ""
 
 EXCHANGES = ["kucoin", "okx"]
-TOKENS = ["SOL", "LINK", "HYPE", "SUI", "ONDO"]
+TOKENS = ["SOL", "LINK", "HYPE", "SUI", "ONDO", "PEPE", "WIF", "BOME", "BONK", "FLOKI"]
 
 TOKEN_MAX_TRADE = {
     "BTC": 300, "ETH": 250, "SOL": 200, "BNB": 200, "TON": 150,
@@ -138,8 +149,8 @@ def create_user(email, pwd, name, country, city, phone, wallet):
                'total_profit':0,'trade_count':0,'withdrawable_balance':0,'total_admin_fee_paid':0}
     supabase.table('users').insert({
         'email':email,'password_hash':pwd_hash,'full_name':name,'country':country,'city':city,
-        'phone':phone,'wallet_address':wallet,'registration_status':'pending',  # требуется одобрение
-        'role':'viewer',  # по умолчанию только просмотр
+        'phone':phone,'wallet_address':wallet,'registration_status':'pending',
+        'role':'viewer',
         'demo_balances':json.dumps(initial),'demo_history':'[]','demo_stats':'{}'
     }).execute()
 
@@ -270,12 +281,12 @@ def load_user_settings(user_id):
     default = {
         'user_id': user_id,
         'fee': 0.2,
-        'min_profit': 0.04,
-        'min_trade': 5.0,
-        'max_trade': 15.0,
+        'min_profit': 0.03,
+        'min_trade': 8.0,
+        'max_trade': 20.0,
         'scan_interval': 30,
         'reinvest_percent': 0,
-        'use_orderbook': True,
+        'use_orderbook': False,
         'max_slippage': 0.3,
         'orderbook_depth': 20,
         'auto_trade_enabled': False
@@ -632,10 +643,11 @@ def find_real_opportunity(fee, min_profit, min_trade, max_trade, depth, use_orde
         for sell_ex in EXCHANGES:
             if buy_ex == sell_ex: continue
             for token in tokens:
+                # ЗАЩИТА ОТ ОБРАТНЫХ СДЕЛОК - 1 МИНУТА (60 секунд) вместо 5 минут
                 if token in last_trade_info:
                     last_dir = last_trade_info[token].get('direction')
                     last_time = last_trade_info[token].get('timestamp')
-                    if last_time and (now - last_time).seconds < 300:
+                    if last_time and (now - last_time).seconds < 60:  # ИЗМЕНЕНО: 300 -> 60
                         if last_dir and (buy_ex, sell_ex) != last_dir:
                             continue
                 
@@ -801,17 +813,18 @@ if 'logged_in' not in st.session_state:
     st.session_state.last_scan_time = None
     st.session_state.chat_unread = 0
     st.session_state.fee = 0.2
-    st.session_state.min_profit = 0.04
-    st.session_state.min_trade = 5.0
-    st.session_state.max_trade = 15.0
+    st.session_state.min_profit = 0.03
+    st.session_state.min_trade = 8.0
+    st.session_state.max_trade = 20.0
     st.session_state.scan_interval = 30
     st.session_state.reinvest_percent = 0
-    st.session_state.use_orderbook = True
+    st.session_state.use_orderbook = False
     st.session_state.max_slippage = 0.3
     st.session_state.orderbook_depth = 20
     st.session_state.real_exchanges = None
     st.session_state.last_trade_info = {}
-    st.session_state.role = 'viewer'  # Добавлено
+    st.session_state.role = 'viewer'
+    st.session_state.scan_indicator = False
 
 if 'email' in st.query_params:
     email = st.query_params['email']
@@ -822,7 +835,7 @@ if 'email' in st.query_params:
         st.session_state.email = user['email']
         st.session_state.username = user['full_name']
         st.session_state.wallet = user.get('wallet_address', '')
-        st.session_state.role = user.get('role', 'viewer')  # Загружаем роль
+        st.session_state.role = user.get('role', 'viewer')
         demo = load_demo_data(st.session_state.user_id)
         if demo: st.session_state.demo_data = demo
         else:
@@ -831,12 +844,12 @@ if 'email' in st.query_params:
             save_demo_data(st.session_state.user_id, st.session_state.demo_data)
         settings = load_user_settings(st.session_state.user_id)
         st.session_state.fee = settings.get('fee', 0.2)
-        st.session_state.min_profit = settings.get('min_profit', 0.04)
-        st.session_state.min_trade = settings.get('min_trade', 5.0)
-        st.session_state.max_trade = settings.get('max_trade', 15.0)
+        st.session_state.min_profit = settings.get('min_profit', 0.03)
+        st.session_state.min_trade = settings.get('min_trade', 8.0)
+        st.session_state.max_trade = settings.get('max_trade', 20.0)
         st.session_state.scan_interval = settings.get('scan_interval', 30)
         st.session_state.reinvest_percent = settings.get('reinvest_percent', 0)
-        st.session_state.use_orderbook = settings.get('use_orderbook', True)
+        st.session_state.use_orderbook = settings.get('use_orderbook', False)
         st.session_state.max_slippage = settings.get('max_slippage', 0.3)
         st.session_state.orderbook_depth = settings.get('orderbook_depth', 20)
         st.session_state.auto_trade_enabled = settings.get('auto_trade_enabled', False)
@@ -852,74 +865,86 @@ if st.session_state.real_exchanges is None:
 
 admin_user = get_user_by_email("cb777899@gmail.com")
 
-# ------------------- АВТО-СКАНИРОВАНИЕ (только для админа) -------------------
-if st.session_state.role == 'admin' and st.session_state.get('auto_trade_enabled', False):
-    if st.session_state.trade_mode == "Реальный":
-        if st.session_state.real_exchanges and any(st.session_state.real_exchanges.values()):
-            if AUTOREFRESH_AVAILABLE:
-                interval = st.session_state.get('scan_interval', 30)
-                st_autorefresh(interval=interval * 1000, key="auto_refresh")
-            now = datetime.now()
-            last = st.session_state.get('last_scan_time')
-            if last is None or (now - last).total_seconds() >= st.session_state.get('scan_interval', 30):
-                st.session_state.last_scan_time = now
-                opp = find_real_opportunity(
-                    st.session_state.fee, st.session_state.min_profit,
-                    st.session_state.min_trade, st.session_state.max_trade,
-                    st.session_state.orderbook_depth, st.session_state.use_orderbook,
-                    st.session_state.real_exchanges,
-                    st.session_state.max_slippage
-                )
-                if opp:
-                    st.session_state.auto_log.append(f"🔍 Найдено (реал): {opp['token']} {opp['buy_ex']}→{opp['sell_ex']} | прибыль {opp['profit']:.4f} USDT")
-                    user_id = st.session_state.user_id if st.session_state.logged_in else (admin_user['id'] if admin_user else None)
-                    if user_id:
-                        profit, msg = execute_real_arbitrage(
-                            opp, user_id, st.session_state.real_exchanges,
-                            st.session_state.reinvest_percent,
-                            st.session_state.use_orderbook, st.session_state.orderbook_depth,
-                            st.session_state.max_slippage
-                        )
-                        if profit:
-                            st.session_state.auto_log.append(f"✅ Исполнено! +{profit:.2f} USDT")
-                        else:
-                            st.session_state.auto_log.append(f"❌ Ошибка: {msg}")
-                else:
-                    st.session_state.auto_log.append("⏳ Сканирование завершено, возможностей не найдено")
+# ------------------- АВТО-СКАНИРОВАНИЕ (только для админа, с индикатором) -------------------
+if st.session_state.role == 'admin':
+    if st.session_state.get('auto_trade_enabled', False):
+        # Показываем индикатор сканирования
+        indicator_placeholder = st.empty()
+        if st.session_state.get('last_scan_time'):
+            indicator_placeholder.markdown('<span class="scan-indicator">🔄 Сканирование...</span>', unsafe_allow_html=True)
         else:
-            st.warning("🔐 Реальный режим требует корректных API-ключей. Проверьте их в админ-панели.")
-    else:
-        if st.session_state.demo_data is not None:
-            if AUTOREFRESH_AVAILABLE:
-                interval = st.session_state.get('scan_interval', 30)
-                st_autorefresh(interval=interval * 1000, key="auto_refresh")
-            now = datetime.now()
-            last = st.session_state.get('last_scan_time')
-            if last is None or (now - last).total_seconds() >= st.session_state.get('scan_interval', 30):
-                st.session_state.last_scan_time = now
-                opp = find_demo_opportunity(
-                    st.session_state.fee, st.session_state.min_profit,
-                    st.session_state.min_trade, st.session_state.max_trade,
-                    st.session_state.orderbook_depth, st.session_state.use_orderbook,
-                    st.session_state.demo_data, public_clients,
-                    st.session_state.max_slippage
-                )
-                if opp:
-                    st.session_state.auto_log.append(f"🔍 Найдено (демо): {opp['token']} {opp['buy_ex']}→{opp['sell_ex']} | прибыль {opp['profit']:.4f} USDT")
-                    user_id = st.session_state.user_id if st.session_state.logged_in else (admin_user['id'] if admin_user else None)
-                    if user_id:
-                        profit, msg = execute_demo_arbitrage(
-                            opp, user_id, st.session_state.demo_data,
-                            public_clients, st.session_state.reinvest_percent,
-                            st.session_state.use_orderbook, st.session_state.orderbook_depth,
+            indicator_placeholder.empty()
+        
+        if st.session_state.trade_mode == "Реальный":
+            if st.session_state.real_exchanges and any(st.session_state.real_exchanges.values()):
+                if AUTOREFRESH_AVAILABLE:
+                    interval = st.session_state.get('scan_interval', 30)
+                    st_autorefresh(interval=interval * 1000, key="auto_refresh")
+                now = datetime.now()
+                last = st.session_state.get('last_scan_time')
+                if last is None or (now - last).total_seconds() >= st.session_state.get('scan_interval', 30):
+                    st.session_state.last_scan_time = now
+                    with st.spinner("🔍 Сканирование..."):
+                        opp = find_real_opportunity(
+                            st.session_state.fee, st.session_state.min_profit,
+                            st.session_state.min_trade, st.session_state.max_trade,
+                            st.session_state.orderbook_depth, st.session_state.use_orderbook,
+                            st.session_state.real_exchanges,
                             st.session_state.max_slippage
                         )
-                        if profit:
-                            st.session_state.auto_log.append(f"✅ Исполнено! +{profit:.2f} USDT")
-                        else:
-                            st.session_state.auto_log.append(f"❌ Ошибка: {msg}")
-                else:
-                    st.session_state.auto_log.append("⏳ Сканирование завершено, возможностей не найдено")
+                    if opp:
+                        st.session_state.auto_log.append(f"🔍 Найдено (реал): {opp['token']} {opp['buy_ex']}→{opp['sell_ex']} | прибыль {opp['profit']:.4f} USDT")
+                        user_id = st.session_state.user_id if st.session_state.logged_in else (admin_user['id'] if admin_user else None)
+                        if user_id:
+                            profit, msg = execute_real_arbitrage(
+                                opp, user_id, st.session_state.real_exchanges,
+                                st.session_state.reinvest_percent,
+                                st.session_state.use_orderbook, st.session_state.orderbook_depth,
+                                st.session_state.max_slippage
+                            )
+                            if profit:
+                                st.session_state.auto_log.append(f"✅ Исполнено! +{profit:.2f} USDT")
+                            else:
+                                st.session_state.auto_log.append(f"❌ Ошибка: {msg}")
+                    else:
+                        st.session_state.auto_log.append("⏳ Сканирование завершено, возможностей не найдено")
+                    indicator_placeholder.empty()
+            else:
+                st.warning("🔐 Реальный режим требует корректных API-ключей. Проверьте их в админ-панели.")
+        else:
+            if st.session_state.demo_data is not None:
+                if AUTOREFRESH_AVAILABLE:
+                    interval = st.session_state.get('scan_interval', 30)
+                    st_autorefresh(interval=interval * 1000, key="auto_refresh")
+                now = datetime.now()
+                last = st.session_state.get('last_scan_time')
+                if last is None or (now - last).total_seconds() >= st.session_state.get('scan_interval', 30):
+                    st.session_state.last_scan_time = now
+                    with st.spinner("🔍 Сканирование..."):
+                        opp = find_demo_opportunity(
+                            st.session_state.fee, st.session_state.min_profit,
+                            st.session_state.min_trade, st.session_state.max_trade,
+                            st.session_state.orderbook_depth, st.session_state.use_orderbook,
+                            st.session_state.demo_data, public_clients,
+                            st.session_state.max_slippage
+                        )
+                    if opp:
+                        st.session_state.auto_log.append(f"🔍 Найдено (демо): {opp['token']} {opp['buy_ex']}→{opp['sell_ex']} | прибыль {opp['profit']:.4f} USDT")
+                        user_id = st.session_state.user_id if st.session_state.logged_in else (admin_user['id'] if admin_user else None)
+                        if user_id:
+                            profit, msg = execute_demo_arbitrage(
+                                opp, user_id, st.session_state.demo_data,
+                                public_clients, st.session_state.reinvest_percent,
+                                st.session_state.use_orderbook, st.session_state.orderbook_depth,
+                                st.session_state.max_slippage
+                            )
+                            if profit:
+                                st.session_state.auto_log.append(f"✅ Исполнено! +{profit:.2f} USDT")
+                            else:
+                                st.session_state.auto_log.append(f"❌ Ошибка: {msg}")
+                    else:
+                        st.session_state.auto_log.append("⏳ Сканирование завершено, возможностей не найдено")
+                    indicator_placeholder.empty()
 
 # ------------------- ЛОГИН / РЕГИСТРАЦИЯ -------------------
 if not st.session_state.logged_in:
@@ -947,12 +972,12 @@ if not st.session_state.logged_in:
                     save_demo_data(st.session_state.user_id, st.session_state.demo_data)
                 settings = load_user_settings(st.session_state.user_id)
                 st.session_state.fee = settings.get('fee', 0.2)
-                st.session_state.min_profit = settings.get('min_profit', 0.04)
-                st.session_state.min_trade = settings.get('min_trade', 5.0)
-                st.session_state.max_trade = settings.get('max_trade', 15.0)
+                st.session_state.min_profit = settings.get('min_profit', 0.03)
+                st.session_state.min_trade = settings.get('min_trade', 8.0)
+                st.session_state.max_trade = settings.get('max_trade', 20.0)
                 st.session_state.scan_interval = settings.get('scan_interval', 30)
                 st.session_state.reinvest_percent = settings.get('reinvest_percent', 0)
-                st.session_state.use_orderbook = settings.get('use_orderbook', True)
+                st.session_state.use_orderbook = settings.get('use_orderbook', False)
                 st.session_state.max_slippage = settings.get('max_slippage', 0.3)
                 st.session_state.orderbook_depth = settings.get('orderbook_depth', 20)
                 st.session_state.auto_trade_enabled = settings.get('auto_trade_enabled', False)
