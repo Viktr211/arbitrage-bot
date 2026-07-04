@@ -11,7 +11,7 @@ import hashlib
 import base64
 import os
 from cryptography.fernet import Fernet
-import ccxt.async_support as ccxt  # Асинхронная версия ccxt
+import ccxt.async_support as ccxt
 
 # Пытаемся импортировать автообновление
 try:
@@ -310,7 +310,6 @@ def init_async_clients():
     clients = {}
     for ex in EXCHANGES:
         try:
-            # Используем ccxt.async_support
             cls = getattr(ccxt, ex)
             clients[ex] = cls({
                 'enableRateLimit': True,
@@ -332,7 +331,6 @@ def init_real_exchanges():
         passphrase = decrypt_key(key_data.get('passphrase', ''))
         if api_key and secret:
             try:
-                # Для реальных сделок используем синхронный ccxt (обычный)
                 import ccxt as ccxt_sync
                 cls = getattr(ccxt_sync, ex)
                 exchanges[ex] = cls({
@@ -408,40 +406,60 @@ async def get_order_book_price_async(exchange, symbol, side, amount_usdt, depth=
         return None, 0, f"Ошибка получения стакана: {str(e)}"
 
 async def find_real_opportunity_async(fee, min_profit, min_trade, max_trade, depth, use_orderbook, real_exchanges, max_slippage=0.3):
-    """Асинхронный поиск арбитражной возможности"""
+    """Полностью асинхронный поиск арбитражной возможности (цены + балансы)"""
     if not real_exchanges or not any(real_exchanges.values()):
         return None
     
     tokens = get_available_tokens()
     async_clients = init_async_clients()
     
-    # Получаем цены и стаканы асинхронно
     try:
-        # Собираем все задачи
-        tasks = []
+        # Собираем задачи для цен и балансов
+        price_tasks = []
+        balance_tasks = []
         for ex in EXCHANGES:
             if async_clients.get(ex):
                 for t in tokens:
-                    tasks.append(get_price_async(async_clients[ex], t))
+                    price_tasks.append(get_price_async(async_clients[ex], t))
+                balance_tasks.append(async_clients[ex].fetch_balance())
+            else:
+                # Фиктивные задачи для отсутствующих бирж
+                for t in tokens:
+                    price_tasks.append(asyncio.sleep(0, result=None))
+                balance_tasks.append(asyncio.sleep(0, result=None))
         
-        # Ждём все цены
-        prices_results = await asyncio.gather(*tasks, return_exceptions=True)
+        # Запускаем все задачи параллельно
+        price_results = await asyncio.gather(*price_tasks, return_exceptions=True)
+        balance_results = await asyncio.gather(*balance_tasks, return_exceptions=True)
         
-        # Формируем словарь цен
+        # Формируем словари цен
         prices = {}
         idx = 0
         for ex in EXCHANGES:
             prices[ex] = {}
             if async_clients.get(ex):
                 for t in tokens:
-                    price = prices_results[idx]
+                    price = price_results[idx]
                     prices[ex][t] = price if not isinstance(price, Exception) else None
                     idx += 1
             else:
                 for t in tokens:
                     prices[ex][t] = None
         
-        # Получаем балансы (синхронно, так как в ccxt нет асинхронного баланса)
+        # Формируем словари балансов
+        balances = {}
+        for i, ex in enumerate(EXCHANGES):
+            if async_clients.get(ex) and not isinstance(balance_results[i], Exception):
+                bal = balance_results[i]
+                usdt = bal.get('USDT', {}).get('free', 0.0)
+                port = {t: bal.get(t, {}).get('free', 0.0) for t in tokens}
+                balances[ex] = {'USDT': usdt, 'portfolio': port}
+            else:
+                balances[ex] = {'USDT': 0, 'portfolio': {t: 0 for t in tokens}}
+    
+    except Exception as e:
+        print(f"❌ Ошибка асинхронного получения данных: {e}")
+        # Запасной вариант: синхронно получить балансы (но это редкий случай)
         balances = {}
         for ex in EXCHANGES:
             if real_exchanges.get(ex):
@@ -454,9 +472,20 @@ async def find_real_opportunity_async(fee, min_profit, min_trade, max_trade, dep
                     balances[ex] = {'USDT': 0, 'portfolio': {t: 0 for t in tokens}}
             else:
                 balances[ex] = {'USDT': 0, 'portfolio': {t: 0 for t in tokens}}
-    except Exception as e:
-        print(f"Ошибка получения данных: {e}")
-        return None
+        # Цены тоже пробуем получить синхронно
+        prices = {}
+        for ex in EXCHANGES:
+            prices[ex] = {}
+            if real_exchanges.get(ex):
+                for t in tokens:
+                    try:
+                        ticker = real_exchanges[ex].fetch_ticker(f"{t}/USDT")
+                        prices[ex][t] = ticker['last']
+                    except:
+                        prices[ex][t] = None
+            else:
+                for t in tokens:
+                    prices[ex][t] = None
     
     now = datetime.now()
     last_trade_info = st.session_state.get('last_trade_info', {})
@@ -912,7 +941,6 @@ if 'email' in st.query_params:
 if st.session_state.logged_in and st.session_state.email:
     st.query_params.email = st.session_state.email
 
-# Старые синхронные клиенты (для демо и ручных операций)
 import ccxt as ccxt_sync
 public_clients = {}
 for ex in EXCHANGES:
