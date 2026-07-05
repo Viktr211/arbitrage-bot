@@ -188,27 +188,32 @@ mode = get_trade_mode(st.session_state.user_id)
 total_usdt = 0.0
 total_portfolio = 0.0
 
-# Получаем последние балансы из БД
-bal_data = get_latest_balances(st.session_state.user_id)
-
-if bal_data:
-    df = pd.DataFrame(bal_data)
-    df['created_at'] = pd.to_datetime(df['created_at'])
-    # Берём последнюю запись для каждой биржи и актива
-    df_last = df.sort_values('created_at').groupby(['exchange', 'asset']).last().reset_index()
+try:
+    # Получаем ВСЕ балансы пользователя
+    res = supabase.table('balances').select('*').eq('user_id', st.session_state.user_id).order('created_at', desc=True).limit(500).execute()
+    bal_data = res.data
     
-    # Собираем USDT
-    usdt_rows = df_last[df_last['asset'] == 'USDT']
-    total_usdt = usdt_rows['total'].sum() if not usdt_rows.empty else 0.0
-    
-    # Собираем токены (исключаем USDT и записи с _price)
-    token_rows = df_last[~df_last['asset'].isin(['USDT']) & ~df_last['asset'].str.endswith('_price')]
-    total_portfolio = token_rows['usdt_value'].sum() if not token_rows.empty else 0.0
-    
-    total_capital = total_usdt + total_portfolio
-    st.info(f"💰 **Реальные балансы** | USDT: {total_usdt:.2f} | Портфель: {total_portfolio:.2f} | Капитал: {total_capital:.2f}")
-else:
-    st.info("⏳ Балансы загружаются...")
+    if bal_data:
+        df = pd.DataFrame(bal_data)
+        # Для каждого актива и биржи берём самую свежую запись
+        df['created_at'] = pd.to_datetime(df['created_at'])
+        df_last = df.sort_values('created_at').groupby(['exchange', 'asset']).last().reset_index()
+        
+        # Собираем USDT
+        usdt_rows = df_last[df_last['asset'] == 'USDT']
+        total_usdt = usdt_rows['total'].sum() if not usdt_rows.empty else 0.0
+        
+        # Собираем токены (исключаем USDT и записи с _price)
+        token_rows = df_last[~df_last['asset'].isin(['USDT']) & ~df_last['asset'].str.endswith('_price')]
+        total_portfolio = token_rows['usdt_value'].sum() if not token_rows.empty else 0.0
+        
+        total_capital = total_usdt + total_portfolio
+        st.info(f"💰 **Реальные балансы** | USDT: {total_usdt:.2f} | Портфель: {total_portfolio:.2f} | Капитал: {total_capital:.2f}")
+    else:
+        st.info("⏳ Балансы загружаются...")
+        total_capital = 0.0
+except Exception as e:
+    st.error(f"Ошибка загрузки балансов: {e}")
     total_capital = 0.0
 
 col_a, col_b, col_c, col_d, col_e = st.columns(5)
@@ -282,10 +287,8 @@ with tabs[0]:
         df_prices = pd.DataFrame(bal_data)
         df_prices['created_at'] = pd.to_datetime(df_prices['created_at'])
         df_prices_last = df_prices.sort_values('created_at').groupby(['exchange', 'asset']).last().reset_index()
-        # Фильтруем только записи с _price
         price_rows = df_prices_last[df_prices_last['asset'].str.endswith('_price')]
         if not price_rows.empty:
-            # Переименовываем для отображения
             price_rows['Токен'] = price_rows['asset'].str.replace('_price', '')
             price_rows['Цена (USDT)'] = price_rows['total'].apply(lambda x: f"{x:.8f}")
             st.dataframe(price_rows[['Токен', 'exchange', 'Цена (USDT)']].rename(columns={'exchange': 'Биржа'}), width='stretch', hide_index=True)
