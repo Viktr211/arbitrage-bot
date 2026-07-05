@@ -1,28 +1,42 @@
+import sys
+import os
 import time
 import asyncio
-import os
 from datetime import datetime
-import sys
+
+# Принудительно сбрасываем буферы вывода
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
+
+# Добавляем путь к проекту
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.getcwd())
 
-from utils import (
-    supabase,
-    get_user_by_email,
-    get_user_settings,
-    set_auto_trade_enabled,
-    init_real_exchanges,
-    find_arbitrage_opportunity,
-    execute_arbitrage,   # <--- исправлено
-    save_balances,
-    save_log,
-    get_logs,
-    get_trade_mode,
-    get_demo_data,
-    reset_demo_data,
-    EXCHANGES,
-    TOKENS
-)
+# Пишем в stderr сразу при старте, чтобы точно увидеть
+print("🚀 Worker: старт скрипта", file=sys.stderr, flush=True)
+
+try:
+    from utils import (
+        supabase,
+        get_user_by_email,
+        get_user_settings,
+        set_auto_trade_enabled,
+        init_real_exchanges,
+        find_arbitrage_opportunity,
+        execute_arbitrage,
+        save_balances,
+        save_log,
+        get_logs,
+        get_trade_mode,
+        get_demo_data,
+        reset_demo_data,
+        EXCHANGES,
+        TOKENS
+    )
+    print("✅ Worker: импорт utils успешен", file=sys.stderr, flush=True)
+except Exception as e:
+    print(f"❌ Worker: ошибка импорта utils: {e}", file=sys.stderr, flush=True)
+    sys.exit(1)
 
 ADMIN_EMAIL = "cb777899@gmail.com"
 SCAN_INTERVAL = 30
@@ -30,10 +44,16 @@ BALANCE_SAVE_INTERVAL = 300
 
 def log(msg, log_type='info'):
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print(f"[{timestamp}] {msg}")
+    full_msg = f"[{timestamp}] {msg}"
+    # Пишем и в stdout, и в stderr для надёжности
+    print(full_msg, flush=True)
+    print(full_msg, file=sys.stderr, flush=True)
     admin_user = get_user_by_email(ADMIN_EMAIL)
     if admin_user:
-        save_log(admin_user['id'], msg, log_type)
+        try:
+            save_log(admin_user['id'], msg, log_type)
+        except Exception as e:
+            print(f"❌ Ошибка сохранения лога: {e}", file=sys.stderr, flush=True)
 
 def get_worker_settings():
     admin_user = get_user_by_email(ADMIN_EMAIL)
@@ -69,6 +89,9 @@ async def main_loop():
                 continue
             
             if not settings.get('auto_trade_enabled', False):
+                # Логируем раз в 5 сканов, чтобы не засорять
+                if balance_counter % (SCAN_INTERVAL * 5) == 0:
+                    log("⏸ Авто-торговля остановлена в настройках")
                 await asyncio.sleep(SCAN_INTERVAL)
                 continue
             
@@ -148,4 +171,8 @@ async def main_loop():
             await asyncio.sleep(SCAN_INTERVAL)
 
 if __name__ == "__main__":
-    asyncio.run(main_loop())
+    try:
+        asyncio.run(main_loop())
+    except Exception as e:
+        print(f"❌ Критическая ошибка: {e}", file=sys.stderr, flush=True)
+        sys.exit(1)
