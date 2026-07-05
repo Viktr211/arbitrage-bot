@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime
+from datetime import datetime, timedelta
 import sys
 import os
 import hashlib
@@ -35,6 +35,14 @@ from utils import (
     TOKENS,
     save_log
 )
+
+# Пытаемся импортировать автообновление
+try:
+    from streamlit_autorefresh import st_autorefresh
+    AUTOREFRESH_AVAILABLE = True
+except ImportError:
+    AUTOREFRESH_AVAILABLE = False
+    st_autorefresh = None
 
 st.set_page_config(page_title="Арбитражный бот HOVMEL", layout="wide", page_icon="🔄", initial_sidebar_state="collapsed")
 
@@ -127,6 +135,11 @@ if not st.session_state.logged_in:
     login()
     st.stop()
 
+# ------------------- АВТООБНОВЛЕНИЕ (для индикатора) -------------------
+if AUTOREFRESH_AVAILABLE:
+    # Обновляем страницу каждые 10 секунд, чтобы обновлять индикатор
+    st_autorefresh(interval=10000, key="auto_refresh")
+
 # ------------------- ОСНОВНОЙ ИНТЕРФЕЙС -------------------
 st.markdown('<div class="main-header"><h1>Арбитражный бот <span class="hovmel-highlight">HOVMEL</span></h1></div><div class="subtitle">⚡ Автоматический поиск межбиржевого арбитража 24/7 ⚡</div>', unsafe_allow_html=True)
 
@@ -150,6 +163,21 @@ with col4:
         st.session_state.logged_in = False
         st.query_params.clear()
         st.rerun()
+
+# ------------------- ИНДИКАТОР СКАНИРОВАНИЯ -------------------
+# Проверяем, есть ли свежий лог от worker'а (за последние 60 секунд)
+logs = get_logs(st.session_state.user_id, limit=1)
+is_scanning = False
+if logs:
+    last_log_time = datetime.fromisoformat(logs[0]['created_at'].replace('Z', '+00:00'))
+    if (datetime.now(last_log_time.tzinfo) - last_log_time).seconds < 60:
+        is_scanning = True
+
+scan_indicator = st.empty()
+if is_scanning:
+    scan_indicator.markdown('<span class="scan-indicator">🔄 Сканирование...</span>', unsafe_allow_html=True)
+else:
+    scan_indicator.empty()
 
 # ------------------- УПРАВЛЕНИЕ (только для админа) -------------------
 if st.session_state.role == 'admin':
@@ -184,13 +212,6 @@ for ex in EXCHANGES:
         public_clients[ex] = None
 connected = [ex.upper() for ex, cl in public_clients.items() if cl is not None]
 st.success(f"🔌 Биржи для мониторинга: {', '.join(connected)}")
-
-# ------------------- ИНДИКАТОР СКАНИРОВАНИЯ -------------------
-scan_indicator = st.empty()
-if st.session_state.get('scanning', False):
-    scan_indicator.markdown('<span class="scan-indicator">🔄 Сканирование...</span>', unsafe_allow_html=True)
-else:
-    scan_indicator.empty()
 
 # ------------------- РАСЧЁТ КАПИТАЛА -------------------
 mode = get_trade_mode(st.session_state.user_id)
