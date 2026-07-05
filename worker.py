@@ -3,67 +3,90 @@ import asyncio
 import os
 from datetime import datetime
 import sys
-
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.getcwd())
+
 from utils import (
+    supabase,
     get_user_by_email,
     get_user_settings,
     set_auto_trade_enabled,
     init_real_exchanges,
     find_arbitrage_opportunity,
-    execute_real_arbitrage,
+    execute_arbitrage,
     save_balances,
     save_log,
-    get_config,
-    set_config
+    get_logs,
+    get_trade_mode,
+    get_demo_data,
+    reset_demo_data,
+    EXCHANGES,
+    TOKENS
 )
 
 ADMIN_EMAIL = "cb777899@gmail.com"
 SCAN_INTERVAL = 30
-BALANCE_SAVE_INTERVAL = 300  # 5 минут
+BALANCE_SAVE_INTERVAL = 300
 
-def log(msg):
+def log(msg, log_type='info'):
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     print(f"[{timestamp}] {msg}")
-    # Сохраняем в БД
     admin_user = get_user_by_email(ADMIN_EMAIL)
     if admin_user:
-        save_log(admin_user['id'], msg)
+        save_log(admin_user['id'], msg, log_type)
 
 def get_worker_settings():
     admin_user = get_user_by_email(ADMIN_EMAIL)
     if not admin_user:
-        log("❌ Администратор не найден")
-        return None
+        log("❌ Администратор не найден", 'error')
+        return None, None
     settings = get_user_settings(admin_user['id'])
     if not settings:
-        log("❌ Настройки пользователя не найдены")
-        return None
-    return settings
+        log("❌ Настройки пользователя не найдены", 'error')
+        return None, None
+    return settings, admin_user
 
 async def main_loop():
     log("🚀 Worker запущен")
     
     real_exchanges = init_real_exchanges()
     if not any(real_exchanges.values()):
-        log("❌ Не удалось подключиться ни к одной бирже. Проверьте API-ключи.")
+        log("❌ Не удалось подключиться ни к одной бирже. Проверьте API-ключи.", 'error')
         return
     
     log(f"✅ Подключены биржи: {', '.join([ex for ex, c in real_exchanges.items() if c])}")
     
     last_trade_info = {}
     balance_counter = 0
+    demo_data = None
+    first_run = True
     
     while True:
         try:
-            settings = get_worker_settings()
-            if not settings:
+            settings, admin_user = get_worker_settings()
+            if not settings or not admin_user:
                 await asyncio.sleep(SCAN_INTERVAL)
                 continue
             
             if not settings.get('auto_trade_enabled', False):
                 await asyncio.sleep(SCAN_INTERVAL)
                 continue
+            
+            # Режим торговли
+            trade_mode = get_trade_mode(admin_user['id'])
+            is_demo = (trade_mode == 'демо')
+            
+            if is_demo:
+                if first_run:
+                    demo_data = get_demo_data(admin_user['id'])
+                    if not demo_data:
+                        log("🔄 Создание демо-данных...")
+                        demo_data = reset_demo_data(admin_user['id'])
+                    first_run = False
+                if not demo_data:
+                    log("❌ Демо-данные не загружены", 'error')
+                    await asyncio.sleep(SCAN_INTERVAL)
+                    continue
             
             fee = settings.get('fee', 0.2)
             min_profit = settings.get('min_profit', 0.03)
@@ -94,38 +117,35 @@ async def main_loop():
                 
                 log(f"🔍 Найдена возможность: {token} {opp['buy_ex']}→{opp['sell_ex']} | прибыль {opp['profit']:.4f} USDT")
                 
-                admin_user = get_user_by_email(ADMIN_EMAIL)
-                if admin_user:
-                    profit, msg = execute_real_arbitrage(
-                        opp, admin_user['id'], real_exchanges,
-                        reinvest_percent, use_orderbook, orderbook_depth, max_slippage
-                    )
-                    if profit:
-                        log(f"✅ Исполнено! +{profit:.2f} USDT")
-                        last_trade_info[token] = {
-                            'direction': (opp['buy_ex'], opp['sell_ex']),
-                            'timestamp': datetime.now()
-                        }
-                    else:
-                        log(f"❌ Ошибка: {msg}")
+                profit, msg = execute_arbitrage(
+                    opp, admin_user['id'], real_exchanges,
+                    reinvest_percent, use_orderbook, orderbook_depth, max_slippage,
+                    is_demo, demo_data
+                )
+                if profit:
+                    log(f"✅ Исполнено! +{profit:.2f} USDT")
+                    last_trade_info[token] = {
+                        'direction': (opp['buy_ex'], opp['sell_ex']),
+                        'timestamp': datetime.now()
+                    }
+                    if not is_demo:
+                        save_balances(admin_user['id'], real_exchanges)
                 else:
-                    log("❌ Администратор не найден")
+                    log(f"❌ Ошибка: {msg}", 'error')
             else:
                 log("⏳ Сканирование завершено, возможностей не найдено")
             
-            # Сохраняем балансы раз в 5 минут
             balance_counter += SCAN_INTERVAL
             if balance_counter >= BALANCE_SAVE_INTERVAL:
                 balance_counter = 0
-                admin_user = get_user_by_email(ADMIN_EMAIL)
-                if admin_user:
+                if not is_demo:
                     save_balances(admin_user['id'], real_exchanges)
                     log("💾 Балансы сохранены в БД")
             
             await asyncio.sleep(SCAN_INTERVAL)
             
         except Exception as e:
-            log(f"❌ Ошибка в цикле: {e}")
+            log(f"❌ Ошибка в цикле: {e}", 'error')
             await asyncio.sleep(SCAN_INTERVAL)
 
 if __name__ == "__main__":
