@@ -4,7 +4,7 @@ import plotly.express as px
 from datetime import datetime
 import sys
 import os
-import hashlib  # <-- ДОБАВЬ ЭТУ СТРОКУ
+import hashlib  # <-- ЭТА СТРОКА ДОЛЖНА БЫТЬ!
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from utils import (
     supabase,
