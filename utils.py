@@ -1,10 +1,10 @@
-
 import json
 import os
 import ccxt
+import hashlib
 from supabase import create_client, Client
 from cryptography.fernet import Fernet
-import hashlib
+from datetime import datetime
 
 # ------------------- SUPABASE -------------------
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
@@ -89,6 +89,13 @@ def add_trade(user_id, mode, asset, amount, profit, buy_ex, sell_ex):
         print(f"❌ Ошибка сохранения сделки: {e}")
         return False
 
+def get_user_trades(user_id, limit=100):
+    try:
+        res = supabase.table('trades').select('*').eq('user_id', user_id).order('trade_time', desc=True).limit(limit).execute()
+        return res.data
+    except:
+        return []
+
 def get_auto_trade_enabled(user_id):
     settings = get_user_settings(user_id)
     if settings:
@@ -100,6 +107,75 @@ def set_auto_trade_enabled(user_id, enabled):
     if settings:
         settings['auto_trade_enabled'] = enabled
         update_user_settings(user_id, settings)
+
+# ------------------- СОХРАНЕНИЕ БАЛАНСОВ И ЛОГОВ -------------------
+def save_balances(user_id, exchanges):
+    """Сохраняет балансы всех бирж в БД"""
+    try:
+        tokens = get_available_tokens()
+        for ex_name, ex_obj in exchanges.items():
+            if ex_obj:
+                try:
+                    bal = ex_obj.fetch_balance()
+                    # USDT
+                    usdt_total = bal.get('USDT', {}).get('total', 0.0)
+                    supabase.table('balances').insert({
+                        'user_id': user_id,
+                        'exchange': ex_name,
+                        'asset': 'USDT',
+                        'free': bal.get('USDT', {}).get('free', 0.0),
+                        'used': bal.get('USDT', {}).get('used', 0.0),
+                        'total': usdt_total,
+                        'usdt_value': usdt_total
+                    }).execute()
+                    # Токены
+                    for token in tokens:
+                        free = bal.get(token, {}).get('free', 0.0)
+                        if free > 0:
+                            price = get_price(ex_obj, token)
+                            usdt_value = free * price if price else 0
+                            supabase.table('balances').insert({
+                                'user_id': user_id,
+                                'exchange': ex_name,
+                                'asset': token,
+                                'free': free,
+                                'used': 0,
+                                'total': free,
+                                'usdt_value': usdt_value
+                            }).execute()
+                except Exception as e:
+                    print(f"Ошибка сохранения баланса {ex_name}: {e}")
+    except Exception as e:
+        print(f"Ошибка сохранения балансов: {e}")
+
+def save_log(user_id, message, log_type='info'):
+    """Сохраняет лог в БД"""
+    try:
+        supabase.table('bot_logs').insert({
+            'user_id': user_id,
+            'message': message,
+            'log_type': log_type
+        }).execute()
+    except Exception as e:
+        print(f"Ошибка сохранения лога: {e}")
+
+def get_latest_balances(user_id):
+    """Получает последние сохранённые балансы для пользователя"""
+    try:
+        res = supabase.table('balances').select('*').eq('user_id', user_id).order('created_at', desc=True).limit(200).execute()
+        return res.data
+    except Exception as e:
+        print(f"Ошибка получения балансов: {e}")
+        return []
+
+def get_logs(user_id, limit=100):
+    """Получает последние логи"""
+    try:
+        res = supabase.table('bot_logs').select('*').eq('user_id', user_id).order('created_at', desc=True).limit(limit).execute()
+        return res.data
+    except Exception as e:
+        print(f"Ошибка получения логов: {e}")
+        return []
 
 # ------------------- БИРЖИ (синхронные для worker) -------------------
 def init_real_exchanges():
@@ -145,7 +221,6 @@ def get_price(exchange, symbol):
     except: return None
 
 def get_order_book_price(exchange, symbol, side, amount_usdt, depth=20):
-    # Синхронная версия (для worker)
     try:
         orderbook = exchange.fetch_order_book(f"{symbol}/USDT", limit=depth)
         if side == 'buy':
@@ -214,7 +289,6 @@ def get_market_price_with_liquidity(exchange, symbol, side, amount_usdt, depth=2
         except Exception as e:
             return None, 0, f"Ошибка получения цены: {str(e)}"
 
-# ------------------- ФУНКЦИИ АРБИТРАЖА -------------------
 def find_arbitrage_opportunity(fee, min_profit, min_trade, max_trade, depth, use_orderbook, real_exchanges, max_slippage=0.3):
     tokens = get_available_tokens()
     prices = {}
@@ -318,7 +392,7 @@ def execute_real_arbitrage(opp, user_id, real_exchanges, reinvest_percent, use_o
     
     if usdt_balance < trade_usdt:
         trade_usdt = min(trade_usdt, usdt_balance)
-        if trade_usdt < 5:  # min_trade (можно вынести в параметры)
+        if trade_usdt < 5:
             return None, f"Не хватает USDT на {buy_ex}: {usdt_balance:.2f}"
         amount = trade_usdt / opp['buy_price']
     
@@ -329,7 +403,7 @@ def execute_real_arbitrage(opp, user_id, real_exchanges, reinvest_percent, use_o
             return None, f"Не хватает {token} на {sell_ex}: нужно {amount:.8f}, доступно {token_balance:.8f}"
         amount = trade_usdt / opp['buy_price']
     
-    # Покупка (синхронная)
+    # Покупка
     ticker = exch_buy.fetch_ticker(f"{token}/USDT")
     price = ticker['last']
     amount_token = trade_usdt / price
@@ -361,6 +435,5 @@ def execute_real_arbitrage(opp, user_id, real_exchanges, reinvest_percent, use_o
     if real_profit < 0.005:
         return None, f"Убыток {real_profit:.4f} USDT"
     
-    # Сохраняем
     add_trade(user_id, "Реальный", token, filled_sell, real_profit, buy_ex, sell_ex)
     return real_profit, f"Сделка выполнена! Прибыль: {real_profit:.2f} USDT"
