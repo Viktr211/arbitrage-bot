@@ -65,7 +65,7 @@ def get_worker_settings():
     return settings, admin_user
 
 def save_prices(user_id, real_exchanges):
-    """Сохраняет текущие цены токенов в таблицу prices (или в balances, но лучше отдельно)"""
+    """Сохраняет текущие цены токенов в БД"""
     try:
         tokens = get_available_tokens()
         for ex in EXCHANGES:
@@ -76,8 +76,6 @@ def save_prices(user_id, real_exchanges):
                 try:
                     price = get_price(exch, token)
                     if price:
-                        # Сохраняем в отдельную таблицу (если её нет, используем balances или создадим)
-                        # Пока сохраняем в balances как специальную запись
                         supabase.table('balances').insert({
                             'user_id': user_id,
                             'exchange': ex,
@@ -101,6 +99,14 @@ async def main_loop():
         return
     
     log(f"✅ Подключены биржи: {', '.join([ex for ex, c in real_exchanges.items() if c])}")
+    
+    # ---------- СОХРАНЕНИЕ ПРИ СТАРТЕ ----------
+    admin_user = get_user_by_email(ADMIN_EMAIL)
+    if admin_user:
+        save_balances(admin_user['id'], real_exchanges)
+        save_prices(admin_user['id'], real_exchanges)
+        log("💾 Балансы и цены сохранены при старте")
+    # -------------------------------------------
     
     last_trade_info = {}
     balance_counter = 0
@@ -176,6 +182,7 @@ async def main_loop():
                     if not is_demo:
                         save_balances(admin_user['id'], real_exchanges)
                         save_prices(admin_user['id'], real_exchanges)
+                        log("💾 Балансы и цены сохранены после сделки")
                 else:
                     log(f"❌ Ошибка: {msg}", 'error')
             else:
@@ -187,7 +194,7 @@ async def main_loop():
                 if not is_demo:
                     save_balances(admin_user['id'], real_exchanges)
                     save_prices(admin_user['id'], real_exchanges)
-                    log("💾 Балансы и цены сохранены в БД")
+                    log("💾 Балансы и цены сохранены (плановое обновление)")
             
             await asyncio.sleep(SCAN_INTERVAL)
             
