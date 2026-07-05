@@ -6,13 +6,16 @@ from cryptography.fernet import Fernet
 import hashlib
 import time
 
+# ------------------- SUPABASE -------------------
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise Exception("❌ Ошибка: не заданы SUPABASE_URL и SUPABASE_KEY.")
+print(f"✅ SUPABASE_URL: {SUPABASE_URL}")  # отладка
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# ------------------- ШИФРОВАНИЕ -------------------
 ENCRYPTION_KEY = "LHiBLyxFE1Z4BZSGFRPfy0AZ_ADKi0WV1ZwjUo9jjzE="
 fernet = Fernet(ENCRYPTION_KEY.encode())
 
@@ -50,8 +53,13 @@ def get_available_tokens():
     return tokens_from_db if tokens_from_db else TOKENS
 
 def get_user_by_email(email):
+    print(f"🔍 Поиск пользователя: {email}")
     res = supabase.table('users').select('*').eq('email', email).execute()
-    return res.data[0] if res.data else None
+    if res.data:
+        print(f"✅ Пользователь найден: {email}")
+        return res.data[0]
+    print(f"❌ Пользователь {email} не найден")
+    return None
 
 def get_all_users():
     res = supabase.table('users').select('*').order('created_at', desc=True).execute()
@@ -162,7 +170,6 @@ def get_trade_mode(user_id):
 
 # ------------------- ДЕМО-ДАННЫЕ -------------------
 def get_demo_data(user_id):
-    """Загружает демо-данные пользователя"""
     user = supabase.table('users').select('demo_balances, demo_history, total_profit, trade_count, withdrawable_balance').eq('id', user_id).execute()
     if user.data:
         u = user.data[0]
@@ -263,26 +270,30 @@ def save_balances(user_id, exchanges):
 
 def save_log(user_id, message, log_type='info'):
     try:
+        print(f"💾 Сохранение лога: {message}")  # отладка
         supabase.table('bot_logs').insert({
             'user_id': user_id,
             'message': message,
             'log_type': log_type
         }).execute()
+        print(f"✅ Лог сохранён")
     except Exception as e:
-        print(f"Ошибка сохранения лога: {e}")
+        print(f"❌ Ошибка сохранения лога: {e}")
 
 def get_logs(user_id, limit=100):
     try:
         res = supabase.table('bot_logs').select('*').eq('user_id', user_id).order('created_at', desc=True).limit(limit).execute()
         return res.data
-    except:
+    except Exception as e:
+        print(f"❌ Ошибка получения логов: {e}")
         return []
 
 def get_latest_balances(user_id):
     try:
         res = supabase.table('balances').select('*').eq('user_id', user_id).order('created_at', desc=True).limit(200).execute()
         return res.data
-    except:
+    except Exception as e:
+        print(f"❌ Ошибка получения балансов: {e}")
         return []
 
 # ------------------- БИРЖИ -------------------
@@ -521,7 +532,6 @@ def execute_arbitrage(opp, user_id, real_exchanges, reinvest_percent, use_orderb
         return profit, f"Демо-сделка: +{profit:.2f} USDT"
     
     else:
-        # Реальный режим (как было)
         if not real_exchanges or not any(real_exchanges.values()):
             return None, "Реальные биржи не подключены"
         exch_buy = real_exchanges.get(buy_ex)
