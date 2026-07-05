@@ -13,7 +13,7 @@ from utils import (
     set_auto_trade_enabled,
     init_real_exchanges,
     find_arbitrage_opportunity,
-    execute_arbitrage,
+    execute_arbitrage,   # <--- исправлено
     save_balances,
     save_log,
     get_logs,
@@ -72,7 +72,6 @@ async def main_loop():
                 await asyncio.sleep(SCAN_INTERVAL)
                 continue
             
-            # Режим торговли
             trade_mode = get_trade_mode(admin_user['id'])
             is_demo = (trade_mode == 'демо')
             
