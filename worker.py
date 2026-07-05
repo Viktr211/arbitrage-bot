@@ -4,15 +4,12 @@ import time
 import asyncio
 from datetime import datetime
 
-# Принудительно сбрасываем буферы вывода
 sys.stdout.reconfigure(line_buffering=True)
 sys.stderr.reconfigure(line_buffering=True)
 
-# Добавляем путь к проекту
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.getcwd())
 
-# Пишем в stderr сразу при старте, чтобы точно увидеть
 print("🚀 Worker: старт скрипта", file=sys.stderr, flush=True)
 
 try:
@@ -31,7 +28,9 @@ try:
         get_demo_data,
         reset_demo_data,
         EXCHANGES,
-        TOKENS
+        TOKENS,
+        get_price,
+        get_available_tokens
     )
     print("✅ Worker: импорт utils успешен", file=sys.stderr, flush=True)
 except Exception as e:
@@ -40,12 +39,11 @@ except Exception as e:
 
 ADMIN_EMAIL = "cb777899@gmail.com"
 SCAN_INTERVAL = 30
-BALANCE_SAVE_INTERVAL = 300
+BALANCE_SAVE_INTERVAL = 300  # 5 минут
 
 def log(msg, log_type='info'):
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     full_msg = f"[{timestamp}] {msg}"
-    # Пишем и в stdout, и в stderr для надёжности
     print(full_msg, flush=True)
     print(full_msg, file=sys.stderr, flush=True)
     admin_user = get_user_by_email(ADMIN_EMAIL)
@@ -65,6 +63,34 @@ def get_worker_settings():
         log("❌ Настройки пользователя не найдены", 'error')
         return None, None
     return settings, admin_user
+
+def save_prices(user_id, real_exchanges):
+    """Сохраняет текущие цены токенов в таблицу prices (или в balances, но лучше отдельно)"""
+    try:
+        tokens = get_available_tokens()
+        for ex in EXCHANGES:
+            exch = real_exchanges.get(ex)
+            if not exch:
+                continue
+            for token in tokens:
+                try:
+                    price = get_price(exch, token)
+                    if price:
+                        # Сохраняем в отдельную таблицу (если её нет, используем balances или создадим)
+                        # Пока сохраняем в balances как специальную запись
+                        supabase.table('balances').insert({
+                            'user_id': user_id,
+                            'exchange': ex,
+                            'asset': f'{token}_price',
+                            'free': price,
+                            'used': 0,
+                            'total': price,
+                            'usdt_value': price
+                        }).execute()
+                except Exception as e:
+                    print(f"Ошибка сохранения цены {token} на {ex}: {e}")
+    except Exception as e:
+        print(f"Ошибка сохранения цен: {e}")
 
 async def main_loop():
     log("🚀 Worker запущен")
@@ -89,9 +115,6 @@ async def main_loop():
                 continue
             
             if not settings.get('auto_trade_enabled', False):
-                # Логируем раз в 5 сканов, чтобы не засорять
-                if balance_counter % (SCAN_INTERVAL * 5) == 0:
-                    log("⏸ Авто-торговля остановлена в настройках")
                 await asyncio.sleep(SCAN_INTERVAL)
                 continue
             
@@ -152,6 +175,7 @@ async def main_loop():
                     }
                     if not is_demo:
                         save_balances(admin_user['id'], real_exchanges)
+                        save_prices(admin_user['id'], real_exchanges)
                 else:
                     log(f"❌ Ошибка: {msg}", 'error')
             else:
@@ -162,7 +186,8 @@ async def main_loop():
                 balance_counter = 0
                 if not is_demo:
                     save_balances(admin_user['id'], real_exchanges)
-                    log("💾 Балансы сохранены в БД")
+                    save_prices(admin_user['id'], real_exchanges)
+                    log("💾 Балансы и цены сохранены в БД")
             
             await asyncio.sleep(SCAN_INTERVAL)
             
