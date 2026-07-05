@@ -1,4 +1,4 @@
-# worker.py
+
 import time
 import asyncio
 import os
