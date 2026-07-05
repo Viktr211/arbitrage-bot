@@ -1,32 +1,36 @@
-
 import time
 import asyncio
 import os
 from datetime import datetime
 import sys
 
-# Добавляем путь к проекту, чтобы импортировать utils
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from utils import (
-    supabase,
     get_user_by_email,
     get_user_settings,
     set_auto_trade_enabled,
     init_real_exchanges,
     find_arbitrage_opportunity,
     execute_real_arbitrage,
+    save_balances,
+    save_log,
     get_config,
     set_config
 )
 
 ADMIN_EMAIL = "cb777899@gmail.com"
-SCAN_INTERVAL = 30  # секунд (можно брать из настроек)
+SCAN_INTERVAL = 30
+BALANCE_SAVE_INTERVAL = 300  # 5 минут
 
 def log(msg):
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}")
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    print(f"[{timestamp}] {msg}")
+    # Сохраняем в БД
+    admin_user = get_user_by_email(ADMIN_EMAIL)
+    if admin_user:
+        save_log(admin_user['id'], msg)
 
 def get_worker_settings():
-    # Получаем настройки из БД
     admin_user = get_user_by_email(ADMIN_EMAIL)
     if not admin_user:
         log("❌ Администратор не найден")
@@ -40,7 +44,6 @@ def get_worker_settings():
 async def main_loop():
     log("🚀 Worker запущен")
     
-    # Инициализация бирж
     real_exchanges = init_real_exchanges()
     if not any(real_exchanges.values()):
         log("❌ Не удалось подключиться ни к одной бирже. Проверьте API-ключи.")
@@ -48,24 +51,20 @@ async def main_loop():
     
     log(f"✅ Подключены биржи: {', '.join([ex for ex, c in real_exchanges.items() if c])}")
     
-    last_trade_info = {}  # для защиты от обратных сделок
+    last_trade_info = {}
+    balance_counter = 0
     
     while True:
         try:
-            # Получаем настройки
             settings = get_worker_settings()
             if not settings:
-                log("❌ Настройки не получены, жду...")
                 await asyncio.sleep(SCAN_INTERVAL)
                 continue
             
-            # Проверяем флаг авто-торговли
             if not settings.get('auto_trade_enabled', False):
-                # log("⏸ Авто-торговля остановлена в настройках")
                 await asyncio.sleep(SCAN_INTERVAL)
                 continue
             
-            # Параметры
             fee = settings.get('fee', 0.2)
             min_profit = settings.get('min_profit', 0.03)
             min_trade = settings.get('min_trade', 8.0)
@@ -75,7 +74,6 @@ async def main_loop():
             orderbook_depth = settings.get('orderbook_depth', 20)
             reinvest_percent = settings.get('reinvest_percent', 0)
             
-            # Поиск возможности
             opp = find_arbitrage_opportunity(
                 fee, min_profit, min_trade, max_trade,
                 orderbook_depth, use_orderbook,
@@ -84,7 +82,6 @@ async def main_loop():
             
             if opp:
                 token = opp['token']
-                # Защита от обратных сделок (1 минута)
                 now = datetime.now()
                 if token in last_trade_info:
                     last_dir = last_trade_info[token].get('direction')
@@ -97,7 +94,6 @@ async def main_loop():
                 
                 log(f"🔍 Найдена возможность: {token} {opp['buy_ex']}→{opp['sell_ex']} | прибыль {opp['profit']:.4f} USDT")
                 
-                # Исполняем сделку
                 admin_user = get_user_by_email(ADMIN_EMAIL)
                 if admin_user:
                     profit, msg = execute_real_arbitrage(
@@ -106,7 +102,6 @@ async def main_loop():
                     )
                     if profit:
                         log(f"✅ Исполнено! +{profit:.2f} USDT")
-                        # Обновляем информацию о последней сделке
                         last_trade_info[token] = {
                             'direction': (opp['buy_ex'], opp['sell_ex']),
                             'timestamp': datetime.now()
@@ -118,7 +113,15 @@ async def main_loop():
             else:
                 log("⏳ Сканирование завершено, возможностей не найдено")
             
-            # Пауза между сканированиями
+            # Сохраняем балансы раз в 5 минут
+            balance_counter += SCAN_INTERVAL
+            if balance_counter >= BALANCE_SAVE_INTERVAL:
+                balance_counter = 0
+                admin_user = get_user_by_email(ADMIN_EMAIL)
+                if admin_user:
+                    save_balances(admin_user['id'], real_exchanges)
+                    log("💾 Балансы сохранены в БД")
+            
             await asyncio.sleep(SCAN_INTERVAL)
             
         except Exception as e:
