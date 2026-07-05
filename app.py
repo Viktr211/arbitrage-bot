@@ -32,7 +32,8 @@ from utils import (
     get_all_api_keys,
     save_api_key,
     EXCHANGES,
-    TOKENS
+    TOKENS,
+    save_log
 )
 
 st.set_page_config(page_title="Арбитражный бот HOVMEL", layout="wide", page_icon="🔄", initial_sidebar_state="collapsed")
@@ -53,6 +54,17 @@ st.markdown("""
 .subtitle { text-align: center; color: #aaa; margin-top: -0.8rem; margin-bottom: 1.5rem; }
 .status-running { color: #00FF88; font-weight: bold; }
 .status-stopped { color: #FF4444; font-weight: bold; }
+.scan-indicator {
+    display: inline-block;
+    color: #FFD700;
+    font-weight: bold;
+    animation: blink 1s infinite;
+}
+@keyframes blink {
+    0% { opacity: 1; }
+    50% { opacity: 0.2; }
+    100% { opacity: 1; }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -65,6 +77,23 @@ if 'logged_in' not in st.session_state:
     st.session_state.wallet = ''
     st.session_state.role = 'viewer'
     st.session_state.real_exchanges = None
+    st.session_state.scanning = False
+
+# Восстановление сессии из URL
+if 'email' in st.query_params:
+    email = st.query_params['email']
+    user = get_user_by_email(email)
+    if user:
+        st.session_state.logged_in = True
+        st.session_state.user_id = user['id']
+        st.session_state.email = user['email']
+        st.session_state.username = user['full_name']
+        st.session_state.wallet = user.get('wallet_address', '')
+        st.session_state.role = user.get('role', 'viewer')
+        st.session_state.real_exchanges = init_real_exchanges() if st.session_state.role == 'admin' else None
+
+if st.session_state.logged_in and st.session_state.email:
+    st.query_params.email = st.session_state.email
 
 # ------------------- ЛОГИН / РЕГИСТРАЦИЯ -------------------
 def login():
@@ -85,6 +114,7 @@ def login():
                     st.session_state.wallet = user.get('wallet_address', '')
                     st.session_state.role = user.get('role', 'viewer')
                     st.session_state.real_exchanges = init_real_exchanges() if st.session_state.role == 'admin' else None
+                    st.query_params.email = user['email']
                     st.rerun()
                 else:
                     st.error("Неверные данные или аккаунт не одобрен")
@@ -118,6 +148,7 @@ with col3:
 with col4:
     if st.button("🚪 Выйти"):
         st.session_state.logged_in = False
+        st.query_params.clear()
         st.rerun()
 
 # ------------------- УПРАВЛЕНИЕ (только для админа) -------------------
@@ -126,15 +157,18 @@ if st.session_state.role == 'admin':
     with col_start:
         if st.button("▶ СТАРТ АВТО-ТОРГОВЛИ", width='stretch'):
             set_auto_trade_enabled(st.session_state.user_id, True)
+            save_log(st.session_state.user_id, "▶ Авто-торговля запущена")
             st.rerun()
     with col_stop:
         if st.button("⏹ СТОП АВТО-ТОРГОВЛИ", width='stretch'):
             set_auto_trade_enabled(st.session_state.user_id, False)
+            save_log(st.session_state.user_id, "⏹ Авто-торговля остановлена")
             st.rerun()
     with col_mode:
         new_mode = st.radio("Режим", ["демо", "реальный"], horizontal=True, index=0 if get_trade_mode(st.session_state.user_id) == 'демо' else 1)
         if new_mode != get_trade_mode(st.session_state.user_id):
             set_trade_mode(st.session_state.user_id, new_mode)
+            save_log(st.session_state.user_id, f"🔄 Переключение на режим: {new_mode}")
             st.rerun()
 else:
     st.info("🔒 Вы в режиме просмотра. Управление ботом недоступно.")
@@ -150,6 +184,13 @@ for ex in EXCHANGES:
         public_clients[ex] = None
 connected = [ex.upper() for ex, cl in public_clients.items() if cl is not None]
 st.success(f"🔌 Биржи для мониторинга: {', '.join(connected)}")
+
+# ------------------- ИНДИКАТОР СКАНИРОВАНИЯ -------------------
+scan_indicator = st.empty()
+if st.session_state.get('scanning', False):
+    scan_indicator.markdown('<span class="scan-indicator">🔄 Сканирование...</span>', unsafe_allow_html=True)
+else:
+    scan_indicator.empty()
 
 # ------------------- РАСЧЁТ КАПИТАЛА -------------------
 mode = get_trade_mode(st.session_state.user_id)
@@ -168,7 +209,6 @@ if mode == 'демо':
     total_capital = total_usdt + total_portfolio
     st.info(f"🎮 **Демо-балансы** | USDT: {total_usdt:.2f} | Портфель: {total_portfolio:.2f} | Капитал: {total_capital:.2f}")
 else:
-    # Реальные балансы из БД или напрямую
     if st.session_state.role == 'admin' and st.session_state.real_exchanges:
         for ex in EXCHANGES:
             exch = st.session_state.real_exchanges.get(ex)
@@ -360,7 +400,7 @@ with tabs[2]:
                     st.write(f"**Сумма сделки:** {opp['trade_usdt']:.2f} USDT")
                     st.write(f"**Прибыль:** {opp['profit']:.4f} USDT")
                     if st.button("✅ Выполнить сделку (реал/демо)", width='stretch'):
-                        from utils import execute_arbitrage, get_trade_mode, get_demo_data
+                        from utils import execute_arbitrage, get_trade_mode, get_demo_data, save_log
                         mode = get_trade_mode(st.session_state.user_id)
                         is_demo = (mode == 'демо')
                         demo_data = get_demo_data(st.session_state.user_id) if is_demo else None
@@ -373,6 +413,7 @@ with tabs[2]:
                             is_demo, demo_data
                         )
                         if profit:
+                            save_log(st.session_state.user_id, f"✅ Ручная сделка: {opp['token']} {opp['buy_ex']}→{opp['sell_ex']} | +{profit:.2f} USDT")
                             st.success(f"Сделка выполнена! Прибыль: {profit:.2f} USDT")
                             st.rerun()
                         else:
