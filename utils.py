@@ -1,12 +1,11 @@
 import json
 import os
 import ccxt
-import hashlib
 from supabase import create_client, Client
 from cryptography.fernet import Fernet
-from datetime import datetime
+import hashlib
+import time
 
-# ------------------- SUPABASE -------------------
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 if not SUPABASE_URL or not SUPABASE_KEY:
@@ -14,7 +13,6 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ------------------- ШИФРОВАНИЕ -------------------
 ENCRYPTION_KEY = "LHiBLyxFE1Z4BZSGFRPfy0AZ_ADKi0WV1ZwjUo9jjzE="
 fernet = Fernet(ENCRYPTION_KEY.encode())
 
@@ -55,6 +53,16 @@ def get_user_by_email(email):
     res = supabase.table('users').select('*').eq('email', email).execute()
     return res.data[0] if res.data else None
 
+def get_all_users():
+    res = supabase.table('users').select('*').order('created_at', desc=True).execute()
+    return res.data
+
+def update_user_status(uid, status):
+    supabase.table('users').update({'registration_status': status}).eq('id', uid).execute()
+
+def update_user_role(uid, role):
+    supabase.table('users').update({'role': role}).eq('id', uid).execute()
+
 def get_all_api_keys():
     res = supabase.table('api_keys').select('exchange, api_key, secret_key, passphrase').execute()
     result = {}
@@ -66,6 +74,19 @@ def get_all_api_keys():
         }
     return result
 
+def save_api_key(exchange, api_key, secret, passphrase, admin):
+    enc_key = encrypt_key(api_key) if api_key else ""
+    enc_secret = encrypt_key(secret) if secret else ""
+    enc_passphrase = encrypt_key(passphrase) if passphrase else ""
+    supabase.table('api_keys').upsert({
+        'exchange': exchange,
+        'api_key': enc_key,
+        'secret_key': enc_secret,
+        'passphrase': enc_passphrase,
+        'updated_at': datetime.now().isoformat(),
+        'updated_by': admin
+    }, on_conflict='exchange').execute()
+
 def get_user_settings(user_id):
     res = supabase.table('user_settings').select('*').eq('user_id', user_id).execute()
     return res.data[0] if res.data else None
@@ -75,7 +96,7 @@ def update_user_settings(user_id, settings):
 
 def add_trade(user_id, mode, asset, amount, profit, buy_ex, sell_ex):
     try:
-        result = supabase.table('trades').insert({
+        supabase.table('trades').insert({
             'user_id': user_id,
             'mode': mode,
             'asset': asset,
@@ -89,12 +110,37 @@ def add_trade(user_id, mode, asset, amount, profit, buy_ex, sell_ex):
         print(f"❌ Ошибка сохранения сделки: {e}")
         return False
 
-def get_user_trades(user_id, limit=100):
+def get_user_trades(user_id, mode=None, limit=100):
     try:
-        res = supabase.table('trades').select('*').eq('user_id', user_id).order('trade_time', desc=True).limit(limit).execute()
+        query = supabase.table('trades').select('*').eq('user_id', user_id)
+        if mode is not None:
+            query = query.eq('mode', mode)
+        res = query.order('trade_time', desc=True).limit(limit).execute()
         return res.data
     except:
         return []
+
+def set_auto_trade_enabled(user_id, enabled):
+    settings = get_user_settings(user_id)
+    if settings:
+        settings['auto_trade_enabled'] = enabled
+        update_user_settings(user_id, settings)
+    else:
+        default = {
+            'user_id': user_id,
+            'fee': 0.2,
+            'min_profit': 0.03,
+            'min_trade': 8.0,
+            'max_trade': 20.0,
+            'scan_interval': 30,
+            'reinvest_percent': 0,
+            'use_orderbook': True,
+            'max_slippage': 0.3,
+            'orderbook_depth': 20,
+            'auto_trade_enabled': enabled,
+            'trade_mode': 'реальный'
+        }
+        supabase.table('user_settings').upsert(default, on_conflict='user_id').execute()
 
 def get_auto_trade_enabled(user_id):
     settings = get_user_settings(user_id)
@@ -102,33 +148,100 @@ def get_auto_trade_enabled(user_id):
         return settings.get('auto_trade_enabled', False)
     return False
 
-def set_auto_trade_enabled(user_id, enabled):
+def set_trade_mode(user_id, mode):
     settings = get_user_settings(user_id)
     if settings:
-        settings['auto_trade_enabled'] = enabled
+        settings['trade_mode'] = mode
         update_user_settings(user_id, settings)
 
-# ------------------- СОХРАНЕНИЕ БАЛАНСОВ И ЛОГОВ -------------------
+def get_trade_mode(user_id):
+    settings = get_user_settings(user_id)
+    if settings:
+        return settings.get('trade_mode', 'реальный')
+    return 'реальный'
+
+# ------------------- ДЕМО-ДАННЫЕ -------------------
+def get_demo_data(user_id):
+    """Загружает демо-данные пользователя"""
+    user = supabase.table('users').select('demo_balances, demo_history, total_profit, trade_count, withdrawable_balance').eq('id', user_id).execute()
+    if user.data:
+        u = user.data[0]
+        try:
+            balances = json.loads(u['demo_balances']) if isinstance(u['demo_balances'], str) else u['demo_balances']
+        except:
+            balances = {'exchanges': {ex: {"USDT": 0, "portfolio": {t: 0 for t in TOKENS}} for ex in EXCHANGES}}
+        try:
+            history = json.loads(u['demo_history']) if isinstance(u['demo_history'], str) else u['demo_history']
+        except:
+            history = []
+        return {
+            'balances': balances.get('exchanges', {ex: {"USDT": 0, "portfolio": {t: 0 for t in TOKENS}} for ex in EXCHANGES}),
+            'total_profit': u.get('total_profit', 0),
+            'trade_count': u.get('trade_count', 0),
+            'withdrawable_balance': u.get('withdrawable_balance', 0),
+            'history': history
+        }
+    return None
+
+def save_demo_data(user_id, data):
+    to_save = {
+        'main_balance': 0,
+        'exchanges': data['balances'],
+        'total_profit': data['total_profit'],
+        'trade_count': data['trade_count'],
+        'withdrawable_balance': data['withdrawable_balance'],
+        'total_admin_fee_paid': 0
+    }
+    supabase.table('users').update({
+        'demo_balances': json.dumps(to_save),
+        'demo_history': json.dumps(data['history']),
+        'total_profit': data['total_profit'],
+        'trade_count': data['trade_count'],
+        'withdrawable_balance': data['withdrawable_balance']
+    }).eq('id', user_id).execute()
+
+def reset_demo_data(user_id):
+    init_bal = {ex: {"USDT": 0, "portfolio": {t: 0 for t in get_available_tokens()}} for ex in EXCHANGES}
+    data = {
+        'balances': init_bal,
+        'total_profit': 0,
+        'trade_count': 0,
+        'withdrawable_balance': 0,
+        'history': []
+    }
+    save_demo_data(user_id, data)
+    return data
+
+def update_demo_balance(user_id, exchange, asset, delta, data):
+    if exchange not in data['balances']:
+        data['balances'][exchange] = {'USDT': 0, 'portfolio': {t: 0 for t in get_available_tokens()}}
+    if asset == 'USDT':
+        data['balances'][exchange]['USDT'] += delta
+    else:
+        if asset not in data['balances'][exchange]['portfolio']:
+            data['balances'][exchange]['portfolio'][asset] = 0
+        data['balances'][exchange]['portfolio'][asset] += delta
+    save_demo_data(user_id, data)
+
+# ------------------- БАЛАНСЫ И ЛОГИ -------------------
 def save_balances(user_id, exchanges):
-    """Сохраняет балансы всех бирж в БД"""
     try:
-        tokens = get_available_tokens()
         for ex_name, ex_obj in exchanges.items():
             if ex_obj:
                 try:
                     bal = ex_obj.fetch_balance()
-                    # USDT
+                    usdt_free = bal.get('USDT', {}).get('free', 0.0)
                     usdt_total = bal.get('USDT', {}).get('total', 0.0)
                     supabase.table('balances').insert({
                         'user_id': user_id,
                         'exchange': ex_name,
                         'asset': 'USDT',
-                        'free': bal.get('USDT', {}).get('free', 0.0),
-                        'used': bal.get('USDT', {}).get('used', 0.0),
+                        'free': usdt_free,
+                        'used': 0,
                         'total': usdt_total,
                         'usdt_value': usdt_total
                     }).execute()
-                    # Токены
+                    tokens = get_available_tokens()
                     for token in tokens:
                         free = bal.get(token, {}).get('free', 0.0)
                         if free > 0:
@@ -149,7 +262,6 @@ def save_balances(user_id, exchanges):
         print(f"Ошибка сохранения балансов: {e}")
 
 def save_log(user_id, message, log_type='info'):
-    """Сохраняет лог в БД"""
     try:
         supabase.table('bot_logs').insert({
             'user_id': user_id,
@@ -159,25 +271,21 @@ def save_log(user_id, message, log_type='info'):
     except Exception as e:
         print(f"Ошибка сохранения лога: {e}")
 
-def get_latest_balances(user_id):
-    """Получает последние сохранённые балансы для пользователя"""
-    try:
-        res = supabase.table('balances').select('*').eq('user_id', user_id).order('created_at', desc=True).limit(200).execute()
-        return res.data
-    except Exception as e:
-        print(f"Ошибка получения балансов: {e}")
-        return []
-
 def get_logs(user_id, limit=100):
-    """Получает последние логи"""
     try:
         res = supabase.table('bot_logs').select('*').eq('user_id', user_id).order('created_at', desc=True).limit(limit).execute()
         return res.data
-    except Exception as e:
-        print(f"Ошибка получения логов: {e}")
+    except:
         return []
 
-# ------------------- БИРЖИ (синхронные для worker) -------------------
+def get_latest_balances(user_id):
+    try:
+        res = supabase.table('balances').select('*').eq('user_id', user_id).order('created_at', desc=True).limit(200).execute()
+        return res.data
+    except:
+        return []
+
+# ------------------- БИРЖИ -------------------
 def init_real_exchanges():
     exchanges = {}
     api_keys = get_all_api_keys()
@@ -243,7 +351,7 @@ def get_order_book_price(exchange, symbol, side, amount_usdt, depth=20):
                 return avg_price, total_usdt, f"Доступно только {total_usdt:.2f} USDT"
             avg_price = total_usdt / total_amount
             return avg_price, total_usdt, None
-        else:  # sell
+        else:
             bids = orderbook['bids']
             if not bids:
                 return None, 0, "Нет данных в стакане (bids)"
@@ -375,65 +483,88 @@ def find_arbitrage_opportunity(fee, min_profit, min_trade, max_trade, depth, use
         return None
     return max(opportunities, key=lambda x: x['profit'])
 
-def execute_real_arbitrage(opp, user_id, real_exchanges, reinvest_percent, use_orderbook=True, depth=20, max_slippage=0.3):
+def execute_arbitrage(opp, user_id, real_exchanges, reinvest_percent, use_orderbook=True, depth=20, max_slippage=0.3, is_demo=False, demo_data=None):
     buy_ex = opp['buy_ex']; sell_ex = opp['sell_ex']; token = opp['token']
     amount = opp['amount']; trade_usdt = opp['trade_usdt']; sell_price = opp['sell_price']
     
-    if not real_exchanges or not any(real_exchanges.values()):
-        return None, "Реальные биржи не подключены"
+    if is_demo:
+        if not demo_data:
+            return None, "Демо-данные не загружены"
+        usdt_balance = demo_data['balances'].get(buy_ex, {}).get('USDT', 0)
+        token_balance = demo_data['balances'].get(sell_ex, {}).get('portfolio', {}).get(token, 0)
+        if usdt_balance < trade_usdt:
+            trade_usdt = min(trade_usdt, usdt_balance)
+            if trade_usdt < 5:
+                return None, f"Не хватает USDT на {buy_ex}: {usdt_balance:.2f}"
+            amount = trade_usdt / opp['buy_price']
+        if token_balance < amount * 1.02:
+            max_sell_usdt = token_balance * opp['sell_price'] * 0.98
+            trade_usdt = min(trade_usdt, max_sell_usdt)
+            if trade_usdt < 5:
+                return None, f"Не хватает {token} на {sell_ex}: нужно {amount:.8f}, доступно {token_balance:.8f}"
+            amount = trade_usdt / opp['buy_price']
+        # Имитация сделки
+        profit = amount * sell_price - trade_usdt
+        profit = profit * (1 - 0.002) - 0.005
+        if profit < 0.005:
+            return None, f"Убыток {profit:.4f} USDT"
+        # Обновляем демо-балансы
+        update_demo_balance(user_id, buy_ex, 'USDT', -trade_usdt, demo_data)
+        update_demo_balance(user_id, buy_ex, token, amount, demo_data)
+        update_demo_balance(user_id, sell_ex, 'USDT', trade_usdt + profit, demo_data)
+        update_demo_balance(user_id, sell_ex, token, -amount, demo_data)
+        demo_data['total_profit'] += profit
+        demo_data['trade_count'] += 1
+        demo_data['history'].append(f"✅ {datetime.now()} | {token} | {buy_ex}→{sell_ex} | {amount:.8f} | +{profit:.2f} USDT")
+        save_demo_data(user_id, demo_data)
+        add_trade(user_id, "Демо", token, amount, profit, buy_ex, sell_ex)
+        return profit, f"Демо-сделка: +{profit:.2f} USDT"
     
-    exch_buy = real_exchanges.get(buy_ex)
-    exch_sell = real_exchanges.get(sell_ex)
-    if not exch_buy or not exch_sell:
-        return None, f"Одна из бирж не подключена: buy={buy_ex}, sell={sell_ex}"
-    
-    usdt_balance = get_real_balance(exch_buy, 'USDT')
-    token_balance = get_real_balance(exch_sell, token)
-    
-    if usdt_balance < trade_usdt:
-        trade_usdt = min(trade_usdt, usdt_balance)
-        if trade_usdt < 5:
-            return None, f"Не хватает USDT на {buy_ex}: {usdt_balance:.2f}"
-        amount = trade_usdt / opp['buy_price']
-    
-    if token_balance < amount * 1.02:
-        max_sell_usdt = token_balance * opp['sell_price'] * 0.98
-        trade_usdt = min(trade_usdt, max_sell_usdt)
-        if trade_usdt < 5:
-            return None, f"Не хватает {token} на {sell_ex}: нужно {amount:.8f}, доступно {token_balance:.8f}"
-        amount = trade_usdt / opp['buy_price']
-    
-    # Покупка
-    ticker = exch_buy.fetch_ticker(f"{token}/USDT")
-    price = ticker['last']
-    amount_token = trade_usdt / price
-    order = exch_buy.create_market_buy_order(f"{token}/USDT", amount_token)
-    filled = order.get('filled', amount_token)
-    cost = order.get('cost', trade_usdt)
-    if not filled:
-        return None, "Не удалось получить данные о покупке"
-    real_buy_price = cost / filled
-    
-    # Продажа
-    sell_amount = filled
-    ticker_sell = exch_sell.fetch_ticker(f"{token}/USDT")
-    sell_price_ticker = ticker_sell['last']
-    sell_usdt = sell_amount * sell_price_ticker
-    order_sell = exch_sell.create_market_sell_order(f"{token}/USDT", sell_amount)
-    filled_sell = order_sell.get('filled', sell_amount)
-    cost_sell = order_sell.get('cost', sell_usdt)
-    if not filled_sell:
-        return None, "Не удалось получить данные о продаже"
-    real_sell_price = cost_sell / filled_sell
-    
-    # Прибыль
-    real_profit = (real_sell_price - real_buy_price) * filled_sell
-    total_turnover = trade_usdt + sell_usdt
-    real_profit -= total_turnover * 0.002
-    real_profit -= 0.005
-    
-    if real_profit < 0.005:
-        return None, f"Убыток {real_profit:.4f} USDT"
-    
-    add_trade(user_id, "Реальный", token, filled_sell, real_profit, buy_ex, sell_ex)
-    return real_profit, f"Сделка выполнена! Прибыль: {real_profit:.2f} USDT"
+    else:
+        # Реальный режим (как было)
+        if not real_exchanges or not any(real_exchanges.values()):
+            return None, "Реальные биржи не подключены"
+        exch_buy = real_exchanges.get(buy_ex)
+        exch_sell = real_exchanges.get(sell_ex)
+        if not exch_buy or not exch_sell:
+            return None, f"Одна из бирж не подключена"
+        usdt_balance = get_real_balance(exch_buy, 'USDT')
+        token_balance = get_real_balance(exch_sell, token)
+        if usdt_balance < trade_usdt:
+            trade_usdt = min(trade_usdt, usdt_balance)
+            if trade_usdt < 5:
+                return None, f"Не хватает USDT на {buy_ex}: {usdt_balance:.2f}"
+            amount = trade_usdt / opp['buy_price']
+        if token_balance < amount * 1.02:
+            max_sell_usdt = token_balance * opp['sell_price'] * 0.98
+            trade_usdt = min(trade_usdt, max_sell_usdt)
+            if trade_usdt < 5:
+                return None, f"Не хватает {token} на {sell_ex}: нужно {amount:.8f}, доступно {token_balance:.8f}"
+            amount = trade_usdt / opp['buy_price']
+        ticker = exch_buy.fetch_ticker(f"{token}/USDT")
+        price = ticker['last']
+        amount_token = trade_usdt / price
+        order = exch_buy.create_market_buy_order(f"{token}/USDT", amount_token)
+        filled = order.get('filled', amount_token)
+        cost = order.get('cost', trade_usdt)
+        if not filled:
+            return None, "Не удалось получить данные о покупке"
+        real_buy_price = cost / filled
+        sell_amount = filled
+        ticker_sell = exch_sell.fetch_ticker(f"{token}/USDT")
+        sell_price_ticker = ticker_sell['last']
+        sell_usdt = sell_amount * sell_price_ticker
+        order_sell = exch_sell.create_market_sell_order(f"{token}/USDT", sell_amount)
+        filled_sell = order_sell.get('filled', sell_amount)
+        cost_sell = order_sell.get('cost', sell_usdt)
+        if not filled_sell:
+            return None, "Не удалось получить данные о продаже"
+        real_sell_price = cost_sell / filled_sell
+        real_profit = (real_sell_price - real_buy_price) * filled_sell
+        total_turnover = trade_usdt + sell_usdt
+        real_profit -= total_turnover * 0.002
+        real_profit -= 0.005
+        if real_profit < 0.005:
+            return None, f"Убыток {real_profit:.4f} USDT"
+        add_trade(user_id, "Реальный", token, filled_sell, real_profit, buy_ex, sell_ex)
+        return real_profit, f"Сделка выполнена! Прибыль: {real_profit:.2f} USDT"
