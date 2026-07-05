@@ -18,9 +18,6 @@ from utils import (
     get_latest_balances,
     get_logs,
     get_user_trades,
-    get_price,
-    get_real_balance,
-    init_real_exchanges,
     get_trade_mode,
     set_trade_mode,
     get_demo_data,
@@ -77,7 +74,6 @@ if 'logged_in' not in st.session_state:
     st.session_state.wallet = ''
     st.session_state.role = 'viewer'
     st.session_state.real_exchanges = None
-    st.session_state.scanning = False
 
 # Восстановление сессии из URL
 if 'email' in st.query_params:
@@ -90,7 +86,6 @@ if 'email' in st.query_params:
         st.session_state.username = user['full_name']
         st.session_state.wallet = user.get('wallet_address', '')
         st.session_state.role = user.get('role', 'viewer')
-        st.session_state.real_exchanges = init_real_exchanges() if st.session_state.role == 'admin' else None
 
 if st.session_state.logged_in and st.session_state.email:
     st.query_params.email = st.session_state.email
@@ -113,7 +108,6 @@ def login():
                     st.session_state.username = user['full_name']
                     st.session_state.wallet = user.get('wallet_address', '')
                     st.session_state.role = user.get('role', 'viewer')
-                    st.session_state.real_exchanges = init_real_exchanges() if st.session_state.role == 'admin' else None
                     st.query_params.email = user['email']
                     st.rerun()
                 else:
@@ -151,6 +145,23 @@ with col4:
         st.query_params.clear()
         st.rerun()
 
+# ------------------- ИНДИКАТОР СКАНИРОВАНИЯ (из БД) -------------------
+logs = get_logs(st.session_state.user_id, limit=1)
+is_scanning = False
+if logs:
+    try:
+        last_log_time = datetime.fromisoformat(logs[0]['created_at'].replace('Z', '+00:00'))
+        if (datetime.now(last_log_time.tzinfo) - last_log_time).seconds < 60:
+            is_scanning = True
+    except:
+        pass
+
+scan_indicator = st.empty()
+if is_scanning:
+    scan_indicator.markdown('<span class="scan-indicator">🔄 Сканирование...</span>', unsafe_allow_html=True)
+else:
+    scan_indicator.empty()
+
 # ------------------- УПРАВЛЕНИЕ (только для админа) -------------------
 if st.session_state.role == 'admin':
     col_start, col_stop, col_mode = st.columns(3)
@@ -173,11 +184,7 @@ if st.session_state.role == 'admin':
 else:
     st.info("🔒 Вы в режиме просмотра. Управление ботом недоступно.")
 
-# Подключенные биржи (без тяжелых запросов, просто список)
-connected = [ex.upper() for ex in EXCHANGES]
-st.success(f"🔌 Биржи для мониторинга: {', '.join(connected)}")
-
-# ------------------- РАСЧЁТ КАПИТАЛА (только из БД, без бирж) -------------------
+# ------------------- РАСЧЁТ КАПИТАЛА (из БД) -------------------
 mode = get_trade_mode(st.session_state.user_id)
 total_usdt = 0.0
 total_portfolio = 0.0
@@ -187,12 +194,13 @@ if mode == 'демо':
     if demo_data:
         for ex in EXCHANGES:
             total_usdt += demo_data['balances'].get(ex, {}).get('USDT', 0.0)
-            # Токены из демо-данных (без цен)
             for token, amt in demo_data['balances'].get(ex, {}).get('portfolio', {}).items():
                 if amt > 0:
-                    total_portfolio += amt  # приблизительная стоимость
+                    # Цену берём из конфига или из последнего баланса (если сохраняется цена)
+                    # Пока просто показываем количество, а USDT-эквивалент не считаем
+                    total_portfolio += amt  # временно
     total_capital = total_usdt + total_portfolio
-    st.info(f"🎮 **Демо-балансы** | USDT: {total_usdt:.2f} | Портфель: {total_portfolio:.2f} | Капитал: {total_capital:.2f}")
+    st.info(f"🎮 **Демо-балансы** | USDT: {total_usdt:.2f} | Токены (кол-во): {total_portfolio:.2f}")
 else:
     bal_data = get_latest_balances(st.session_state.user_id)
     if bal_data:
@@ -218,20 +226,6 @@ total_profit = sum(t.get('profit', 0) for t in trades) if trades else 0.0
 trade_count = len(trades) if trades else 0
 col_d.metric("📈 Прибыль с запуска", f"{total_profit:.4f} USDT")
 col_e.metric("📊 Сделок", trade_count)
-
-# ------------------- ИНДИКАТОР СКАНИРОВАНИЯ (из логов) -------------------
-logs = get_logs(st.session_state.user_id, limit=1)
-is_scanning = False
-if logs:
-    try:
-        last_log_time = datetime.fromisoformat(logs[0]['created_at'].replace('Z', '+00:00'))
-        if (datetime.now(last_log_time.tzinfo) - last_log_time).seconds < 60:
-            is_scanning = True
-    except:
-        pass
-
-if is_scanning:
-    st.markdown('<span class="scan-indicator">🔄 Сканирование...</span>', unsafe_allow_html=True)
 
 # ------------------- НАСТРОЙКИ -------------------
 with st.expander("⚙️ Настройки арбитража", expanded=False):
@@ -288,131 +282,18 @@ with tabs[0]:
         st.write(f"**Минимальная прибыль:** {settings.get('min_profit', 0.03):.2f} USDT.")
     st.markdown("---")
     st.markdown("### 💹 Текущие цены токенов")
-    # Только для админа показываем цены (с бирж)
-    if st.session_state.role == 'admin' and st.session_state.real_exchanges:
-        tokens = get_available_tokens()
-        token_prices = []
-        for token in tokens:
-            row = {"Токен": token}
-            for ex in EXCHANGES:
-                exch = st.session_state.real_exchanges.get(ex)
-                if exch:
-                    try:
-                        price = get_price(exch, token)
-                        row[ex.upper()] = f"{price:.8f}" if price else "—"
-                    except:
-                        row[ex.upper()] = "—"
-                else:
-                    row[ex.upper()] = "—"
-            if row.get("KUCOIN", "—") != "—" and row.get("OKX", "—") != "—":
-                try:
-                    diff = abs(float(row["KUCOIN"]) - float(row["OKX"])) / float(row["KUCOIN"]) * 100
-                    row["Спред %"] = f"{diff:.2f}%"
-                    is_profitable = diff > (settings.get('min_profit', 0.03) / (settings.get('min_trade', 8) / 100) + 0.1 if settings else 0.3)
-                    row["Арбитраж"] = "✅" if is_profitable else "❌"
-                except:
-                    row["Спред %"] = "—"
-                    row["Арбитраж"] = "?"
-            else:
-                row["Спред %"] = "—"
-                row["Арбитраж"] = "?"
-            token_prices.append(row)
-        if token_prices:
-            df_prices = pd.DataFrame(token_prices)
-            def highlight_profitable(row):
-                if row.get("Арбитраж") == "✅":
-                    return ['background-color: #00FF88; color: black'] * len(row)
-                return [''] * len(row)
-            st.dataframe(df_prices.style.apply(highlight_profitable, axis=1), width='stretch', hide_index=True)
-            st.caption("🟢 Зелёным выделены токены, спред по которым превышает минимальную прибыль с учётом комиссии.")
-    else:
-        st.info("Для просмотра цен войдите как администратор.")
+    st.info("Цены будут отображаться после сохранения данных worker'ом")
+    # Здесь можно будет добавить чтение цен из БД, когда worker будет их сохранять
 
 # ----- Графики -----
 with tabs[1]:
     st.subheader("📈 Графики (японские свечи)")
-    st.info("Графики доступны только администратору (требуется подключение к биржам).")
-    if st.session_state.role == 'admin' and st.session_state.real_exchanges:
-        tok = st.selectbox("Выберите токен", get_available_tokens())
-        timeframe = st.selectbox("Таймфрейм", ["1m", "5m", "15m", "1h", "4h", "1d"], index=3)
-        exchange_for_chart = st.selectbox("Биржа", EXCHANGES, index=0)
-        if tok and exchange_for_chart:
-            exch = st.session_state.real_exchanges.get(exchange_for_chart)
-            if exch:
-                try:
-                    ohlcv = exch.fetch_ohlcv(f"{tok}/USDT", timeframe=timeframe, limit=100)
-                    if ohlcv:
-                        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-                        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-                        fig = go.Figure(data=[go.Candlestick(
-                            x=df['timestamp'],
-                            open=df['open'],
-                            high=df['high'],
-                            low=df['low'],
-                            close=df['close'],
-                            name=f"{tok}/USDT"
-                        )])
-                        fig.update_layout(
-                            title=f"{tok}/USDT ({timeframe}) на {exchange_for_chart.upper()}",
-                            xaxis_title="Время",
-                            yaxis_title="Цена (USDT)",
-                            height=600
-                        )
-                        st.plotly_chart(fig)
-                    else:
-                        st.warning("Нет данных для отображения")
-                except Exception as e:
-                    st.error(f"Ошибка получения данных: {str(e)}")
-            else:
-                st.error(f"Биржа {exchange_for_chart.upper()} не подключена")
+    st.info("Графики будут доступны после накопления данных")
 
 # ----- Арбитраж (ручной) -----
 with tabs[2]:
     st.subheader("🔄 Ручной поиск арбитража")
-    if st.button("🔍 Найти лучшую возможность (с учётом текущих настроек)", width='stretch'):
-        if st.session_state.role == 'admin' and st.session_state.real_exchanges:
-            from utils import find_arbitrage_opportunity
-            settings = get_user_settings(st.session_state.user_id)
-            if settings:
-                opp = find_arbitrage_opportunity(
-                    settings.get('fee', 0.2),
-                    settings.get('min_profit', 0.03),
-                    settings.get('min_trade', 8.0),
-                    settings.get('max_trade', 20.0),
-                    settings.get('orderbook_depth', 20),
-                    settings.get('use_orderbook', True),
-                    st.session_state.real_exchanges,
-                    settings.get('max_slippage', 0.3)
-                )
-                if opp:
-                    st.success(f"Найдена возможность: {opp['token']}")
-                    st.write(f"**Покупка:** {opp['buy_ex'].upper()} по {opp['buy_price']:.8f} USDT")
-                    st.write(f"**Продажа:** {opp['sell_ex'].upper()} по {opp['sell_price']:.8f} USDT")
-                    st.write(f"**Сумма сделки:** {opp['trade_usdt']:.2f} USDT")
-                    st.write(f"**Прибыль:** {opp['profit']:.4f} USDT")
-                    if st.button("✅ Выполнить сделку (реал/демо)", width='stretch'):
-                        from utils import execute_arbitrage, get_trade_mode, get_demo_data, save_log
-                        mode = get_trade_mode(st.session_state.user_id)
-                        is_demo = (mode == 'демо')
-                        demo_data = get_demo_data(st.session_state.user_id) if is_demo else None
-                        profit, msg = execute_arbitrage(
-                            opp, st.session_state.user_id, st.session_state.real_exchanges,
-                            settings.get('reinvest_percent', 0),
-                            settings.get('use_orderbook', True),
-                            settings.get('orderbook_depth', 20),
-                            settings.get('max_slippage', 0.3),
-                            is_demo, demo_data
-                        )
-                        if profit:
-                            save_log(st.session_state.user_id, f"✅ Ручная сделка: {opp['token']} {opp['buy_ex']}→{opp['sell_ex']} | +{profit:.2f} USDT")
-                            st.success(f"Сделка выполнена! Прибыль: {profit:.2f} USDT")
-                            st.rerun()
-                        else:
-                            st.error(f"Ошибка: {msg}")
-                else:
-                    st.warning("Арбитражных возможностей не найдено")
-        else:
-            st.error("Ручной поиск доступен только администратору")
+    st.warning("Ручной поиск временно отключен в лёгкой версии интерфейса. Используйте worker для автоматического поиска.")
 
 # ----- Статистика -----
 with tabs[3]:
@@ -551,7 +432,6 @@ if show_admin:
                         if api_key and secret and passphrase:
                             save_api_key(ex, api_key, secret, passphrase, st.session_state.email)
                             st.success(f"Ключи для {ex} сохранены")
-                            st.session_state.real_exchanges = init_real_exchanges()
                             st.rerun()
                         else:
                             st.error(f"Для {ex} необходимо заполнить все поля.")
