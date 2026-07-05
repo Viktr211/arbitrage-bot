@@ -75,7 +75,6 @@ if 'logged_in' not in st.session_state:
     st.session_state.role = 'viewer'
     st.session_state.real_exchanges = None
 
-# Восстановление сессии из URL
 if 'email' in st.query_params:
     email = st.query_params['email']
     user = get_user_by_email(email)
@@ -145,7 +144,7 @@ with col4:
         st.query_params.clear()
         st.rerun()
 
-# ------------------- ИНДИКАТОР СКАНИРОВАНИЯ (из БД) -------------------
+# ------------------- ИНДИКАТОР СКАНИРОВАНИЯ -------------------
 logs = get_logs(st.session_state.user_id, limit=1)
 is_scanning = False
 if logs:
@@ -162,7 +161,7 @@ if is_scanning:
 else:
     scan_indicator.empty()
 
-# ------------------- УПРАВЛЕНИЕ (только для админа) -------------------
+# ------------------- УПРАВЛЕНИЕ -------------------
 if st.session_state.role == 'admin':
     col_start, col_stop, col_mode = st.columns(3)
     with col_start:
@@ -184,37 +183,33 @@ if st.session_state.role == 'admin':
 else:
     st.info("🔒 Вы в режиме просмотра. Управление ботом недоступно.")
 
-# ------------------- РАСЧЁТ КАПИТАЛА (из БД) -------------------
+# ------------------- РАСЧЁТ КАПИТАЛА (из таблицы balances) -------------------
 mode = get_trade_mode(st.session_state.user_id)
 total_usdt = 0.0
 total_portfolio = 0.0
 
-if mode == 'демо':
-    demo_data = get_demo_data(st.session_state.user_id)
-    if demo_data:
-        for ex in EXCHANGES:
-            total_usdt += demo_data['balances'].get(ex, {}).get('USDT', 0.0)
-            for token, amt in demo_data['balances'].get(ex, {}).get('portfolio', {}).items():
-                if amt > 0:
-                    # Цену берём из конфига или из последнего баланса (если сохраняется цена)
-                    # Пока просто показываем количество, а USDT-эквивалент не считаем
-                    total_portfolio += amt  # временно
+# Получаем последние балансы из БД
+bal_data = get_latest_balances(st.session_state.user_id)
+
+if bal_data:
+    df = pd.DataFrame(bal_data)
+    df['created_at'] = pd.to_datetime(df['created_at'])
+    # Берём последнюю запись для каждой биржи и актива
+    df_last = df.sort_values('created_at').groupby(['exchange', 'asset']).last().reset_index()
+    
+    # Собираем USDT
+    usdt_rows = df_last[df_last['asset'] == 'USDT']
+    total_usdt = usdt_rows['total'].sum() if not usdt_rows.empty else 0.0
+    
+    # Собираем токены (исключаем USDT и записи с _price)
+    token_rows = df_last[~df_last['asset'].isin(['USDT']) & ~df_last['asset'].str.endswith('_price')]
+    total_portfolio = token_rows['usdt_value'].sum() if not token_rows.empty else 0.0
+    
     total_capital = total_usdt + total_portfolio
-    st.info(f"🎮 **Демо-балансы** | USDT: {total_usdt:.2f} | Токены (кол-во): {total_portfolio:.2f}")
+    st.info(f"💰 **Реальные балансы** | USDT: {total_usdt:.2f} | Портфель: {total_portfolio:.2f} | Капитал: {total_capital:.2f}")
 else:
-    bal_data = get_latest_balances(st.session_state.user_id)
-    if bal_data:
-        df = pd.DataFrame(bal_data)
-        df = df.sort_values('created_at').groupby(['exchange', 'asset']).last().reset_index()
-        usdt_rows = df[df['asset'] == 'USDT']
-        total_usdt = usdt_rows['total'].sum() if not usdt_rows.empty else 0.0
-        token_rows = df[df['asset'] != 'USDT']
-        total_portfolio = token_rows['usdt_value'].sum() if not token_rows.empty else 0.0
-        total_capital = total_usdt + total_portfolio
-        st.info(f"💰 **Реальные балансы** | USDT: {total_usdt:.2f} | Портфель: {total_portfolio:.2f} | Капитал: {total_capital:.2f}")
-    else:
-        st.info("⏳ Балансы загружаются...")
-        total_capital = 0.0
+    st.info("⏳ Балансы загружаются...")
+    total_capital = 0.0
 
 col_a, col_b, col_c, col_d, col_e = st.columns(5)
 col_a.metric("💰 USDT на биржах", f"{total_usdt:.2f}")
@@ -282,8 +277,22 @@ with tabs[0]:
         st.write(f"**Минимальная прибыль:** {settings.get('min_profit', 0.03):.2f} USDT.")
     st.markdown("---")
     st.markdown("### 💹 Текущие цены токенов")
-    st.info("Цены будут отображаться после сохранения данных worker'ом")
-    # Здесь можно будет добавить чтение цен из БД, когда worker будет их сохранять
+    # Показываем цены из таблицы balances (записи с _price)
+    if bal_data:
+        df_prices = pd.DataFrame(bal_data)
+        df_prices['created_at'] = pd.to_datetime(df_prices['created_at'])
+        df_prices_last = df_prices.sort_values('created_at').groupby(['exchange', 'asset']).last().reset_index()
+        # Фильтруем только записи с _price
+        price_rows = df_prices_last[df_prices_last['asset'].str.endswith('_price')]
+        if not price_rows.empty:
+            # Переименовываем для отображения
+            price_rows['Токен'] = price_rows['asset'].str.replace('_price', '')
+            price_rows['Цена (USDT)'] = price_rows['total'].apply(lambda x: f"{x:.8f}")
+            st.dataframe(price_rows[['Токен', 'exchange', 'Цена (USDT)']].rename(columns={'exchange': 'Биржа'}), width='stretch', hide_index=True)
+        else:
+            st.info("Цены будут отображаться после сохранения данных worker'ом")
+    else:
+        st.info("Цены будут отображаться после сохранения данных worker'ом")
 
 # ----- Графики -----
 with tabs[1]:
@@ -293,7 +302,7 @@ with tabs[1]:
 # ----- Арбитраж (ручной) -----
 with tabs[2]:
     st.subheader("🔄 Ручной поиск арбитража")
-    st.warning("Ручной поиск временно отключен в лёгкой версии интерфейса. Используйте worker для автоматического поиска.")
+    st.warning("Ручной поиск временно отключен")
 
 # ----- Статистика -----
 with tabs[3]:
@@ -334,18 +343,18 @@ with tabs[4]:
         else:
             st.info("Демо-данные не загружены")
     else:
-        bal_data = get_latest_balances(st.session_state.user_id)
         if bal_data:
             df = pd.DataFrame(bal_data)
-            df = df.sort_values('created_at').groupby(['exchange', 'asset']).last().reset_index()
+            df['created_at'] = pd.to_datetime(df['created_at'])
+            df_last = df.sort_values('created_at').groupby(['exchange', 'asset']).last().reset_index()
             for ex in EXCHANGES:
                 with st.expander(f"{ex.upper()}"):
-                    ex_data = df[df['exchange'] == ex]
+                    ex_data = df_last[df_last['exchange'] == ex]
                     if not ex_data.empty:
                         for _, row in ex_data.iterrows():
                             if row['asset'] == 'USDT':
                                 st.write(f"**USDT:** {row['total']:.2f}")
-                            else:
+                            elif not row['asset'].str.endswith('_price'):
                                 st.write(f"{row['asset']}: {row['free']:.8f} ≈ {row['usdt_value']:.2f} USDT")
         else:
             st.info("Нет данных по балансам. Ожидайте первого сканирования worker'ом.")
