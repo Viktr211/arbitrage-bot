@@ -1,10 +1,20 @@
-
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 from datetime import datetime
 import sys
 import os
+import hashlib  # <-- ДОБАВЬ ЭТУ СТРОКУ
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from utils import (
+    supabase,
+    get_user_by_email,
+    get_user_settings,
+    set_auto_trade_enabled,
+    get_available_tokens,
+    get_config,
+    set_config
+)
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from utils import (
     supabase,
