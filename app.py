@@ -36,14 +36,6 @@ from utils import (
     save_log
 )
 
-# Пытаемся импортировать автообновление
-try:
-    from streamlit_autorefresh import st_autorefresh
-    AUTOREFRESH_AVAILABLE = True
-except ImportError:
-    AUTOREFRESH_AVAILABLE = False
-    st_autorefresh = None
-
 st.set_page_config(page_title="Арбитражный бот HOVMEL", layout="wide", page_icon="🔄", initial_sidebar_state="collapsed")
 
 st.markdown("""
@@ -135,11 +127,6 @@ if not st.session_state.logged_in:
     login()
     st.stop()
 
-# ------------------- АВТООБНОВЛЕНИЕ (для индикатора) -------------------
-if AUTOREFRESH_AVAILABLE:
-    # Обновляем страницу каждые 10 секунд, чтобы обновлять индикатор
-    st_autorefresh(interval=10000, key="auto_refresh")
-
 # ------------------- ОСНОВНОЙ ИНТЕРФЕЙС -------------------
 st.markdown('<div class="main-header"><h1>Арбитражный бот <span class="hovmel-highlight">HOVMEL</span></h1></div><div class="subtitle">⚡ Автоматический поиск межбиржевого арбитража 24/7 ⚡</div>', unsafe_allow_html=True)
 
@@ -164,21 +151,6 @@ with col4:
         st.query_params.clear()
         st.rerun()
 
-# ------------------- ИНДИКАТОР СКАНИРОВАНИЯ -------------------
-# Проверяем, есть ли свежий лог от worker'а (за последние 60 секунд)
-logs = get_logs(st.session_state.user_id, limit=1)
-is_scanning = False
-if logs:
-    last_log_time = datetime.fromisoformat(logs[0]['created_at'].replace('Z', '+00:00'))
-    if (datetime.now(last_log_time.tzinfo) - last_log_time).seconds < 60:
-        is_scanning = True
-
-scan_indicator = st.empty()
-if is_scanning:
-    scan_indicator.markdown('<span class="scan-indicator">🔄 Сканирование...</span>', unsafe_allow_html=True)
-else:
-    scan_indicator.empty()
-
 # ------------------- УПРАВЛЕНИЕ (только для админа) -------------------
 if st.session_state.role == 'admin':
     col_start, col_stop, col_mode = st.columns(3)
@@ -201,19 +173,11 @@ if st.session_state.role == 'admin':
 else:
     st.info("🔒 Вы в режиме просмотра. Управление ботом недоступно.")
 
-# Подключенные биржи
-public_clients = {}
-for ex in EXCHANGES:
-    try:
-        import ccxt
-        public_clients[ex] = getattr(ccxt, ex)({'enableRateLimit': True, 'options': {'defaultType': 'spot'}})
-        public_clients[ex].fetch_ticker("BTC/USDT")
-    except:
-        public_clients[ex] = None
-connected = [ex.upper() for ex, cl in public_clients.items() if cl is not None]
+# Подключенные биржи (без тяжелых запросов, просто список)
+connected = [ex.upper() for ex in EXCHANGES]
 st.success(f"🔌 Биржи для мониторинга: {', '.join(connected)}")
 
-# ------------------- РАСЧЁТ КАПИТАЛА -------------------
+# ------------------- РАСЧЁТ КАПИТАЛА (только из БД, без бирж) -------------------
 mode = get_trade_mode(st.session_state.user_id)
 total_usdt = 0.0
 total_portfolio = 0.0
@@ -223,41 +187,26 @@ if mode == 'демо':
     if demo_data:
         for ex in EXCHANGES:
             total_usdt += demo_data['balances'].get(ex, {}).get('USDT', 0.0)
+            # Токены из демо-данных (без цен)
             for token, amt in demo_data['balances'].get(ex, {}).get('portfolio', {}).items():
                 if amt > 0:
-                    price = public_clients.get(ex).fetch_ticker(f"{token}/USDT")['last'] if public_clients.get(ex) else 0
-                    total_portfolio += amt * price
+                    total_portfolio += amt  # приблизительная стоимость
     total_capital = total_usdt + total_portfolio
     st.info(f"🎮 **Демо-балансы** | USDT: {total_usdt:.2f} | Портфель: {total_portfolio:.2f} | Капитал: {total_capital:.2f}")
 else:
-    if st.session_state.role == 'admin' and st.session_state.real_exchanges:
-        for ex in EXCHANGES:
-            exch = st.session_state.real_exchanges.get(ex)
-            if exch:
-                usdt = get_real_balance(exch, 'USDT')
-                total_usdt += usdt
-                for token in get_available_tokens():
-                    amt = get_real_balance(exch, token)
-                    if amt > 0:
-                        price = get_price(exch, token)
-                        if price:
-                            total_portfolio += amt * price
+    bal_data = get_latest_balances(st.session_state.user_id)
+    if bal_data:
+        df = pd.DataFrame(bal_data)
+        df = df.sort_values('created_at').groupby(['exchange', 'asset']).last().reset_index()
+        usdt_rows = df[df['asset'] == 'USDT']
+        total_usdt = usdt_rows['total'].sum() if not usdt_rows.empty else 0.0
+        token_rows = df[df['asset'] != 'USDT']
+        total_portfolio = token_rows['usdt_value'].sum() if not token_rows.empty else 0.0
         total_capital = total_usdt + total_portfolio
         st.info(f"💰 **Реальные балансы** | USDT: {total_usdt:.2f} | Портфель: {total_portfolio:.2f} | Капитал: {total_capital:.2f}")
     else:
-        bal_data = get_latest_balances(st.session_state.user_id)
-        if bal_data:
-            df = pd.DataFrame(bal_data)
-            df = df.sort_values('created_at').groupby(['exchange', 'asset']).last().reset_index()
-            usdt_rows = df[df['asset'] == 'USDT']
-            total_usdt = usdt_rows['total'].sum() if not usdt_rows.empty else 0.0
-            token_rows = df[df['asset'] != 'USDT']
-            total_portfolio = token_rows['usdt_value'].sum() if not token_rows.empty else 0.0
-            total_capital = total_usdt + total_portfolio
-            st.info(f"💰 **Реальные балансы** | USDT: {total_usdt:.2f} | Портфель: {total_portfolio:.2f} | Капитал: {total_capital:.2f}")
-        else:
-            st.info("⏳ Балансы загружаются...")
-            total_capital = 0.0
+        st.info("⏳ Балансы загружаются...")
+        total_capital = 0.0
 
 col_a, col_b, col_c, col_d, col_e = st.columns(5)
 col_a.metric("💰 USDT на биржах", f"{total_usdt:.2f}")
@@ -269,6 +218,20 @@ total_profit = sum(t.get('profit', 0) for t in trades) if trades else 0.0
 trade_count = len(trades) if trades else 0
 col_d.metric("📈 Прибыль с запуска", f"{total_profit:.4f} USDT")
 col_e.metric("📊 Сделок", trade_count)
+
+# ------------------- ИНДИКАТОР СКАНИРОВАНИЯ (из логов) -------------------
+logs = get_logs(st.session_state.user_id, limit=1)
+is_scanning = False
+if logs:
+    try:
+        last_log_time = datetime.fromisoformat(logs[0]['created_at'].replace('Z', '+00:00'))
+        if (datetime.now(last_log_time.tzinfo) - last_log_time).seconds < 60:
+            is_scanning = True
+    except:
+        pass
+
+if is_scanning:
+    st.markdown('<span class="scan-indicator">🔄 Сканирование...</span>', unsafe_allow_html=True)
 
 # ------------------- НАСТРОЙКИ -------------------
 with st.expander("⚙️ Настройки арбитража", expanded=False):
@@ -325,76 +288,83 @@ with tabs[0]:
         st.write(f"**Минимальная прибыль:** {settings.get('min_profit', 0.03):.2f} USDT.")
     st.markdown("---")
     st.markdown("### 💹 Текущие цены токенов")
-    tokens = get_available_tokens()
-    token_prices = []
-    for token in tokens:
-        row = {"Токен": token}
-        for ex in EXCHANGES:
-            if public_clients.get(ex):
-                try:
-                    price = public_clients[ex].fetch_ticker(f"{token}/USDT")['last']
-                    row[ex.upper()] = f"{price:.8f}" if price else "—"
-                except:
+    # Только для админа показываем цены (с бирж)
+    if st.session_state.role == 'admin' and st.session_state.real_exchanges:
+        tokens = get_available_tokens()
+        token_prices = []
+        for token in tokens:
+            row = {"Токен": token}
+            for ex in EXCHANGES:
+                exch = st.session_state.real_exchanges.get(ex)
+                if exch:
+                    try:
+                        price = get_price(exch, token)
+                        row[ex.upper()] = f"{price:.8f}" if price else "—"
+                    except:
+                        row[ex.upper()] = "—"
+                else:
                     row[ex.upper()] = "—"
+            if row.get("KUCOIN", "—") != "—" and row.get("OKX", "—") != "—":
+                try:
+                    diff = abs(float(row["KUCOIN"]) - float(row["OKX"])) / float(row["KUCOIN"]) * 100
+                    row["Спред %"] = f"{diff:.2f}%"
+                    is_profitable = diff > (settings.get('min_profit', 0.03) / (settings.get('min_trade', 8) / 100) + 0.1 if settings else 0.3)
+                    row["Арбитраж"] = "✅" if is_profitable else "❌"
+                except:
+                    row["Спред %"] = "—"
+                    row["Арбитраж"] = "?"
             else:
-                row[ex.upper()] = "—"
-        if row.get("KUCOIN", "—") != "—" and row.get("OKX", "—") != "—":
-            try:
-                diff = abs(float(row["KUCOIN"]) - float(row["OKX"])) / float(row["KUCOIN"]) * 100
-                row["Спред %"] = f"{diff:.2f}%"
-                is_profitable = diff > (settings.get('min_profit', 0.03) / (settings.get('min_trade', 8) / 100) + 0.1 if settings else 0.3)
-                row["Арбитраж"] = "✅" if is_profitable else "❌"
-            except:
                 row["Спред %"] = "—"
                 row["Арбитраж"] = "?"
-        else:
-            row["Спред %"] = "—"
-            row["Арбитраж"] = "?"
-        token_prices.append(row)
-    if token_prices:
-        df_prices = pd.DataFrame(token_prices)
-        def highlight_profitable(row):
-            if row.get("Арбитраж") == "✅":
-                return ['background-color: #00FF88; color: black'] * len(row)
-            return [''] * len(row)
-        st.dataframe(df_prices.style.apply(highlight_profitable, axis=1), width='stretch', hide_index=True)
-        st.caption("🟢 Зелёным выделены токены, спред по которым превышает минимальную прибыль с учётом комиссии.")
+            token_prices.append(row)
+        if token_prices:
+            df_prices = pd.DataFrame(token_prices)
+            def highlight_profitable(row):
+                if row.get("Арбитраж") == "✅":
+                    return ['background-color: #00FF88; color: black'] * len(row)
+                return [''] * len(row)
+            st.dataframe(df_prices.style.apply(highlight_profitable, axis=1), width='stretch', hide_index=True)
+            st.caption("🟢 Зелёным выделены токены, спред по которым превышает минимальную прибыль с учётом комиссии.")
+    else:
+        st.info("Для просмотра цен войдите как администратор.")
 
 # ----- Графики -----
 with tabs[1]:
     st.subheader("📈 Графики (японские свечи)")
-    tok = st.selectbox("Выберите токен", get_available_tokens())
-    timeframe = st.selectbox("Таймфрейм", ["1m", "5m", "15m", "1h", "4h", "1d"], index=3)
-    exchange_for_chart = st.selectbox("Биржа", EXCHANGES, index=0)
-    if tok and exchange_for_chart:
-        exchange = public_clients.get(exchange_for_chart)
-        if exchange:
-            try:
-                ohlcv = exchange.fetch_ohlcv(f"{tok}/USDT", timeframe=timeframe, limit=100)
-                if ohlcv:
-                    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-                    fig = go.Figure(data=[go.Candlestick(
-                        x=df['timestamp'],
-                        open=df['open'],
-                        high=df['high'],
-                        low=df['low'],
-                        close=df['close'],
-                        name=f"{tok}/USDT"
-                    )])
-                    fig.update_layout(
-                        title=f"{tok}/USDT ({timeframe}) на {exchange_for_chart.upper()}",
-                        xaxis_title="Время",
-                        yaxis_title="Цена (USDT)",
-                        height=600
-                    )
-                    st.plotly_chart(fig)
-                else:
-                    st.warning("Нет данных для отображения")
-            except Exception as e:
-                st.error(f"Ошибка получения данных: {str(e)}")
-        else:
-            st.error(f"Биржа {exchange_for_chart.upper()} не подключена")
+    st.info("Графики доступны только администратору (требуется подключение к биржам).")
+    if st.session_state.role == 'admin' and st.session_state.real_exchanges:
+        tok = st.selectbox("Выберите токен", get_available_tokens())
+        timeframe = st.selectbox("Таймфрейм", ["1m", "5m", "15m", "1h", "4h", "1d"], index=3)
+        exchange_for_chart = st.selectbox("Биржа", EXCHANGES, index=0)
+        if tok and exchange_for_chart:
+            exch = st.session_state.real_exchanges.get(exchange_for_chart)
+            if exch:
+                try:
+                    ohlcv = exch.fetch_ohlcv(f"{tok}/USDT", timeframe=timeframe, limit=100)
+                    if ohlcv:
+                        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                        fig = go.Figure(data=[go.Candlestick(
+                            x=df['timestamp'],
+                            open=df['open'],
+                            high=df['high'],
+                            low=df['low'],
+                            close=df['close'],
+                            name=f"{tok}/USDT"
+                        )])
+                        fig.update_layout(
+                            title=f"{tok}/USDT ({timeframe}) на {exchange_for_chart.upper()}",
+                            xaxis_title="Время",
+                            yaxis_title="Цена (USDT)",
+                            height=600
+                        )
+                        st.plotly_chart(fig)
+                    else:
+                        st.warning("Нет данных для отображения")
+                except Exception as e:
+                    st.error(f"Ошибка получения данных: {str(e)}")
+            else:
+                st.error(f"Биржа {exchange_for_chart.upper()} не подключена")
 
 # ----- Арбитраж (ручной) -----
 with tabs[2]:
@@ -479,41 +449,25 @@ with tabs[4]:
                     st.write(f"**USDT:** {bal.get('USDT', 0):.2f}")
                     for token, amt in bal.get('portfolio', {}).items():
                         if amt > 0:
-                            price = public_clients.get(ex).fetch_ticker(f"{token}/USDT")['last'] if public_clients.get(ex) else 0
-                            st.write(f"{token}: {amt:.8f} ≈ {amt * price:.2f} USDT")
+                            st.write(f"{token}: {amt:.8f}")
         else:
             st.info("Демо-данные не загружены")
     else:
-        if st.session_state.role == 'admin' and st.session_state.real_exchanges:
+        bal_data = get_latest_balances(st.session_state.user_id)
+        if bal_data:
+            df = pd.DataFrame(bal_data)
+            df = df.sort_values('created_at').groupby(['exchange', 'asset']).last().reset_index()
             for ex in EXCHANGES:
-                exch = st.session_state.real_exchanges.get(ex)
-                if exch:
-                    with st.expander(f"{ex.upper()}"):
-                        bal = exch.fetch_balance()
-                        usdt = bal.get('USDT', {}).get('free', 0.0)
-                        st.write(f"**USDT:** {usdt:.2f}")
-                        for token in get_available_tokens():
-                            amt = bal.get(token, {}).get('free', 0.0)
-                            if amt > 0:
-                                price = get_price(exch, token)
-                                if price:
-                                    st.write(f"{token}: {amt:.8f} ≈ {amt * price:.2f} USDT")
+                with st.expander(f"{ex.upper()}"):
+                    ex_data = df[df['exchange'] == ex]
+                    if not ex_data.empty:
+                        for _, row in ex_data.iterrows():
+                            if row['asset'] == 'USDT':
+                                st.write(f"**USDT:** {row['total']:.2f}")
+                            else:
+                                st.write(f"{row['asset']}: {row['free']:.8f} ≈ {row['usdt_value']:.2f} USDT")
         else:
-            bal_data = get_latest_balances(st.session_state.user_id)
-            if bal_data:
-                df = pd.DataFrame(bal_data)
-                df = df.sort_values('created_at').groupby(['exchange', 'asset']).last().reset_index()
-                for ex in EXCHANGES:
-                    with st.expander(f"{ex.upper()}"):
-                        ex_data = df[df['exchange'] == ex]
-                        if not ex_data.empty:
-                            for _, row in ex_data.iterrows():
-                                if row['asset'] == 'USDT':
-                                    st.write(f"**USDT:** {row['total']:.2f}")
-                                else:
-                                    st.write(f"{row['asset']}: {row['free']:.8f} ≈ {row['usdt_value']:.2f} USDT")
-            else:
-                st.info("Нет данных по балансам. Ожидайте первого сканирования worker'ом.")
+            st.info("Нет данных по балансам. Ожидайте первого сканирования worker'ом.")
 
 # ----- Вывод -----
 with tabs[5]:
