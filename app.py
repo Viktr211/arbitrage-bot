@@ -33,6 +33,14 @@ from utils import (
     save_log
 )
 
+# Пытаемся импортировать автообновление
+try:
+    from streamlit_autorefresh import st_autorefresh
+    AUTOREFRESH_AVAILABLE = True
+except ImportError:
+    AUTOREFRESH_AVAILABLE = False
+    st_autorefresh = None
+
 st.set_page_config(page_title="Арбитражный бот HOVMEL", layout="wide", page_icon="🔄", initial_sidebar_state="collapsed")
 
 st.markdown("""
@@ -88,6 +96,10 @@ if 'email' in st.query_params:
 
 if st.session_state.logged_in and st.session_state.email:
     st.query_params.email = st.session_state.email
+
+# ------------------- АВТООБНОВЛЕНИЕ (раз в 30 секунд) -------------------
+if AUTOREFRESH_AVAILABLE:
+    st_autorefresh(interval=30000, key="auto_refresh")
 
 # ------------------- ЛОГИН / РЕГИСТРАЦИЯ -------------------
 def login():
@@ -192,20 +204,14 @@ try:
     res = supabase.table('balances').select('*').eq('user_id', st.session_state.user_id).order('created_at', desc=True).limit(500).execute()
     bal_data = res.data
     
-    st.write(f"🔍 Найдено записей в balances: {len(bal_data)}")
-    
     if bal_data:
         df = pd.DataFrame(bal_data)
-        st.write("📋 Первые 3 записи из balances:")
-        st.dataframe(df.head(3))
-        
         df['created_at'] = pd.to_datetime(df['created_at'])
         df_last = df.sort_values('created_at').groupby(['exchange', 'asset']).last().reset_index()
         
         usdt_rows = df_last[df_last['asset'] == 'USDT']
         total_usdt = usdt_rows['total'].sum() if not usdt_rows.empty else 0.0
         
-        # Исправлено: используем endswith без .str
         token_rows = df_last[~df_last['asset'].isin(['USDT']) & ~df_last['asset'].str.endswith('_price')]
         total_portfolio = token_rows['usdt_value'].sum() if not token_rows.empty else 0.0
         
@@ -290,9 +296,15 @@ with tabs[0]:
         df_prices_last = df_prices.sort_values('created_at').groupby(['exchange', 'asset']).last().reset_index()
         price_rows = df_prices_last[df_prices_last['asset'].str.endswith('_price')]
         if not price_rows.empty:
-            price_rows['Токен'] = price_rows['asset'].str.replace('_price', '')
-            price_rows['Цена (USDT)'] = price_rows['total'].apply(lambda x: f"{x:.8f}")
-            st.dataframe(price_rows[['Токен', 'exchange', 'Цена (USDT)']].rename(columns={'exchange': 'Биржа'}), width='stretch', hide_index=True)
+            # Выводим цены только по биржам, которые есть в данных
+            display_data = []
+            for _, row in price_rows.iterrows():
+                display_data.append({
+                    'Токен': row['asset'].replace('_price', ''),
+                    'Биржа': row['exchange'].upper(),
+                    'Цена (USDT)': f"{row['total']:.8f}"
+                })
+            st.dataframe(pd.DataFrame(display_data), width='stretch', hide_index=True)
         else:
             st.info("Цены будут отображаться после сохранения данных worker'ом")
     else:
