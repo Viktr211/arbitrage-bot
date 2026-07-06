@@ -294,17 +294,23 @@ with tabs[0]:
         df_prices = pd.DataFrame(bal_data)
         df_prices['created_at'] = pd.to_datetime(df_prices['created_at'])
         df_prices_last = df_prices.sort_values('created_at').groupby(['exchange', 'asset']).last().reset_index()
+        
+        # Фильтруем только записи с _price
         price_rows = df_prices_last[df_prices_last['asset'].str.endswith('_price')]
+        
         if not price_rows.empty:
-            # Выводим цены только по биржам, которые есть в данных
             display_data = []
             for _, row in price_rows.iterrows():
+                token = row['asset'].replace('_price', '')
+                exchange = row['exchange'].upper()
+                price = float(row['total'])
                 display_data.append({
-                    'Токен': row['asset'].replace('_price', ''),
-                    'Биржа': row['exchange'].upper(),
-                    'Цена (USDT)': f"{row['total']:.8f}"
+                    'Токен': token,
+                    'Биржа': exchange,
+                    'Цена (USDT)': f"{price:.8f}"
                 })
             st.dataframe(pd.DataFrame(display_data), width='stretch', hide_index=True)
+            st.caption("🔄 Цены обновляются каждые 5 минут")
         else:
             st.info("Цены будут отображаться после сохранения данных worker'ом")
     else:
