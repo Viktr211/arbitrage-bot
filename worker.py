@@ -65,13 +65,16 @@ def get_worker_settings():
     return settings, admin_user
 
 def save_prices(user_id, real_exchanges):
-    """Сохраняет текущие цены токенов в БД"""
+    """Сохраняет текущие цены токенов для всех бирж"""
     try:
         tokens = get_available_tokens()
+        count = 0
         for ex in EXCHANGES:
             exch = real_exchanges.get(ex)
             if not exch:
+                log(f"⚠️ Биржа {ex} не подключена, пропускаем сохранение цен", 'warning')
                 continue
+            log(f"📊 Сохраняем цены для {ex}")
             for token in tokens:
                 try:
                     price = get_price(exch, token)
@@ -85,10 +88,36 @@ def save_prices(user_id, real_exchanges):
                             'total': price,
                             'usdt_value': price
                         }).execute()
+                        count += 1
+                        log(f"  ✅ {token} на {ex}: {price:.8f}")
                 except Exception as e:
                     print(f"Ошибка сохранения цены {token} на {ex}: {e}")
+        log(f"💾 Сохранено {count} цен для {len(tokens)} токенов на {len(EXCHANGES)} биржах")
     except Exception as e:
         print(f"Ошибка сохранения цен: {e}")
+
+def force_save_balances(user_id, real_exchanges):
+    """Принудительное сохранение балансов и цен с проверкой"""
+    try:
+        log("🔄 Принудительное сохранение балансов и цен...")
+        log(f"👤 Сохраняем для user_id: {user_id}")
+        
+        # Сохраняем балансы
+        save_balances(user_id, real_exchanges)
+        
+        # Сохраняем цены (для всех бирж)
+        save_prices(user_id, real_exchanges)
+        
+        # Проверяем, что сохранилось
+        res = supabase.table('balances').select('*').eq('user_id', user_id).limit(10).execute()
+        if res.data:
+            log(f"✅ Балансы успешно сохранены! Найдено записей: {len(res.data)}")
+            for record in res.data[:3]:
+                log(f"📋 Пример: {record}")
+        else:
+            log("❌ Балансы НЕ сохранились! Проверьте таблицу balances.", 'error')
+    except Exception as e:
+        log(f"❌ Ошибка при сохранении балансов: {e}", 'error')
 
 async def main_loop():
     log("🚀 Worker запущен")
@@ -100,13 +129,13 @@ async def main_loop():
     
     log(f"✅ Подключены биржи: {', '.join([ex for ex, c in real_exchanges.items() if c])}")
     
-    # ---------- СОХРАНЕНИЕ ПРИ СТАРТЕ ----------
     admin_user = get_user_by_email(ADMIN_EMAIL)
     if admin_user:
-        save_balances(admin_user['id'], real_exchanges)
-        save_prices(admin_user['id'], real_exchanges)
-        log("💾 Балансы и цены сохранены при старте")
-    # -------------------------------------------
+        # Принудительно сохраняем балансы и цены при старте
+        force_save_balances(admin_user['id'], real_exchanges)
+    else:
+        log("❌ Администратор не найден", 'error')
+        return
     
     last_trade_info = {}
     balance_counter = 0
@@ -180,9 +209,7 @@ async def main_loop():
                         'timestamp': datetime.now()
                     }
                     if not is_demo:
-                        save_balances(admin_user['id'], real_exchanges)
-                        save_prices(admin_user['id'], real_exchanges)
-                        log("💾 Балансы и цены сохранены после сделки")
+                        force_save_balances(admin_user['id'], real_exchanges)
                 else:
                     log(f"❌ Ошибка: {msg}", 'error')
             else:
@@ -192,9 +219,7 @@ async def main_loop():
             if balance_counter >= BALANCE_SAVE_INTERVAL:
                 balance_counter = 0
                 if not is_demo:
-                    save_balances(admin_user['id'], real_exchanges)
-                    save_prices(admin_user['id'], real_exchanges)
-                    log("💾 Балансы и цены сохранены (плановое обновление)")
+                    force_save_balances(admin_user['id'], real_exchanges)
             
             await asyncio.sleep(SCAN_INTERVAL)
             
