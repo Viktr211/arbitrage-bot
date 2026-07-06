@@ -290,6 +290,8 @@ with tabs[0]:
         st.write(f"**Минимальная прибыль:** {settings.get('min_profit', 0.03):.2f} USDT.")
     st.markdown("---")
     st.markdown("### 💹 Текущие цены токенов")
+    
+    # Получаем цены из таблицы balances
     if bal_data:
         df_prices = pd.DataFrame(bal_data)
         df_prices['created_at'] = pd.to_datetime(df_prices['created_at'])
@@ -298,19 +300,57 @@ with tabs[0]:
         # Фильтруем только записи с _price
         price_rows = df_prices_last[df_prices_last['asset'].str.endswith('_price')]
         
+        # Формируем таблицу как раньше
         if not price_rows.empty:
-            display_data = []
-            for _, row in price_rows.iterrows():
-                token = row['asset'].replace('_price', '')
-                exchange = row['exchange'].upper()
-                price = float(row['total'])
-                display_data.append({
-                    'Токен': token,
-                    'Биржа': exchange,
-                    'Цена (USDT)': f"{price:.8f}"
-                })
-            st.dataframe(pd.DataFrame(display_data), width='stretch', hide_index=True)
-            st.caption("🔄 Цены обновляются каждые 5 минут")
+            # Группируем по токенам
+            tokens = price_rows['asset'].str.replace('_price', '').unique()
+            rows = []
+            
+            for token in tokens:
+                row = {'Токен': token}
+                # Добавляем цены для каждой биржи
+                for ex in EXCHANGES:
+                    price_row = price_rows[(price_rows['asset'] == f'{token}_price') & (price_rows['exchange'] == ex)]
+                    if not price_row.empty:
+                        price = float(price_row.iloc[0]['total'])
+                        row[ex.upper()] = f"{price:.8f}"
+                    else:
+                        row[ex.upper()] = "—"
+                
+                # Вычисляем спред
+                kucoin_price = row.get('KUCOIN')
+                okx_price = row.get('OKX')
+                if kucoin_price != "—" and okx_price != "—":
+                    try:
+                        kucoin = float(kucoin_price)
+                        okx = float(okx_price)
+                        diff = abs(kucoin - okx) / kucoin * 100
+                        row['Спред %'] = f"{diff:.2f}%"
+                        # Проверяем, выгодно ли (спред > минимальная прибыль)
+                        min_profit_percent = (settings.get('min_profit', 0.03) / settings.get('min_trade', 8) * 100) if settings else 0.3
+                        row['Арбитраж'] = "✅" if diff > min_profit_percent else "❌"
+                    except:
+                        row['Спред %'] = "—"
+                        row['Арбитраж'] = "?"
+                else:
+                    row['Спред %'] = "—"
+                    row['Арбитраж'] = "?"
+                
+                rows.append(row)
+            
+            if rows:
+                df_display = pd.DataFrame(rows)
+                # Подсветка зелёных строк
+                def highlight_profitable(row):
+                    if row.get('Арбитраж') == "✅":
+                        return ['background-color: #00FF88; color: black'] * len(row)
+                    else:
+                        return [''] * len(row)
+                
+                st.dataframe(df_display.style.apply(highlight_profitable, axis=1), width='stretch', hide_index=True)
+                st.caption("🟢 Зелёным выделены токены, спред по которым превышает минимальную прибыль с учётом комиссии.")
+            else:
+                st.info("Нет данных для отображения")
         else:
             st.info("Цены будут отображаться после сохранения данных worker'ом")
     else:
