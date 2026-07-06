@@ -184,17 +184,22 @@ else:
     st.info("🔒 Вы в режиме просмотра. Управление ботом недоступно.")
 
 # ------------------- РАСЧЁТ КАПИТАЛА (из таблицы balances) -------------------
-mode = get_trade_mode(st.session_state.user_id)
 total_usdt = 0.0
 total_portfolio = 0.0
+bal_data = []
 
 try:
     # Получаем ВСЕ балансы пользователя
     res = supabase.table('balances').select('*').eq('user_id', st.session_state.user_id).order('created_at', desc=True).limit(500).execute()
     bal_data = res.data
     
+    st.write(f"🔍 Найдено записей в balances: {len(bal_data)}")  # ОТЛАДКА
+    
     if bal_data:
         df = pd.DataFrame(bal_data)
+        st.write("📋 Первые 3 записи из balances:")  # ОТЛАДКА
+        st.dataframe(df.head(3))  # ОТЛАДКА
+        
         # Для каждого актива и биржи берём самую свежую запись
         df['created_at'] = pd.to_datetime(df['created_at'])
         df_last = df.sort_values('created_at').groupby(['exchange', 'asset']).last().reset_index()
@@ -213,7 +218,7 @@ try:
         st.info("⏳ Балансы загружаются...")
         total_capital = 0.0
 except Exception as e:
-    st.error(f"Ошибка загрузки балансов: {e}")
+    st.error(f"❌ Ошибка загрузки балансов: {e}")
     total_capital = 0.0
 
 col_a, col_b, col_c, col_d, col_e = st.columns(5)
@@ -282,7 +287,6 @@ with tabs[0]:
         st.write(f"**Минимальная прибыль:** {settings.get('min_profit', 0.03):.2f} USDT.")
     st.markdown("---")
     st.markdown("### 💹 Текущие цены токенов")
-    # Показываем цены из таблицы balances (записи с _price)
     if bal_data:
         df_prices = pd.DataFrame(bal_data)
         df_prices['created_at'] = pd.to_datetime(df_prices['created_at'])
