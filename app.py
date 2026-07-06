@@ -183,32 +183,29 @@ if st.session_state.role == 'admin':
 else:
     st.info("🔒 Вы в режиме просмотра. Управление ботом недоступно.")
 
-# ------------------- РАСЧЁТ КАПИТАЛА (из таблицы balances) -------------------
+# ------------------- РАСЧЁТ КАПИТАЛА -------------------
 total_usdt = 0.0
 total_portfolio = 0.0
 bal_data = []
 
 try:
-    # Получаем ВСЕ балансы пользователя
     res = supabase.table('balances').select('*').eq('user_id', st.session_state.user_id).order('created_at', desc=True).limit(500).execute()
     bal_data = res.data
     
-    st.write(f"🔍 Найдено записей в balances: {len(bal_data)}")  # ОТЛАДКА
+    st.write(f"🔍 Найдено записей в balances: {len(bal_data)}")
     
     if bal_data:
         df = pd.DataFrame(bal_data)
-        st.write("📋 Первые 3 записи из balances:")  # ОТЛАДКА
-        st.dataframe(df.head(3))  # ОТЛАДКА
+        st.write("📋 Первые 3 записи из balances:")
+        st.dataframe(df.head(3))
         
-        # Для каждого актива и биржи берём самую свежую запись
         df['created_at'] = pd.to_datetime(df['created_at'])
         df_last = df.sort_values('created_at').groupby(['exchange', 'asset']).last().reset_index()
         
-        # Собираем USDT
         usdt_rows = df_last[df_last['asset'] == 'USDT']
         total_usdt = usdt_rows['total'].sum() if not usdt_rows.empty else 0.0
         
-        # Собираем токены (исключаем USDT и записи с _price)
+        # Исправлено: используем endswith без .str
         token_rows = df_last[~df_last['asset'].isin(['USDT']) & ~df_last['asset'].str.endswith('_price')]
         total_portfolio = token_rows['usdt_value'].sum() if not token_rows.empty else 0.0
         
@@ -361,7 +358,7 @@ with tabs[4]:
                         for _, row in ex_data.iterrows():
                             if row['asset'] == 'USDT':
                                 st.write(f"**USDT:** {row['total']:.2f}")
-                            elif not row['asset'].str.endswith('_price'):
+                            elif not row['asset'].endswith('_price'):
                                 st.write(f"{row['asset']}: {row['free']:.8f} ≈ {row['usdt_value']:.2f} USDT")
         else:
             st.info("Нет данных по балансам. Ожидайте первого сканирования worker'ом.")
