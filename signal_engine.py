@@ -11,8 +11,8 @@ from collections import deque
 SYMBOLS = ["EURUSD_otc", "GBPUSD_otc", "USDJPY_otc"]
 EMA_FAST_M5 = 3
 EMA_SLOW_M5 = 8
-ABSORPTION_VOLUME_MULT = 2.0
-MIN_SIGNAL_CONFIDENCE = 0.6
+ABSORPTION_VOLUME_MULT = 1.2
+MIN_SIGNAL_CONFIDENCE = 0.5
 
 # ===== ГЕНЕРАТОР ТИКОВ =====
 class TickGenerator:
