@@ -110,7 +110,7 @@ class OrderFlowAnalyzer:
         price_range = last["high"] - last["low"]
         range_ratio = price_range / avg_range if avg_range > 0 else 1
 
-        if volume_ratio > ABSORPTION_VOLUME_MULT and range_ratio < 0.5:
+        if volume_ratio > ABSORPTION_VOLUME_MULT and range_ratio < 0.8:
             if last["delta"] > 0:
                 confidence = min(0.9, 0.6 + volume_ratio * 0.05)
                 return 1, confidence, f"Абсорбция продаж (vol x{volume_ratio:.1f}, delta +{last['delta']})"
