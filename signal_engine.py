@@ -17,7 +17,7 @@ SYMBOLS = [
 
 EMA_FAST_M5 = 3
 EMA_SLOW_M5 = 8
-ABSORPTION_VOLUME_MULT = 1.2
+ABSORPTION_VOLUME_MULT = 0.8 # Для демо-теста оставляем мягким
 MIN_SIGNAL_CONFIDENCE = 0.5
 
 # ===== ГЕНЕРАТОР (ДЕМО) =====
@@ -118,6 +118,9 @@ class SignalEngine:
         self.last_signal_time = {sym: None for sym in SYMBOLS}
         self.active_lights = {sym: None for sym in SYMBOLS}
         
+        # НОВОЕ: Переменная для хранения актива, по которому был последний сигнал
+        self.last_signaled_symbol = "EURUSD_otc" 
+        
         # Разогрев
         start_time = datetime.now() - timedelta(minutes=300)
         for sym in SYMBOLS:
@@ -137,8 +140,8 @@ class SignalEngine:
                 analyzer.add_tick(gen.next_tick())
 
             now = datetime.now()
-            # Защита от дублей: не чаще раза в 5 минут
-            if self.last_signal_time[sym] and (now - self.last_signal_time[sym]).seconds < 300:
+            # Защита от дублей: не чаще раза в 10 секунд (для теста)
+            if self.last_signal_time[sym] and (now - self.last_signal_time[sym]).seconds < 10:
                 continue
 
             trend = get_m5_trend(analyzer)
@@ -148,11 +151,13 @@ class SignalEngine:
             if signal == 0 or signal != trend or confidence < MIN_SIGNAL_CONFIDENCE:
                 continue
 
-            # Время входа (следующая минута)
             entry_time = (now + timedelta(minutes=1)).replace(second=0, microsecond=0)
             
             self.active_lights[sym] = "CALL" if signal == 1 else "PUT"
             self.last_signal_time[sym] = now
+            
+            # НОВОЕ: Обновляем актив для графика
+            self.last_signaled_symbol = sym 
             
             self.signals.append({
                 "time": now, 
@@ -172,28 +177,38 @@ class SignalEngine:
         return new_sig
 
 # ===== ИНТЕРФЕЙС =====
-st.set_page_config(page_title="Signal Engine v1.6", layout="wide")
-st.title("🎯 SIGNAL CONFLUENCE ENGINE v1.6")
+st.set_page_config(page_title="Signal Engine v1.7", layout="wide")
+st.title("🎯 SIGNAL CONFLUENCE ENGINE v1.7")
 
 if "engine" not in st.session_state:
     st.session_state.engine = SignalEngine()
 engine = st.session_state.engine
 
-# Звук (изолированный компонент)
+# НОВЫЙ ЗВУК (Web Audio API)
 def play_sound(direction):
-    if direction == "CALL":
-        url = "https://actions.google.com/sounds/v1/alarms/beep_short.ogg" # Высокий
-    else:
-        url = "https://actions.google.com/sounds/v1/alarms/alert_1.ogg" # Низкий
+    # Генерируем звук прямо в браузере (обходит блокировки)
+    freq = 880 if direction == "CALL" else 330 # Высокий для CALL, низкий для PUT
+    wave_type = "sine" if direction == "CALL" else "square"
     
-    # Используем components.html, чтобы обойти блокировку Streamlit
-    components.html(
-        f"""
-        <audio autoplay>
-            <source src="{url}" type="audio/ogg">
-        </audio>
-        """, height=0
-    )
+    js_code = f"""
+    <script>
+    try {{
+        var audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') {{ audioCtx.resume(); }}
+        var oscillator = audioCtx.createOscillator();
+        var gainNode = audioCtx.createGain();
+        oscillator.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+        oscillator.type = '{wave_type}';
+        oscillator.frequency.value = {freq};
+        gainNode.gain.setValueAtTime(0.5, audioCtx.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.4);
+        oscillator.start();
+        oscillator.stop(audioCtx.currentTime + 0.4);
+    }} catch(e) {{ console.log("Audio blocked by browser"); }}
+    </script>
+    """
+    components.html(js_code, height=0)
 
 if engine.update():
     play_sound(engine.signals[-1]["direction"])
@@ -215,8 +230,13 @@ st.markdown("---")
 col_graph, col_forecast = st.columns([2, 1])
 
 with col_graph:
-    st.subheader("📈 График M1 (EURUSD)")
-    df = engine.analyzers["EURUSD_otc"].get_m1_dataframe()
+    # НОВОЕ: Берем актив, по которому был последний сигнал
+    target_sym = engine.last_signaled_symbol
+    display_name = target_sym.replace("_otc", "")
+    
+    st.subheader(f"📈 График M1 ({display_name})")
+    df = engine.analyzers[target_sym].get_m1_dataframe()
+    
     if not df.empty:
         df_plot = df.tail(60).copy() 
         df_plot["time"] = pd.to_datetime(df_plot["time"])
@@ -228,7 +248,7 @@ with col_graph:
         st.plotly_chart(fig, width='stretch')
 
 with col_forecast:
-    st.subheader("🔮 AI Forecast (Фундаментал + Техника)")
+    st.subheader("🔮 AI Forecast")
     st.markdown("""
     <div style="background-color: #1E1E1E; padding: 15px; border-radius: 10px; border: 1px solid #444;">
         <h4 style="color: #FFA500; margin-top: 0;">📅 16:15 — ВВП США (News)</h4>
@@ -240,17 +260,17 @@ with col_forecast:
         <p><b>Прогноз:</b> Сценарий на пробой вверх — <span style="color:green; font-weight:bold;">CALL</span> на 1 минуту.</p>
     </div>
     """, unsafe_allow_html=True)
-    st.caption("*(Демо-режим. В понедельник подключим реальный календарь новостей)*")
+    st.caption("*(Демо-режим)*")
 
 # ===== ИСТОРИЯ =====
 st.markdown("---")
-st.subheader("📜 История сигналов (с временем входа)")
+st.subheader("📜 История сигналов")
 if engine.signals:
     hist_data = []
     for s in reversed(engine.signals):
         hist_data.append({
             "Сформирован": s['time'].strftime('%H:%M:%S'),
-            "Вход (по времени)": s['entry_time'].strftime('%H:%M:%S'),
+            "Вход": s['entry_time'].strftime('%H:%M:%S'),
             "Экспирация": s['expiry'],
             "Актив": s['symbol'].replace('_otc',''),
             "Сигнал": "🟢 BUY" if s['direction'] == "CALL" else "🔴 SELL",
