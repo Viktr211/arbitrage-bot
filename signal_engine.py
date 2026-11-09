@@ -7,19 +7,30 @@ import random
 from datetime import datetime, timedelta
 from collections import deque
 
-# ===== НАСТРОЙКИ =====
-SYMBOLS = ["EURUSD_otc", "GBPUSD_otc", "USDJPY_otc"]
+# ===== НАСТРОЙКИ АКТИВОВ =====
+# 7 валютных пар + Золото
+SYMBOLS = [
+    "EURUSD_otc", "GBPUSD_otc", "USDJPY_otc", 
+    "AUDUSD_otc", "USDCAD_otc", "USDCHF_otc", 
+    "NZDUSD_otc", "XAUUSD_otc"
+]
+
 EMA_FAST_M5 = 3
 EMA_SLOW_M5 = 8
 ABSORPTION_VOLUME_MULT = 1.2
 MIN_SIGNAL_CONFIDENCE = 0.5
 
-# ===== ГЕНЕРАТОР ТИКОВ =====
+# ===== ГЕНЕРАТОР ТИКОВ (ДЕМО) =====
 class TickGenerator:
     def __init__(self, symbol, base_price=1.2000, volatility=0.0001):
         self.symbol = symbol
-        self.price = base_price
-        self.volatility = volatility
+        # Для золота другие цены
+        if "XAU" in symbol: 
+            self.price = 2000.0
+            self.volatility = 0.05
+        else:
+            self.price = base_price
+            self.volatility = volatility
         self.trend = 0.0
         self.trend_timer = 0
 
@@ -83,21 +94,9 @@ class OrderFlowAnalyzer:
             return pd.DataFrame()
         return pd.DataFrame(self.candles_m1)
 
-    def get_m5_dataframe(self):
-        df = self.get_m1_dataframe()
-        if df.empty:
-            return df
-        df = df.set_index("time")
-        ohlc = df.resample("5min").agg({
-            "open": "first", "high": "max", "low": "min", "close": "last",
-            "volume": "sum", "delta": "sum", "buy_volume": "sum", "sell_volume": "sum",
-        }).dropna()
-        return ohlc.reset_index()
-
     def detect_absorption(self, lookback=20):
         if len(self.candles_m1) < lookback + 1:
             return 0, 0, ""
-
         df = pd.DataFrame(self.candles_m1[-lookback:])
         last = df.iloc[-1]
         avg_volume = df["volume"].mean()
@@ -112,28 +111,24 @@ class OrderFlowAnalyzer:
 
         if volume_ratio > ABSORPTION_VOLUME_MULT and range_ratio < 0.8:
             if last["delta"] > 0:
-                confidence = min(0.9, 0.6 + volume_ratio * 0.05)
-                return 1, confidence, f"Абсорбция продаж (vol x{volume_ratio:.1f}, delta +{last['delta']})"
+                return 1, min(0.95, 0.5 + volume_ratio * 0.1), f"Абсорбция продаж (vol x{volume_ratio:.1f})"
             elif last["delta"] < 0:
-                confidence = min(0.9, 0.6 + volume_ratio * 0.05)
-                return -1, confidence, f"Абсорбция покупок (vol x{volume_ratio:.1f}, delta {last['delta']})"
+                return -1, min(0.95, 0.5 + volume_ratio * 0.1), f"Абсорбция покупок (vol x{volume_ratio:.1f})"
         return 0, 0, ""
 
-# ===== ФИЛЬТР ТРЕНДА =====
 def get_m5_trend(analyzer):
-    df_m5 = analyzer.get_m5_dataframe()
-    if len(df_m5) < EMA_SLOW_M5 + 1:
-        return 0
+    df_m1 = analyzer.get_m1_dataframe()
+    if df_m1.empty or len(df_m1) < 25: return 0
+    df_m5 = df_m1.set_index("time").resample("5min").agg({"close": "last"}).dropna().reset_index()
+    if len(df_m5) < EMA_SLOW_M5 + 1: return 0
     prices = df_m5["close"].tolist()
-    multiplier_f = 2 / (EMA_FAST_M5 + 1)
+    
     ema_f = prices[0]
     for p in prices[1:]:
-        ema_f = (p - ema_f) * multiplier_f + ema_f
-        
-    multiplier_s = 2 / (EMA_SLOW_M5 + 1)
+        ema_f = (p - ema_f) * (2 / (EMA_FAST_M5 + 1)) + ema_f
     ema_s = prices[0]
     for p in prices[1:]:
-        ema_s = (p - ema_s) * multiplier_s + ema_s
+        ema_s = (p - ema_s) * (2 / (EMA_SLOW_M5 + 1)) + ema_s
 
     if ema_f > ema_s: return 1
     elif ema_f < ema_s: return -1
@@ -146,8 +141,9 @@ class SignalEngine:
         self.analyzers = {sym: OrderFlowAnalyzer() for sym in SYMBOLS}
         self.signals = []
         self.last_signal_time = {sym: None for sym in SYMBOLS}
+        self.active_lights = {sym: None for sym in SYMBOLS} # Для светофора
         
-        # РАЗОГРЕВ (WARM-UP)
+        # РАЗОГРЕВ
         start_time = datetime.now() - timedelta(minutes=300)
         for sym in SYMBOLS:
             gen = self.generators[sym]
@@ -158,6 +154,7 @@ class SignalEngine:
                 analyzer.add_tick(tick)
 
     def update(self):
+        new_signal_triggered = False
         for sym in SYMBOLS:
             gen = self.generators[sym]
             analyzer = self.analyzers[sym]
@@ -166,47 +163,93 @@ class SignalEngine:
                 analyzer.add_tick(tick)
 
             now = datetime.now()
-            if self.last_signal_time[sym] and (now - self.last_signal_time[sym]).seconds < 60:
+            # Для демо-режима ускорим генерацию сигналов
+            if self.last_signal_time[sym] and (now - self.last_signal_time[sym]).seconds < 15:
                 continue
 
             trend = get_m5_trend(analyzer)
-            if trend == 0:
-                continue
+            if trend == 0: continue
 
             signal, confidence, reason = analyzer.detect_absorption()
             if signal == 0 or signal != trend or confidence < MIN_SIGNAL_CONFIDENCE:
                 continue
 
+            # Зажигаем светофор
+            self.active_lights[sym] = "CALL" if signal == 1 else "PUT"
             self.last_signal_time[sym] = now
+            
+            # Добавляем в историю
             self.signals.append({
                 "time": now, "symbol": sym,
                 "direction": "CALL" if signal == 1 else "PUT",
                 "confidence": confidence, "reason": reason,
                 "trend_m5": "UP" if trend == 1 else "DOWN",
             })
-            if len(self.signals) > 50:
-                self.signals = self.signals[-50:]
+            if len(self.signals) > 100:
+                self.signals = self.signals[-100:]
+            new_signal_triggered = True
+            
+        # Гасим светофоры, если сигналу больше 1 минуты
+        for sym in SYMBOLS:
+            if self.last_signal_time[sym] and (datetime.now() - self.last_signal_time[sym]).seconds > 60:
+                self.active_lights[sym] = None
+
+        return new_signal_triggered
 
 # ===== ИНТЕРФЕЙС =====
-st.set_page_config(page_title="Signal Engine", layout="wide")
-st.title("🎯 SIGNAL CONFLUENCE ENGINE v0.2")
+st.set_page_config(page_title="Signal Engine v1.5", layout="wide")
+st.title("🎯 SIGNAL CONFLUENCE ENGINE v1.5")
 
 if "engine" not in st.session_state:
     st.session_state.engine = SignalEngine()
 engine = st.session_state.engine
 
-engine.update()
+# Звуковое сопровождение (HTML/JS)
+def play_sound(direction):
+    if direction == "CALL":
+        # Звук покупки (высокий)
+        audio_html = """<audio autoplay><source src="https://actions.google.com/sounds/v1/alarms/beep_short.ogg" type="audio/ogg"></audio>"""
+    else:
+        # Звук продажи (низкий)
+        audio_html = """<audio autoplay><source src="https://actions.google.com/sounds/v1/alarms/alert_1.ogg" type="audio/ogg"></audio>"""
+    st.markdown(audio_html, unsafe_allow_html=True)
 
-with st.sidebar:
-    st.header("📊 Статус")
-    st.metric("Активов", len(SYMBOLS))
-    st.metric("Сигналов", len(engine.signals))
-    st.caption(f"Обновлено: {datetime.now().strftime('%H:%M:%S')}")
+if engine.update():
+    # Если появился новый сигнал, играем звук последнего
+    play_sound(engine.signals[-1]["direction"])
 
-col_left, col_right = st.columns([3, 2])
+# ===== ВЕРХНЯЯ ПАНЕЛЬ (СВЕТОФОР) =====
+st.markdown("### 🟢 Активы в реальном времени 🔴")
+cols = st.columns(8)
+for i, sym in enumerate(SYMBOLS):
+    with cols[i]:
+        light = engine.active_lights[sym]
+        # Форматируем название (убираем _otc)
+        display_name = sym.replace("_otc", "")
+        
+        if light == "CALL":
+            color = "#00FF00" # Ярко-зеленый
+            text_color = "black"
+        elif light == "PUT":
+            color = "#FF0000" # Ярко-красный
+            text_color = "white"
+        else:
+            color = "#333333" # Темно-серый (нет сигнала)
+            text_color = "#888888"
+            
+        st.markdown(f"""
+        <div style="background-color: {color}; padding: 15px 5px; border-radius: 10px; text-align: center; border: 2px solid #444;">
+            <h4 style="color: {text_color}; margin: 0; font-size: 16px;">{display_name}</h4>
+        </div>
+        """, unsafe_allow_html=True)
+
+st.markdown("---")
+
+# ===== ОСНОВНОЙ ЭКРАН =====
+col_left, col_right = st.columns([2, 1])
 
 with col_left:
-    st.subheader("📈 График M1 (EURUSD_otc)")
+    st.subheader("📈 График M1 (EURUSD)")
     analyzer = engine.analyzers["EURUSD_otc"]
     df = analyzer.get_m1_dataframe()
     
@@ -227,27 +270,61 @@ with col_left:
         colors = ["lime" if d > 0 else "red" for d in df["delta"]]
         fig.add_trace(go.Bar(x=df["time"], y=df["delta"], name="Delta", marker_color=colors), row=2, col=1)
         
-        fig.update_layout(height=500, template="plotly_dark", xaxis_rangeslider_visible=False, margin=dict(l=20, r=20, t=30, b=20))
-        
-        # Исправлено предупреждение Streamlit
+        fig.update_layout(height=500, template="plotly_dark", xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=30, b=10))
         st.plotly_chart(fig, width='stretch')
-    else:
-        st.info("Ожидание данных...")
 
 with col_right:
-    st.subheader("🎯 Сигналы (последние 10)")
+    st.subheader("🎯 Последний сигнал")
     if engine.signals:
-        for sig in reversed(engine.signals[-10:]):
-            color = "🟢" if sig["direction"] == "CALL" else "🔴"
-            st.markdown(f"""
-            **{color} {sig['symbol']} — {sig['direction']}**  
-            ⏰ `{sig['time'].strftime('%H:%M:%S')}` | Уверенность: **{sig['confidence']*100:.0f}%**  
-            📝 _{sig['reason']}_  
-            📊 Тренд M5: {sig['trend_m5']}
-            ---
-            """)
+        sig = engine.signals[-1]
+        color = "green" if sig["direction"] == "CALL" else "red"
+        
+        # Красивая карточка сигнала
+        st.markdown(f"""
+        <div style="background-color: #1E1E1E; padding: 20px; border-radius: 10px; border-left: 5px solid {color};">
+            <h2 style="color: {color}; margin-top: 0;">{sig['symbol'].replace('_otc','')} — {sig['direction']}</h2>
+            <p style="font-size: 18px;"><b>Время:</b> {sig['time'].strftime('%H:%M:%S')}</p>
+            <p style="font-size: 16px;"><b>Причина:</b> {sig['reason']}</p>
+            <p style="font-size: 16px;"><b>Тренд M5:</b> {sig['trend_m5']}</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Шкала уверенности
+        st.write("Уверенность:")
+        st.progress(float(sig['confidence']), text=f"{sig['confidence']*100:.0f}%")
     else:
-        st.info("Сигналов пока нет. Система анализирует рынок...")
+        st.info("Сигналов пока нет. Ждем-с...")
 
+# ===== ИСТОРИЯ СИГНАЛОВ =====
+st.markdown("---")
+st.subheader("📜 История всех сигналов")
+if engine.signals:
+    # Создаем DataFrame для красивого отображения
+    hist_data = []
+    for s in reversed(engine.signals):
+        hist_data.append({
+            "Время": s['time'].strftime('%H:%M:%S'),
+            "Актив": s['symbol'].replace('_otc',''),
+            "Сигнал": "🟢 BUY" if s['direction'] == "CALL" else "🔴 SELL",
+            "Уверенность": f"{s['confidence']*100:.0f}%",
+            "Причина": s['reason']
+        })
+    df_hist = pd.DataFrame(hist_data)
+    
+    # Кнопка скачивания CSV
+    csv = df_hist.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="📥 Скачать историю (CSV)",
+        data=csv,
+        file_name=f"signals_{datetime.now().strftime('%Y%m%d')}.csv",
+        mime="text/csv",
+    )
+    
+    # Красивая таблица
+    st.dataframe(df_hist, width='stretch', height=300)
+else:
+    st.info("История пока пуста.")
+
+# Автообновление каждые 3 сек
 time.sleep(3)
 st.rerun()
