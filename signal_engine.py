@@ -17,7 +17,7 @@ SYMBOLS = [
 
 EMA_FAST_M5 = 3
 EMA_SLOW_M5 = 8
-ABSORPTION_VOLUME_MULT = 0.8 # Для демо-теста оставляем мягким
+ABSORPTION_VOLUME_MULT = 0.8
 MIN_SIGNAL_CONFIDENCE = 0.5
 
 # ===== ГЕНЕРАТОР (ДЕМО) =====
@@ -117,8 +117,6 @@ class SignalEngine:
         self.signals = []
         self.last_signal_time = {sym: None for sym in SYMBOLS}
         self.active_lights = {sym: None for sym in SYMBOLS}
-        
-        # НОВОЕ: Переменная для хранения актива, по которому был последний сигнал
         self.last_signaled_symbol = "EURUSD_otc" 
         
         # Разогрев
@@ -140,7 +138,6 @@ class SignalEngine:
                 analyzer.add_tick(gen.next_tick())
 
             now = datetime.now()
-            # Защита от дублей: не чаще раза в 10 секунд (для теста)
             if self.last_signal_time[sym] and (now - self.last_signal_time[sym]).seconds < 10:
                 continue
 
@@ -155,8 +152,6 @@ class SignalEngine:
             
             self.active_lights[sym] = "CALL" if signal == 1 else "PUT"
             self.last_signal_time[sym] = now
-            
-            # НОВОЕ: Обновляем актив для графика
             self.last_signaled_symbol = sym 
             
             self.signals.append({
@@ -177,19 +172,17 @@ class SignalEngine:
         return new_sig
 
 # ===== ИНТЕРФЕЙС =====
-st.set_page_config(page_title="Signal Engine v1.7", layout="wide")
-st.title("🎯 SIGNAL CONFLUENCE ENGINE v1.7")
+st.set_page_config(page_title="Signal Engine v1.8", layout="wide")
+st.title("🎯 SIGNAL CONFLUENCE ENGINE v1.8")
 
+# Инициализация движка
 if "engine" not in st.session_state:
     st.session_state.engine = SignalEngine()
-engine = st.session_state.engine
 
-# НОВЫЙ ЗВУК (Web Audio API)
+# Функция для звука
 def play_sound(direction):
-    # Генерируем звук прямо в браузере (обходит блокировки)
-    freq = 880 if direction == "CALL" else 330 # Высокий для CALL, низкий для PUT
+    freq = 880 if direction == "CALL" else 330
     wave_type = "sine" if direction == "CALL" else "square"
-    
     js_code = f"""
     <script>
     try {{
@@ -205,85 +198,90 @@ def play_sound(direction):
         gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.4);
         oscillator.start();
         oscillator.stop(audioCtx.currentTime + 0.4);
-    }} catch(e) {{ console.log("Audio blocked by browser"); }}
+    }} catch(e) {{ console.log("Audio blocked"); }}
     </script>
     """
     components.html(js_code, height=0)
 
-if engine.update():
-    play_sound(engine.signals[-1]["direction"])
-
-# ===== СВЕТОФОР =====
-st.markdown("### 🟢 Активы в реальном времени 🔴")
-cols = st.columns(8)
-for i, sym in enumerate(SYMBOLS):
-    with cols[i]:
-        light = engine.active_lights[sym]
-        name = sym.replace("_otc", "")
-        color = "#00FF00" if light == "CALL" else ("#FF0000" if light == "PUT" else "#333333")
-        text_c = "black" if light == "CALL" else "white"
-        st.markdown(f"<div style='background-color: {color}; padding: 15px 5px; border-radius: 10px; text-align: center; border: 2px solid #444;'><h4 style='color: {text_c}; margin: 0; font-size: 16px;'>{name}</h4></div>", unsafe_allow_html=True)
-
-st.markdown("---")
-
-# ===== ГРАФИК И ПРОГНОЗ =====
-col_graph, col_forecast = st.columns([2, 1])
-
-with col_graph:
-    # НОВОЕ: Берем актив, по которому был последний сигнал
-    target_sym = engine.last_signaled_symbol
-    display_name = target_sym.replace("_otc", "")
+# НОВОЕ: Используем фрагмент для плавного обновления без перезагрузки страницы
+@st.fragment(run_every="3s")
+def render_dashboard():
+    engine = st.session_state.engine
     
-    st.subheader(f"📈 График M1 ({display_name})")
-    df = engine.analyzers[target_sym].get_m1_dataframe()
-    
-    if not df.empty:
-        df_plot = df.tail(60).copy() 
-        df_plot["time"] = pd.to_datetime(df_plot["time"])
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, subplot_titles=("Цена", "Delta"), vertical_spacing=0.08)
-        fig.add_trace(go.Candlestick(x=df_plot["time"], open=df_plot["open"], high=df_plot["high"], low=df_plot["low"], close=df_plot["close"], name="Цена", increasing_line_color="lime", decreasing_line_color="red"), row=1, col=1)
-        colors = ["lime" if d > 0 else "red" for d in df_plot["delta"]]
-        fig.add_trace(go.Bar(x=df_plot["time"], y=df_plot["delta"], name="Delta", marker_color=colors), row=2, col=1)
-        fig.update_layout(height=450, template="plotly_dark", xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=30, b=10))
-        st.plotly_chart(fig, width='stretch')
+    # Обновляем данные и играем звук, если есть новый сигнал
+    if engine.update():
+        play_sound(engine.signals[-1]["direction"])
 
-with col_forecast:
-    st.subheader("🔮 AI Forecast")
-    st.markdown("""
-    <div style="background-color: #1E1E1E; padding: 15px; border-radius: 10px; border: 1px solid #444;">
-        <h4 style="color: #FFA500; margin-top: 0;">📅 16:15 — ВВП США (News)</h4>
-        <p><b>Техника:</b> Сопротивление 1.2050 (M15)</p>
-        <p><b>Прогноз:</b> Ожидается высокая волатильность. При отбое от уровня — <span style="color:red; font-weight:bold;">PUT</span> на 3 минуты.</p>
-        <hr style="border-color: #444;">
-        <h4 style="color: #00BFFF; margin-top: 10px;">📅 18:30 — Отчет по занятости (News)</h4>
-        <p><b>Техника:</b> Поддержка 1.1980 (M5)</p>
-        <p><b>Прогноз:</b> Сценарий на пробой вверх — <span style="color:green; font-weight:bold;">CALL</span> на 1 минуту.</p>
-    </div>
-    """, unsafe_allow_html=True)
-    st.caption("*(Демо-режим)*")
+    # ===== СВЕТОФОР =====
+    st.markdown("### 🟢 Активы в реальном времени 🔴")
+    cols = st.columns(8)
+    for i, sym in enumerate(SYMBOLS):
+        with cols[i]:
+            light = engine.active_lights[sym]
+            name = sym.replace("_otc", "")
+            color = "#00FF00" if light == "CALL" else ("#FF0000" if light == "PUT" else "#333333")
+            text_c = "black" if light == "CALL" else "white"
+            st.markdown(f"<div style='background-color: {color}; padding: 15px 5px; border-radius: 10px; text-align: center; border: 2px solid #444;'><h4 style='color: {text_c}; margin: 0; font-size: 16px;'>{name}</h4></div>", unsafe_allow_html=True)
 
-# ===== ИСТОРИЯ =====
-st.markdown("---")
-st.subheader("📜 История сигналов")
-if engine.signals:
-    hist_data = []
-    for s in reversed(engine.signals):
-        hist_data.append({
-            "Сформирован": s['time'].strftime('%H:%M:%S'),
-            "Вход": s['entry_time'].strftime('%H:%M:%S'),
-            "Экспирация": s['expiry'],
-            "Актив": s['symbol'].replace('_otc',''),
-            "Сигнал": "🟢 BUY" if s['direction'] == "CALL" else "🔴 SELL",
-            "Уверенность": f"{s['confidence']*100:.0f}%",
-            "Причина": s['reason']
-        })
-    df_hist = pd.DataFrame(hist_data)
-    
-    csv = df_hist.to_csv(index=False).encode('utf-8')
-    st.download_button("📥 Скачать историю (CSV)", csv, f"signals_{datetime.now().strftime('%Y%m%d')}.csv", "text/csv")
-    st.dataframe(df_hist, width='stretch', height=300)
-else:
-    st.info("История пока пуста.")
+    st.markdown("---")
 
-time.sleep(3)
-st.rerun()
+    # ===== ГРАФИК И ПРОГНОЗ =====
+    col_graph, col_forecast = st.columns([2, 1])
+
+    with col_graph:
+        target_sym = engine.last_signaled_symbol
+        display_name = target_sym.replace("_otc", "")
+        
+        st.subheader(f"📈 График M1 ({display_name})")
+        df = engine.analyzers[target_sym].get_m1_dataframe()
+        
+        if not df.empty:
+            df_plot = df.tail(60).copy() 
+            df_plot["time"] = pd.to_datetime(df_plot["time"])
+            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, subplot_titles=("Цена", "Delta"), vertical_spacing=0.08)
+            fig.add_trace(go.Candlestick(x=df_plot["time"], open=df_plot["open"], high=df_plot["high"], low=df_plot["low"], close=df_plot["close"], name="Цена", increasing_line_color="lime", decreasing_line_color="red"), row=1, col=1)
+            colors = ["lime" if d > 0 else "red" for d in df_plot["delta"]]
+            fig.add_trace(go.Bar(x=df_plot["time"], y=df_plot["delta"], name="Delta", marker_color=colors), row=2, col=1)
+            fig.update_layout(height=450, template="plotly_dark", xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=30, b=10))
+            st.plotly_chart(fig, width='stretch')
+
+    with col_forecast:
+        st.subheader("🔮 AI Forecast")
+        st.markdown("""
+        <div style="background-color: #1E1E1E; padding: 15px; border-radius: 10px; border: 1px solid #444;">
+            <h4 style="color: #FFA500; margin-top: 0;">📅 16:15 — ВВП США (News)</h4>
+            <p><b>Техника:</b> Сопротивление 1.2050 (M15)</p>
+            <p><b>Прогноз:</b> Ожидается высокая волатильность. При отбое от уровня — <span style="color:red; font-weight:bold;">PUT</span> на 3 минуты.</p>
+            <hr style="border-color: #444;">
+            <h4 style="color: #00BFFF; margin-top: 10px;">📅 18:30 — Отчет по занятости (News)</h4>
+            <p><b>Техника:</b> Поддержка 1.1980 (M5)</p>
+            <p><b>Прогноз:</b> Сценарий на пробой вверх — <span style="color:green; font-weight:bold;">CALL</span> на 1 минуту.</p>
+        </div>
+        """, unsafe_allow_html=True)
+        st.caption("*(Демо-режим)*")
+
+    # ===== ИСТОРИЯ =====
+    st.markdown("---")
+    st.subheader("📜 История сигналов")
+    if engine.signals:
+        hist_data = []
+        for s in reversed(engine.signals):
+            hist_data.append({
+                "Сформирован": s['time'].strftime('%H:%M:%S'),
+                "Вход": s['entry_time'].strftime('%H:%M:%S'),
+                "Экспирация": s['expiry'],
+                "Актив": s['symbol'].replace('_otc',''),
+                "Сигнал": "🟢 BUY" if s['direction'] == "CALL" else "🔴 SELL",
+                "Уверенность": f"{s['confidence']*100:.0f}%",
+                "Причина": s['reason']
+            })
+        df_hist = pd.DataFrame(hist_data)
+        
+        csv = df_hist.to_csv(index=False).encode('utf-8')
+        st.download_button("📥 Скачать историю (CSV)", csv, f"signals_{datetime.now().strftime('%Y%m%d')}.csv", "text/csv")
+        st.dataframe(df_hist, width='stretch', height=300)
+    else:
+        st.info("История пока пуста.")
+
+# Запускаем фрагмент
+render_dashboard()
