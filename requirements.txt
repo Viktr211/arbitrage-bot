@@ -1,4 +1,4 @@
 streamlit
 pandas
 plotly
-binaryoptionstoolsv2
+pocket-option
