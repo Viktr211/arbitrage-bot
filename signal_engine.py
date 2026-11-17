@@ -10,9 +10,10 @@ from datetime import datetime, timedelta
 
 # ===== ПРАВИЛЬНЫЕ ИМПОРТЫ БИБЛИОТЕКИ =====
 from pocket_option import PocketOptionClient
+from pocket_option.contrib.default_init import default_init
+from pocket_option.contrib.candles import MemoryCandleStorage
 from pocket_option.models import AuthorizationData, Asset
 from pocket_option.constants import Regions
-from pocket_option.contrib.candles import MemoryCandleStorage
 
 # ===== НАСТРОЙКИ =====
 SYMBOLS = ["EURUSD_otc", "GBPUSD_otc", "USDJPY_otc", "AUDUSD_otc", "USDCAD_otc", "USDCHF_otc", "NZDUSD_otc", "XAUUSD_otc"]
@@ -50,35 +51,38 @@ async def bot_worker():
             return
 
         client = PocketOptionClient()
-        # Создаем хранилище для свечей
-        candle_storage = MemoryCandleStorage(client)
+        storage = MemoryCandleStorage(client)
+
+        # Используем default_init для правильной настройки авторизации и подписок
+        default_init(
+            client,
+            authorization=AuthorizationData.model_validate({
+                "session": session,
+                "isDemo": 1,
+                "uid": int(uid),
+                "platform": 2,
+                "isFastHistory": True,
+                "isOptimized": True,
+            }),
+            sub_assets=[getattr(Asset, sym) for sym in SYMBOLS],
+            sub_period=60  # M1
+        )
 
         @client.on.connect
         async def on_connect(data: None):
             STATE["status"] = "✅ Подключено к Pocket Option, авторизация..."
-            await client.emit.auth(
-                AuthorizationData.model_validate({
-                    "session": session,
-                    "isDemo": 1,
-                    "uid": int(uid),
-                    "platform": 2,
-                    "isFastHistory": True,
-                    "isOptimized": True,
-                })
-            )
 
         @client.on.success_auth
         async def on_success_auth(data):
-            STATE["status"] = "✅ Авторизация успешна. Подписка на активы..."
+            STATE["status"] = "✅ Авторизация успешна. Ожидание данных..."
             STATE["connected"] = True
-            for sym in SYMBOLS:
-                asset = getattr(Asset, sym)
-                await client.emit.subscribe_symbol(asset)
-                await client.emit.change_symbol(asset, period=60) # M1
 
         await client.connect(Regions.DEMO)
 
-        # Основной цикл анализа (данные уже накапливаются в candle_storage)
+        # Ждем, пока авторизация действительно пройдет
+        await client.authorized_event.wait()
+
+        # Основной цикл анализа
         while True:
             now = datetime.now()
             for i, sym in enumerate(SYMBOLS):
@@ -86,7 +90,7 @@ async def bot_worker():
                 try:
                     asset = getattr(Asset, sym)
                     # Получаем свечи из встроенного хранилища
-                    candles = candle_storage.get_candles(asset, period=60, count=100)
+                    candles = storage.get_candles(asset, period=60, count=100)
                     if not candles: continue
                     
                     df = pd.DataFrame([{
@@ -152,7 +156,7 @@ def start_background_loop():
 
 # ===== ИНТЕРФЕЙС =====
 st.set_page_config(page_title="Signal Engine (PO)", layout="wide")
-st.title("🎯 SIGNAL CONFLUENCE ENGINE v5.1 (Pocket Option)")
+st.title("🎯 SIGNAL CONFLUENCE ENGINE v5.2 (Pocket Option)")
 
 if "bot_started" not in st.session_state:
     thread = threading.Thread(target=start_background_loop, daemon=True)
