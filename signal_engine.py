@@ -4,13 +4,12 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
 import asyncio
+import threading
+import time
 from datetime import datetime, timedelta
 
-try:
-    from pocketoptionapi_async import AsyncPocketOptionClient
-except Exception as e:
-    st.error(f"Ошибка импорта библиотеки: {e}")
-    st.stop()
+# ===== ИМПОРТ БИБЛИОТЕКИ =====
+from binaryoptionstoolsv2 import PocketOptionAsync
 
 # ===== НАСТРОЙКИ =====
 SYMBOLS = ["EURUSD_otc", "GBPUSD_otc", "USDJPY_otc", "AUDUSD_otc", "USDCAD_otc", "USDCHF_otc", "NZDUSD_otc", "XAUUSD_otc"]
@@ -21,6 +20,15 @@ EMA_SLOW_M5 = 8
 ABSORPTION_VOLUME_MULT = 1.2
 MIN_SIGNAL_CONFIDENCE = 0.5
 
+# ===== ГЛОБАЛЬНОЕ СОСТОЯНИЕ (общее для бота и интерфейса) =====
+STATE = {
+    "data": {},
+    "signals": [],
+    "active_lights": {sym: None for sym in SYMBOLS_DISPLAY},
+    "status": "⏳ Подключение к Pocket Option...",
+    "connected": False
+}
+
 def calculate_ema(prices, period):
     if len(prices) < period: return None
     multiplier = 2 / (period + 1)
@@ -29,138 +37,101 @@ def calculate_ema(prices, period):
         ema = (price - ema) * multiplier + ema
     return ema
 
-class SignalEngine:
-    def __init__(self):
-        try:
-            self.ssid = st.secrets["PO_SSID"]
-        except Exception:
-            self.ssid = None
+# ===== ФОНОВЫЙ БОТ (Асинхронный) =====
+async def bot_worker():
+    ssid = st.secrets.get("PO_SSID")
+    if not ssid:
+        STATE["status"] = "❌ SSID не найден в секретах"
+        return
+
+    try:
+        client = PocketOptionAsync(ssid, demo=True)
+        await client.connect()
+        STATE["connected"] = True
+        STATE["status"] = "✅ Подключено к Pocket Option"
         
-        self.client = None
-        self.connected = False
-        self.signals = []
-        self.data_cache = {}
-        self.active_lights = {sym: None for sym in SYMBOLS_DISPLAY}
-        
-        # Статусы для интерфейса
-        self.status_msg = "Ожидание подключения..."
-        self.status_type = "info"
+        while True:
+            now = datetime.now()
+            for i, sym in enumerate(SYMBOLS):
+                sym_disp = SYMBOLS_DISPLAY[i]
+                try:
+                    # Запрашиваем свечи M1
+                    candles = await client.get_candles(sym, 60, 100)
+                    if not candles: continue
+                    
+                    df = pd.DataFrame(candles)
+                    df['time'] = pd.to_datetime(df['time'], unit='s')
+                    df = df.sort_values('time').reset_index(drop=True)
+                    # Считаем дельту
+                    df['delta'] = (df['close'] - df['open']) * df['volume']
+                    
+                    STATE["data"][sym_disp] = df
+                    
+                    # Проверяем сигналы
+                    last_sig = next((s for s in reversed(STATE["signals"]) if s["symbol"] == sym_disp), None)
+                    if not last_sig or (now - last_sig["time"]).seconds > 300: # 5 мин защита от спама
+                        
+                        # 1) Тренд M5
+                        df_m5 = df.set_index("time").resample("5min").agg({"close": "last"}).dropna().reset_index()
+                        if len(df_m5) >= EMA_SLOW_M5 + 1:
+                            prices_m5 = df_m5["close"].tolist()
+                            ema_f = calculate_ema(prices_m5, EMA_FAST_M5)
+                            ema_s = calculate_ema(prices_m5, EMA_SLOW_M5)
+                            
+                            if ema_f and ema_s:
+                                trend = 1 if ema_f > ema_s else (-1 if ema_f < ema_s else 0)
+                                
+                                # 2) Аномалия на M1
+                                last = df.iloc[-1]
+                                avg_vol = df['volume'].tail(20).mean()
+                                if avg_vol > 0 and trend != 0:
+                                    vol_ratio = last['volume'] / avg_vol
+                                    signal = 0
+                                    conf = 0
+                                    reason = ""
+                                    
+                                    if vol_ratio > ABSORPTION_VOLUME_MULT:
+                                        if last['delta'] > 0 and trend == 1:
+                                            signal, conf, reason = 1, min(0.9, 0.5 + vol_ratio*0.1), f"Абсорбция продаж (vol x{vol_ratio:.1f})"
+                                        elif last['delta'] < 0 and trend == -1:
+                                            signal, conf, reason = -1, min(0.9, 0.5 + vol_ratio*0.1), f"Абсорбция покупок (vol x{vol_ratio:.1f})"
+                                            
+                                    if signal != 0 and conf >= MIN_SIGNAL_CONFIDENCE:
+                                        entry_time = (now + timedelta(minutes=1)).replace(second=0, microsecond=0)
+                                        STATE["active_lights"][sym_disp] = "CALL" if signal == 1 else "PUT"
+                                        STATE["signals"].append({
+                                            "time": now, "entry_time": entry_time, "expiry": "1-3 мин",
+                                            "symbol": sym_disp, "direction": "CALL" if signal == 1 else "PUT",
+                                            "confidence": conf, "reason": reason
+                                        })
+                                        if len(STATE["signals"]) > 100: STATE["signals"] = STATE["signals"][-100:]
+                except Exception as e:
+                    pass # Игнорируем ошибки отдельных пар, чтобы не падал весь цикл
 
-    async def connect(self):
-        if not self.ssid:
-            self.status_msg = "❌ SSID не найден в секретах"
-            self.status_type = "error"
-            return False
-        try:
-            self.client = AsyncPocketOptionClient(self.ssid, is_demo=True, enable_logging=False)
-            await self.client.connect()
-            self.connected = True
-            self.status_msg = "✅ Подключено к Pocket Option"
-            self.status_type = "success"
-            return True
-        except Exception as e:
-            self.connected = False
-            self.status_msg = f"❌ Ошибка подключения: {type(e).__name__}: {e}"
-            self.status_type = "error"
-            return False
+            # Гасим светофоры старше 1 минуты
+            for sym_disp in SYMBOLS_DISPLAY:
+                sig = next((s for s in reversed(STATE["signals"]) if s["symbol"] == sym_disp), None)
+                if sig and (datetime.now() - sig["time"]).seconds > 60:
+                    STATE["active_lights"][sym_disp] = None
 
-    async def fetch_candles(self, symbol):
-        if not self.connected: return pd.DataFrame()
-        try:
-            candles = await self.client.get_candles(asset=symbol, timeframe=60, count=100)
-            df = pd.DataFrame([{
-                "time": pd.to_datetime(c.timestamp, unit='s'),
-                "open": c.open, "high": c.high, "low": c.low, "close": c.close, "volume": c.volume
-            } for c in candles])
-            if df.empty: return df
-            df = df.sort_values('time').reset_index(drop=True)
-            df['delta'] = (df['close'] - df['open']) * df['volume']
-            return df
-        except Exception:
-            return pd.DataFrame()
+            await asyncio.sleep(60) # Обновляем данные раз в минуту
 
-    async def update_async(self):
-        if not self.connected:
-            await self.connect()
-            if not self.connected: return False
+    except Exception as e:
+        STATE["status"] = f"❌ Ошибка бота: {str(e)}"
+        STATE["connected"] = False
 
-        new_sig = False
-        now = datetime.now()
-
-        for i, sym_td in enumerate(SYMBOLS):
-            sym_display = SYMBOLS_DISPLAY[i]
-            
-            if sym_display in self.data_cache:
-                last_candle_time = self.data_cache[sym_display]['time'].iloc[-1]
-                if (now - last_candle_time).seconds < 60:
-                    continue
-
-            df_m1 = await self.fetch_candles(sym_td)
-            if df_m1.empty: continue
-            self.data_cache[sym_display] = df_m1
-
-            df_m5 = df_m1.set_index("time").resample("5min").agg({"close": "last"}).dropna().reset_index()
-            if len(df_m5) < EMA_SLOW_M5 + 1: continue
-                
-            prices_m5 = df_m5["close"].tolist()
-            ema_f = calculate_ema(prices_m5, EMA_FAST_M5)
-            ema_s = calculate_ema(prices_m5, EMA_SLOW_M5)
-            if ema_f is None or ema_s is None: continue
-                
-            trend = 1 if ema_f > ema_s else (-1 if ema_f < ema_s else 0)
-            if trend == 0: continue
-
-            last = df_m1.iloc[-1]
-            avg_volume = df_m1['volume'].tail(20).mean()
-            if avg_volume == 0: continue
-
-            volume_ratio = last['volume'] / avg_volume
-            signal = 0
-            confidence = 0
-            reason = ""
-
-            if volume_ratio > ABSORPTION_VOLUME_MULT:
-                if last['delta'] > 0 and trend == 1:
-                    signal, confidence, reason = 1, min(0.9, 0.5 + volume_ratio * 0.1), f"Абсорбция продаж (vol x{volume_ratio:.1f})"
-                elif last['delta'] < 0 and trend == -1:
-                    signal, confidence, reason = -1, min(0.9, 0.5 + volume_ratio * 0.1), f"Абсорбция покупок (vol x{volume_ratio:.1f})"
-
-            if signal != 0 and confidence >= MIN_SIGNAL_CONFIDENCE:
-                entry_time = (now + timedelta(minutes=1)).replace(second=0, microsecond=0)
-                self.active_lights[sym_display] = "CALL" if signal == 1 else "PUT"
-                
-                self.signals.append({
-                    "time": now, "entry_time": entry_time, "expiry": "1-3 мин",
-                    "symbol": sym_display,
-                    "direction": "CALL" if signal == 1 else "PUT",
-                    "confidence": confidence, "reason": reason,
-                    "trend_m5": "UP" if trend == 1 else "DOWN",
-                })
-                if len(self.signals) > 100: self.signals = self.signals[-100:]
-                new_sig = True
-
-        for sym in SYMBOLS_DISPLAY:
-            sig = next((s for s in reversed(self.signals) if s["symbol"] == sym), None)
-            if sig and (now - sig["time"]).seconds > 60:
-                self.active_lights[sym] = None
-                
-        return new_sig
-
-    def update(self):
-        try:
-            return asyncio.run(self.update_async())
-        except Exception as e:
-            self.status_msg = f"Критическая ошибка: {type(e).__name__}: {e}"
-            self.status_type = "error"
-            return False
+def start_background_loop():
+    asyncio.run(bot_worker())
 
 # ===== ИНТЕРФЕЙС =====
-st.set_page_config(page_title="Signal Engine (Pocket Option)", layout="wide")
-st.title("🎯 SIGNAL CONFLUENCE ENGINE v3.2 (Pocket Option)")
+st.set_page_config(page_title="Signal Engine (PO)", layout="wide")
+st.title("🎯 SIGNAL CONFLUENCE ENGINE v4.0 (Pocket Option)")
 
-if "engine" not in st.session_state:
-    st.session_state.engine = SignalEngine()
-engine = st.session_state.engine
+# Запускаем фоновый поток только один раз
+if "bot_started" not in st.session_state:
+    thread = threading.Thread(target=start_background_loop, daemon=True)
+    thread.start()
+    st.session_state.bot_started = True
 
 def play_sound(direction):
     freq = 880 if direction == "CALL" else 330
@@ -185,31 +156,35 @@ def play_sound(direction):
     """
     components.html(js_code, height=0)
 
-@st.fragment(run_every="5s")
+# Плавное обновление интерфейса
+@st.fragment(run_every="3s")
 def render_dashboard():
-    engine = st.session_state.engine
-    
-    # Обновляем данные
-    if engine.update():
-        play_sound(engine.signals[-1]["direction"])
+    # Проверяем, появился ли новый сигнал, чтобы проиграть звук
+    if STATE["signals"]:
+        last_sig = STATE["signals"][-1]
+        if "last_played_sig" not in st.session_state or st.session_state.last_played_sig != last_sig["time"]:
+            play_sound(last_sig["direction"])
+            st.session_state.last_played_sig = last_sig["time"]
 
-    # Показываем статус (успех/ошибка)
-    if engine.status_type == "success":
-        st.success(engine.status_msg)
-    elif engine.status_type == "error":
-        st.error(engine.status_msg)
+    # Статус
+    if STATE["connected"]:
+        st.success(STATE["status"])
+    else:
+        st.warning(STATE["status"])
 
+    # Выбор актива
     selected_sym = st.selectbox(
         "Выберите актив для графика:",
         SYMBOLS_DISPLAY,
-        format_func=lambda x: f"🔔 {x} (Сигнал!)" if engine.active_lights[x] else x
+        format_func=lambda x: f"🔔 {x} (Сигнал!)" if STATE["active_lights"][x] else x
     )
 
+    # Светофор
     st.markdown("### 🟢 Активы в реальном времени 🔴")
     cols = st.columns(8)
     for i, sym in enumerate(SYMBOLS_DISPLAY):
         with cols[i]:
-            light = engine.active_lights[sym]
+            light = STATE["active_lights"][sym]
             color = "#00FF00" if light == "CALL" else ("#FF0000" if light == "PUT" else "#333333")
             text_c = "black" if light == "CALL" else "white"
             st.markdown(f"<div style='background-color: {color}; padding: 15px 5px; border-radius: 10px; text-align: center; border: 2px solid #444;'><h4 style='color: {text_c}; margin: 0; font-size: 16px;'>{sym}</h4></div>", unsafe_allow_html=True)
@@ -220,7 +195,7 @@ def render_dashboard():
 
     with col_graph:
         st.subheader(f"📈 График M1 ({selected_sym})")
-        df = engine.data_cache.get(selected_sym)
+        df = STATE["data"].get(selected_sym)
         
         if df is not None and not df.empty:
             df_plot = df.tail(60).copy() 
@@ -240,16 +215,14 @@ def render_dashboard():
             <h4 style="color: #FFA500; margin-top: 0;">📅 Фундаментальный фон</h4>
             <p><b>Статус:</b> Ожидание выхода новостей.</p>
             <p><b>Техника:</b> Оценка волатильности в реальном времени.</p>
-            <p><b>Прогноз:</b> Система автоматически приостановит выдачу сигналов при аномальных скачках цен (новостные шпильки).</p>
         </div>
         """, unsafe_allow_html=True)
-        st.caption("*(Реальный режим Pocket Option)*")
 
     st.markdown("---")
     st.subheader("📜 История сигналов")
-    if engine.signals:
+    if STATE["signals"]:
         hist_data = []
-        for s in reversed(engine.signals):
+        for s in reversed(STATE["signals"]):
             hist_data.append({
                 "Сформирован": s['time'].strftime('%H:%M:%S'),
                 "Вход": s['entry_time'].strftime('%H:%M:%S'),
