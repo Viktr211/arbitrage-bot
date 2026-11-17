@@ -6,8 +6,11 @@ import pandas as pd
 import asyncio
 from datetime import datetime, timedelta
 
-# ===== ИМПОРТ БИБЛИОТЕКИ POCKET OPTION =====
-from pocketoptionapi_async import AsyncPocketOptionClient
+try:
+    from pocketoptionapi_async import AsyncPocketOptionClient
+except Exception as e:
+    st.error(f"Ошибка импорта библиотеки: {e}")
+    st.stop()
 
 # ===== НАСТРОЙКИ =====
 SYMBOLS = ["EURUSD_otc", "GBPUSD_otc", "USDJPY_otc", "AUDUSD_otc", "USDCAD_otc", "USDCHF_otc", "NZDUSD_otc", "XAUUSD_otc"]
@@ -18,7 +21,6 @@ EMA_SLOW_M5 = 8
 ABSORPTION_VOLUME_MULT = 1.2
 MIN_SIGNAL_CONFIDENCE = 0.5
 
-# ===== ИНДИКАТОРЫ =====
 def calculate_ema(prices, period):
     if len(prices) < period: return None
     multiplier = 2 / (period + 1)
@@ -27,7 +29,6 @@ def calculate_ema(prices, period):
         ema = (price - ema) * multiplier + ema
     return ema
 
-# ===== ДВИЖОК НА POCKET OPTION =====
 class SignalEngine:
     def __init__(self):
         try:
@@ -45,31 +46,29 @@ class SignalEngine:
     async def connect(self):
         if not self.ssid: return False
         try:
-            self.client = AsyncPocketOptionClient(self.ssid, is_demo=True, enable_logging=False)[reference:3]
+            self.client = AsyncPocketOptionClient(self.ssid, is_demo=True, enable_logging=False)
             await self.client.connect()
             self.connected = True
+            st.success("✅ Подключено к Pocket Option")
             return True
         except Exception as e:
-            st.error(f"❌ Ошибка подключения: {e}")
+            st.error(f"❌ Ошибка подключения: {type(e).__name__}: {e}")
             return False
 
     async def fetch_candles(self, symbol):
         if not self.connected: return pd.DataFrame()
         try:
-            # Получаем свечи M1
-            candles = await self.client.get_candles(asset=symbol, timeframe=60, count=100)[reference:4]
+            candles = await self.client.get_candles(asset=symbol, timeframe=60, count=100)
             df = pd.DataFrame([{
                 "time": pd.to_datetime(c.timestamp, unit='s'),
                 "open": c.open, "high": c.high, "low": c.low, "close": c.close, "volume": c.volume
             } for c in candles])
-            
             if df.empty: return df
-            
             df = df.sort_values('time').reset_index(drop=True)
-            # Расчет дельты для ордер-флоу
             df['delta'] = (df['close'] - df['open']) * df['volume']
             return df
-        except Exception:
+        except Exception as e:
+            # Тихо игнорируем, чтобы не спамить
             return pd.DataFrame()
 
     async def update_async(self):
@@ -83,7 +82,6 @@ class SignalEngine:
         for i, sym_td in enumerate(SYMBOLS):
             sym_display = SYMBOLS_DISPLAY[i]
             
-            # Обновляем данные не чаще раза в минуту (чтобы не спамить API)
             if sym_display in self.data_cache:
                 last_candle_time = self.data_cache[sym_display]['time'].iloc[-1]
                 if (now - last_candle_time).seconds < 60:
@@ -93,7 +91,6 @@ class SignalEngine:
             if df_m1.empty: continue
             self.data_cache[sym_display] = df_m1
 
-            # 1) Тренд на M5
             df_m5 = df_m1.set_index("time").resample("5min").agg({"close": "last"}).dropna().reset_index()
             if len(df_m5) < EMA_SLOW_M5 + 1: continue
                 
@@ -105,7 +102,6 @@ class SignalEngine:
             trend = 1 if ema_f > ema_s else (-1 if ema_f < ema_s else 0)
             if trend == 0: continue
 
-            # 2) Ищем аномалию на M1
             last = df_m1.iloc[-1]
             avg_volume = df_m1['volume'].tail(20).mean()
             if avg_volume == 0: continue
@@ -122,7 +118,6 @@ class SignalEngine:
                     signal, confidence, reason = -1, min(0.9, 0.5 + volume_ratio * 0.1), f"Абсорбция покупок (vol x{volume_ratio:.1f})"
 
             if signal != 0 and confidence >= MIN_SIGNAL_CONFIDENCE:
-                # Точное время входа: следующая минута
                 entry_time = (now + timedelta(minutes=1)).replace(second=0, microsecond=0)
                 self.active_lights[sym_display] = "CALL" if signal == 1 else "PUT"
                 
@@ -136,7 +131,6 @@ class SignalEngine:
                 if len(self.signals) > 100: self.signals = self.signals[-100:]
                 new_sig = True
 
-        # Гасим светофоры старше 1 минуты
         for sym in SYMBOLS_DISPLAY:
             sig = next((s for s in reversed(self.signals) if s["symbol"] == sym), None)
             if sig and (now - sig["time"]).seconds > 60:
@@ -145,17 +139,20 @@ class SignalEngine:
         return new_sig
 
     def update(self):
-        return asyncio.run(self.update_async())
+        try:
+            return asyncio.run(self.update_async())
+        except Exception as e:
+            st.error(f"Критическая ошибка в цикле обновления: {type(e).__name__}: {e}")
+            return False
 
 # ===== ИНТЕРФЕЙС =====
 st.set_page_config(page_title="Signal Engine (Pocket Option)", layout="wide")
-st.title("🎯 SIGNAL CONFLUENCE ENGINE v3.0 (Pocket Option)")
+st.title("🎯 SIGNAL CONFLUENCE ENGINE v3.1 (Pocket Option)")
 
 if "engine" not in st.session_state:
     st.session_state.engine = SignalEngine()
 engine = st.session_state.engine
 
-# Звук
 def play_sound(direction):
     freq = 880 if direction == "CALL" else 330
     wave_type = "sine" if direction == "CALL" else "square"
@@ -179,7 +176,6 @@ def play_sound(direction):
     """
     components.html(js_code, height=0)
 
-# Плавное обновление
 @st.fragment(run_every="5s")
 def render_dashboard():
     engine = st.session_state.engine
@@ -187,16 +183,12 @@ def render_dashboard():
     if engine.update():
         play_sound(engine.signals[-1]["direction"])
 
-    # ===== ВЫБОР АКТИВА =====
-    # Используем selectbox для выбора пары. 
-    # Если по паре был недавний сигнал, показываем это в названии.
     selected_sym = st.selectbox(
         "Выберите актив для графика:",
         SYMBOLS_DISPLAY,
         format_func=lambda x: f"🔔 {x} (Сигнал!)" if engine.active_lights[x] else x
     )
 
-    # ===== СВЕТОФОР =====
     st.markdown("### 🟢 Активы в реальном времени 🔴")
     cols = st.columns(8)
     for i, sym in enumerate(SYMBOLS_DISPLAY):
@@ -208,7 +200,6 @@ def render_dashboard():
 
     st.markdown("---")
 
-    # ===== ГРАФИК И ПРОГНОЗ =====
     col_graph, col_forecast = st.columns([2, 1])
 
     with col_graph:
@@ -238,7 +229,6 @@ def render_dashboard():
         """, unsafe_allow_html=True)
         st.caption("*(Реальный режим Pocket Option)*")
 
-    # ===== ИСТОРИЯ =====
     st.markdown("---")
     st.subheader("📜 История сигналов")
     if engine.signals:
@@ -261,5 +251,4 @@ def render_dashboard():
     else:
         st.info("Ожидание реальных сигналов с Pocket Option. Это может занять некоторое время.")
 
-# Запускаем
 render_dashboard()
