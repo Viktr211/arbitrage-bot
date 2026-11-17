@@ -33,8 +33,7 @@ class SignalEngine:
     def __init__(self):
         try:
             self.ssid = st.secrets["PO_SSID"]
-        except Exception as e:
-            st.error(f"Ошибка чтения SSID: {e}")
+        except Exception:
             self.ssid = None
         
         self.client = None
@@ -42,17 +41,27 @@ class SignalEngine:
         self.signals = []
         self.data_cache = {}
         self.active_lights = {sym: None for sym in SYMBOLS_DISPLAY}
+        
+        # Статусы для интерфейса
+        self.status_msg = "Ожидание подключения..."
+        self.status_type = "info"
 
     async def connect(self):
-        if not self.ssid: return False
+        if not self.ssid:
+            self.status_msg = "❌ SSID не найден в секретах"
+            self.status_type = "error"
+            return False
         try:
             self.client = AsyncPocketOptionClient(self.ssid, is_demo=True, enable_logging=False)
             await self.client.connect()
             self.connected = True
-            st.success("✅ Подключено к Pocket Option")
+            self.status_msg = "✅ Подключено к Pocket Option"
+            self.status_type = "success"
             return True
         except Exception as e:
-            st.error(f"❌ Ошибка подключения: {type(e).__name__}: {e}")
+            self.connected = False
+            self.status_msg = f"❌ Ошибка подключения: {type(e).__name__}: {e}"
+            self.status_type = "error"
             return False
 
     async def fetch_candles(self, symbol):
@@ -67,8 +76,7 @@ class SignalEngine:
             df = df.sort_values('time').reset_index(drop=True)
             df['delta'] = (df['close'] - df['open']) * df['volume']
             return df
-        except Exception as e:
-            # Тихо игнорируем, чтобы не спамить
+        except Exception:
             return pd.DataFrame()
 
     async def update_async(self):
@@ -142,12 +150,13 @@ class SignalEngine:
         try:
             return asyncio.run(self.update_async())
         except Exception as e:
-            st.error(f"Критическая ошибка в цикле обновления: {type(e).__name__}: {e}")
+            self.status_msg = f"Критическая ошибка: {type(e).__name__}: {e}"
+            self.status_type = "error"
             return False
 
 # ===== ИНТЕРФЕЙС =====
 st.set_page_config(page_title="Signal Engine (Pocket Option)", layout="wide")
-st.title("🎯 SIGNAL CONFLUENCE ENGINE v3.1 (Pocket Option)")
+st.title("🎯 SIGNAL CONFLUENCE ENGINE v3.2 (Pocket Option)")
 
 if "engine" not in st.session_state:
     st.session_state.engine = SignalEngine()
@@ -180,8 +189,15 @@ def play_sound(direction):
 def render_dashboard():
     engine = st.session_state.engine
     
+    # Обновляем данные
     if engine.update():
         play_sound(engine.signals[-1]["direction"])
+
+    # Показываем статус (успех/ошибка)
+    if engine.status_type == "success":
+        st.success(engine.status_msg)
+    elif engine.status_type == "error":
+        st.error(engine.status_msg)
 
     selected_sym = st.selectbox(
         "Выберите актив для графика:",
