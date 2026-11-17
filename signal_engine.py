@@ -3,12 +3,14 @@ import streamlit.components.v1 as components
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pandas as pd
-import time
+import asyncio
 from datetime import datetime, timedelta
-from twelvedata import TDClient
+
+# ===== ИМПОРТ БИБЛИОТЕКИ POCKET OPTION =====
+from pocketoptionapi_async import AsyncPocketOptionClient
 
 # ===== НАСТРОЙКИ =====
-SYMBOLS_TD = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD", "USD/CHF", "NZD/USD", "XAU/USD"]
+SYMBOLS = ["EURUSD_otc", "GBPUSD_otc", "USDJPY_otc", "AUDUSD_otc", "USDCAD_otc", "USDCHF_otc", "NZDUSD_otc", "XAUUSD_otc"]
 SYMBOLS_DISPLAY = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD", "XAUUSD"]
 
 EMA_FAST_M5 = 3
@@ -25,111 +27,114 @@ def calculate_ema(prices, period):
         ema = (price - ema) * multiplier + ema
     return ema
 
-# ===== ДВИЖОК НА РЕАЛЬНЫХ ДАННЫХ =====
+# ===== ДВИЖОК НА POCKET OPTION =====
 class SignalEngine:
     def __init__(self):
         try:
-            self.td = TDClient(apikey=st.secrets["TWELVE_DATA_API_KEY"])
+            self.ssid = st.secrets["PO_SSID"]
         except Exception as e:
-            st.error(f"Ошибка чтения ключа API: {e}")
-            self.td = None
-            
-        self.signals = []
-        self.data_cache = {} 
-        self.last_signaled_symbol = "EURUSD"
-        self.active_lights = {sym: None for sym in SYMBOLS_DISPLAY}
+            st.error(f"Ошибка чтения SSID: {e}")
+            self.ssid = None
         
-        # Для контроля лимитов API (8 запросов в минуту)
-        self.last_fetch_time = {sym: datetime.now() - timedelta(minutes=5) for sym in SYMBOLS_DISPLAY}
-        self.fetch_index = 0 
+        self.client = None
+        self.connected = False
+        self.signals = []
+        self.data_cache = {}
+        self.active_lights = {sym: None for sym in SYMBOLS_DISPLAY}
 
-    def fetch_data(self, symbol_td):
-        if not self.td: return pd.DataFrame()
+    async def connect(self):
+        if not self.ssid: return False
         try:
-            ts = self.td.time_series(symbol=symbol_td, interval="1min", outputsize=100)
-            df = ts.as_pandas()
-            if df.empty: return pd.DataFrame()
-            
-            df = df.reset_index()
-            df = df.rename(columns={"datetime": "time"})
-            df['time'] = pd.to_datetime(df['time'])
-            
-            # Имитация объема для форекса на основе волатильности
-            df['volume'] = (df['high'] - df['low']).abs() * 10000 
-            df['delta'] = (df['close'] - df['open']) * df['volume'] * 10
-            return df
+            self.client = AsyncPocketOptionClient(self.ssid, is_demo=True, enable_logging=False)[reference:3]
+            await self.client.connect()
+            self.connected = True
+            return True
         except Exception as e:
-            # Тихо игнорируем ошибки сети/лимитов, чтобы интерфейс не падал
+            st.error(f"❌ Ошибка подключения: {e}")
+            return False
+
+    async def fetch_candles(self, symbol):
+        if not self.connected: return pd.DataFrame()
+        try:
+            # Получаем свечи M1
+            candles = await self.client.get_candles(asset=symbol, timeframe=60, count=100)[reference:4]
+            df = pd.DataFrame([{
+                "time": pd.to_datetime(c.timestamp, unit='s'),
+                "open": c.open, "high": c.high, "low": c.low, "close": c.close, "volume": c.volume
+            } for c in candles])
+            
+            if df.empty: return df
+            
+            df = df.sort_values('time').reset_index(drop=True)
+            # Расчет дельты для ордер-флоу
+            df['delta'] = (df['close'] - df['open']) * df['volume']
+            return df
+        except Exception:
             return pd.DataFrame()
 
-    def update(self):
-        if not self.td: return False
+    async def update_async(self):
+        if not self.connected:
+            await self.connect()
+            if not self.connected: return False
+
         new_sig = False
         now = datetime.now()
 
-        # Запрашиваем ОДНУ пару за цикл (каждые 3 сек), чтобы не превысить лимит 8/мин
-        sym_display = SYMBOLS_DISPLAY[self.fetch_index]
-        sym_td = SYMBOLS_TD[self.fetch_index]
-        
-        if (now - self.last_fetch_time[sym_display]).seconds >= 60:
-            df_m1 = self.fetch_data(sym_td)
-            self.last_fetch_time[sym_display] = now
-            if not df_m1.empty:
-                self.data_cache[sym_display] = df_m1
+        for i, sym_td in enumerate(SYMBOLS):
+            sym_display = SYMBOLS_DISPLAY[i]
+            
+            # Обновляем данные не чаще раза в минуту (чтобы не спамить API)
+            if sym_display in self.data_cache:
+                last_candle_time = self.data_cache[sym_display]['time'].iloc[-1]
+                if (now - last_candle_time).seconds < 60:
+                    continue
+
+            df_m1 = await self.fetch_candles(sym_td)
+            if df_m1.empty: continue
+            self.data_cache[sym_display] = df_m1
+
+            # 1) Тренд на M5
+            df_m5 = df_m1.set_index("time").resample("5min").agg({"close": "last"}).dropna().reset_index()
+            if len(df_m5) < EMA_SLOW_M5 + 1: continue
                 
-                # Проверяем сигнал не чаще раза в 5 минут
-                last_sig = next((s for s in reversed(self.signals) if s["symbol"] == sym_display), None)
-                if not last_sig or (now - last_sig["time"]).seconds > 300:
-                    
-                    # 1) Тренд на M5
-                    df_m5 = df_m1.set_index("time").resample("5min").agg({
-                        "open": "first", "high": "max", "low": "min", "close": "last"
-                    }).dropna().reset_index()
-                    
-                    if len(df_m5) >= EMA_SLOW_M5 + 1:
-                        prices_m5 = df_m5["close"].tolist()
-                        ema_f = calculate_ema(prices_m5, EMA_FAST_M5)
-                        ema_s = calculate_ema(prices_m5, EMA_SLOW_M5)
-                        
-                        if ema_f and ema_s:
-                            trend = 1 if ema_f > ema_s else (-1 if ema_f < ema_s else 0)
-                            
-                            # 2) Ищем аномалию на M1
-                            last = df_m1.iloc[-1]
-                            avg_volume = df_m1['volume'].tail(20).mean()
-                            avg_range = (df_m1['high'] - df_m1['low']).tail(20).mean()
-                            
-                            if avg_volume > 0 and avg_range > 0 and trend != 0:
-                                volume_ratio = last['volume'] / avg_volume
-                                range_ratio = (last['high'] - last['low']) / avg_range
+            prices_m5 = df_m5["close"].tolist()
+            ema_f = calculate_ema(prices_m5, EMA_FAST_M5)
+            ema_s = calculate_ema(prices_m5, EMA_SLOW_M5)
+            if ema_f is None or ema_s is None: continue
+                
+            trend = 1 if ema_f > ema_s else (-1 if ema_f < ema_s else 0)
+            if trend == 0: continue
 
-                                signal = 0
-                                confidence = 0
-                                reason = ""
+            # 2) Ищем аномалию на M1
+            last = df_m1.iloc[-1]
+            avg_volume = df_m1['volume'].tail(20).mean()
+            if avg_volume == 0: continue
 
-                                if volume_ratio > ABSORPTION_VOLUME_MULT and range_ratio < 0.6:
-                                    if last['delta'] > 0 and trend == 1:
-                                        signal, confidence, reason = 1, min(0.9, 0.5 + volume_ratio*0.1), f"Абсорбция продаж (vol x{volume_ratio:.1f})"
-                                    elif last['delta'] < 0 and trend == -1:
-                                        signal, confidence, reason = -1, min(0.9, 0.5 + volume_ratio*0.1), f"Абсорбция покупок (vol x{volume_ratio:.1f})"
+            volume_ratio = last['volume'] / avg_volume
+            signal = 0
+            confidence = 0
+            reason = ""
 
-                                if signal != 0 and confidence >= MIN_SIGNAL_CONFIDENCE:
-                                    entry_time = (now + timedelta(minutes=1)).replace(second=0, microsecond=0)
-                                    self.active_lights[sym_display] = "CALL" if signal == 1 else "PUT"
-                                    self.last_signaled_symbol = sym_display
-                                    
-                                    self.signals.append({
-                                        "time": now, "entry_time": entry_time, "expiry": "1-3 мин",
-                                        "symbol": sym_display,
-                                        "direction": "CALL" if signal == 1 else "PUT",
-                                        "confidence": confidence, "reason": reason,
-                                        "trend_m5": "UP" if trend == 1 else "DOWN",
-                                    })
-                                    if len(self.signals) > 100: self.signals = self.signals[-100:]
-                                    new_sig = True
+            if volume_ratio > ABSORPTION_VOLUME_MULT:
+                if last['delta'] > 0 and trend == 1:
+                    signal, confidence, reason = 1, min(0.9, 0.5 + volume_ratio * 0.1), f"Абсорбция продаж (vol x{volume_ratio:.1f})"
+                elif last['delta'] < 0 and trend == -1:
+                    signal, confidence, reason = -1, min(0.9, 0.5 + volume_ratio * 0.1), f"Абсорбция покупок (vol x{volume_ratio:.1f})"
 
-        # Переключаем индекс на следующую пару
-        self.fetch_index = (self.fetch_index + 1) % len(SYMBOLS_DISPLAY)
+            if signal != 0 and confidence >= MIN_SIGNAL_CONFIDENCE:
+                # Точное время входа: следующая минута
+                entry_time = (now + timedelta(minutes=1)).replace(second=0, microsecond=0)
+                self.active_lights[sym_display] = "CALL" if signal == 1 else "PUT"
+                
+                self.signals.append({
+                    "time": now, "entry_time": entry_time, "expiry": "1-3 мин",
+                    "symbol": sym_display,
+                    "direction": "CALL" if signal == 1 else "PUT",
+                    "confidence": confidence, "reason": reason,
+                    "trend_m5": "UP" if trend == 1 else "DOWN",
+                })
+                if len(self.signals) > 100: self.signals = self.signals[-100:]
+                new_sig = True
 
         # Гасим светофоры старше 1 минуты
         for sym in SYMBOLS_DISPLAY:
@@ -139,9 +144,12 @@ class SignalEngine:
                 
         return new_sig
 
+    def update(self):
+        return asyncio.run(self.update_async())
+
 # ===== ИНТЕРФЕЙС =====
-st.set_page_config(page_title="Signal Engine (Real Data)", layout="wide")
-st.title("🎯 SIGNAL CONFLUENCE ENGINE v2.0 (Real Data)")
+st.set_page_config(page_title="Signal Engine (Pocket Option)", layout="wide")
+st.title("🎯 SIGNAL CONFLUENCE ENGINE v3.0 (Pocket Option)")
 
 if "engine" not in st.session_state:
     st.session_state.engine = SignalEngine()
@@ -172,12 +180,21 @@ def play_sound(direction):
     components.html(js_code, height=0)
 
 # Плавное обновление
-@st.fragment(run_every="3s")
+@st.fragment(run_every="5s")
 def render_dashboard():
     engine = st.session_state.engine
     
     if engine.update():
         play_sound(engine.signals[-1]["direction"])
+
+    # ===== ВЫБОР АКТИВА =====
+    # Используем selectbox для выбора пары. 
+    # Если по паре был недавний сигнал, показываем это в названии.
+    selected_sym = st.selectbox(
+        "Выберите актив для графика:",
+        SYMBOLS_DISPLAY,
+        format_func=lambda x: f"🔔 {x} (Сигнал!)" if engine.active_lights[x] else x
+    )
 
     # ===== СВЕТОФОР =====
     st.markdown("### 🟢 Активы в реальном времени 🔴")
@@ -195,13 +212,11 @@ def render_dashboard():
     col_graph, col_forecast = st.columns([2, 1])
 
     with col_graph:
-        target_sym = engine.last_signaled_symbol
-        st.subheader(f"📈 График M1 ({target_sym})")
-        df = engine.data_cache.get(target_sym)
+        st.subheader(f"📈 График M1 ({selected_sym})")
+        df = engine.data_cache.get(selected_sym)
         
         if df is not None and not df.empty:
             df_plot = df.tail(60).copy() 
-            df_plot["time"] = pd.to_datetime(df_plot["time"])
             fig = make_subplots(rows=2, cols=1, shared_xaxes=True, subplot_titles=("Цена", "Delta"), vertical_spacing=0.08)
             fig.add_trace(go.Candlestick(x=df_plot["time"], open=df_plot["open"], high=df_plot["high"], low=df_plot["low"], close=df_plot["close"], name="Цена", increasing_line_color="lime", decreasing_line_color="red"), row=1, col=1)
             colors = ["lime" if d > 0 else "red" for d in df_plot["delta"]]
@@ -209,7 +224,7 @@ def render_dashboard():
             fig.update_layout(height=450, template="plotly_dark", xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=30, b=10))
             st.plotly_chart(fig, width='stretch')
         else:
-            st.info("Загрузка реальных данных с рынка... Пожалуйста, подождите.")
+            st.info("Загрузка данных с Pocket Option... Подождите несколько секунд.")
 
     with col_forecast:
         st.subheader("🔮 AI Forecast")
@@ -221,7 +236,7 @@ def render_dashboard():
             <p><b>Прогноз:</b> Система автоматически приостановит выдачу сигналов при аномальных скачках цен (новостные шпильки).</p>
         </div>
         """, unsafe_allow_html=True)
-        st.caption("*(Реальный режим активен)*")
+        st.caption("*(Реальный режим Pocket Option)*")
 
     # ===== ИСТОРИЯ =====
     st.markdown("---")
@@ -244,7 +259,7 @@ def render_dashboard():
         st.download_button("📥 Скачать историю (CSV)", csv, f"signals_{datetime.now().strftime('%Y%m%d')}.csv", "text/csv")
         st.dataframe(df_hist, width='stretch', height=300)
     else:
-        st.info("Ожидание реальных сигналов. Это может занять некоторое время.")
+        st.info("Ожидание реальных сигналов с Pocket Option. Это может занять некоторое время.")
 
 # Запускаем
 render_dashboard()
