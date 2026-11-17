@@ -1,4 +1,4 @@
 streamlit
 pandas
 plotly
-binaryoptionstoolsv2
+https://github.com/ChipaDevTeam/BinaryOptionsTools-v2/releases/download/v0.2.9/binaryoptionstoolsv2-0.2.9-cp38-abi3-manylinux_2_34_x86_64.whl
